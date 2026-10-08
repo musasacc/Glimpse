@@ -4,6 +4,8 @@ import { DEVICE_WIDTH, store, useStore } from "./store";
 import { TalkPopover } from "./Talk";
 import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
 import { loop } from "./loop";
+import { watchUpdates, whenRendered } from "./hmr";
+import { PreviewError } from "./PreviewError";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -61,8 +63,8 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      // Only our own page: compare and variant frames run the live client too.
-      if (ev.data?.glimpse === "morphed" && ev.source === iframe.current?.contentWindow) {
+      // Only our own page (compare and variant frames run the live client too), once attached to it.
+      if (ev.data?.glimpse === "morphed" && ev.source === iframe.current?.contentWindow && store.bridge?.doc === iframe.current?.contentDocument) {
         store.pageChanged();
         rerender();
       }
@@ -74,6 +76,11 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const onLoad = () => {
     const doc = iframe.current?.contentDocument;
     if (!doc) return;
+    // A React page renders after the load event: start once its first render has settled (if it's still the page).
+    whenRendered(doc, () => iframe.current?.contentDocument === doc && attachPage(doc));
+  };
+
+  const attachPage = (doc: Document) => {
     store.attach(doc);
     setDraft(null);
     cancelGesture.current = installPageHandlers(doc, {
@@ -83,6 +90,15 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
       live,
       onPress: () => setDraft(null),
       onRegion: (rect) => setDraft(regionTarget(rect)),
+    });
+    // React pages: our edits come off right before each HMR update and go back on once it has settled.
+    watchUpdates(doc, {
+      before: () => store.bridge?.doc === doc && store.beforeUpdate(),
+      after: () => {
+        if (store.bridge?.doc !== doc) return;
+        store.pageChanged();
+        rerender();
+      },
     });
     setPageCursor(doc, modeRef.current === "edit" && store.state.tool === "region" ? "crosshair" : null);
     rerender();
@@ -103,6 +119,14 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
   const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
   const draftRect = draft ? regionRect({ op: "region", id: "draft", text: "", ...draft }) : null;
+
+  if (state.previewError) {
+    return (
+      <div className="canvas">
+        <PreviewError />
+      </div>
+    );
+  }
 
   if (!state.entryExists) {
     return (

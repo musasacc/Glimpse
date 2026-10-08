@@ -7,7 +7,7 @@ export const PREVIEW_CLIENT_ID = "/@glimpse/preview-client";
  * is ready to read and when Vite's HMR changes it:
  *
  *   window.__glimpsePreview = { engine: "vite", ready, updating }
- *   "glimpse:ready"          (event on the preview's window) the first render has settled
+ *   "glimpse:ready"          (event on the preview's window) the first render has settled (after "load")
  *   "glimpse:before-update"  (event) Vite is about to apply an HMR update. Dispatched
  *                            synchronously before the update runs, so a same-origin
  *                            listener can put the DOM back the way React left it first
@@ -43,11 +43,15 @@ if (!w.__glimpsePreview) {
         if (n.nodeName === "VITE-ERROR-OVERLAY") n.setAttribute("data-glimpse-internal", "");
       }
     }).observe(document.body, { childList: true });
-    settled(80, 3000).then(() => {
+    // The app's entry module runs after this one, once all its imports have loaded (on a cold Vite that takes
+    // longer than the quiet period), and before "load": start waiting for its first render from there.
+    const settle = () => settled(80, 3000).then(() => {
       state.ready = true;
       emit("glimpse:ready");
       post({ glimpse: "ready" });
     });
+    if (document.readyState === "complete") settle();
+    else w.addEventListener("load", settle, { once: true });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
   else start();

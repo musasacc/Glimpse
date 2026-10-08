@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as I from "./icons";
 import { store, useStore } from "./store";
+import { PreviewError } from "./PreviewError";
 
 type Target = "html" | "react" | "tui" | "native";
 
@@ -132,6 +133,7 @@ export function Home() {
         </div>
       </div>
       {notice && <p className="home-notice">{notice}</p>}
+      <PreviewError compact />
 
       <div className="ideas">
         {IDEAS.map((idea) => (

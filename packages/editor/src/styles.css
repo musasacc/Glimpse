@@ -1113,3 +1113,23 @@ textarea.input {
   gap: 8px;
   font-size: 13px;
 }
+
+/* ── Desktop app ────────────────────────────────────── */
+/* macOS windows have no title bar: the traffic lights float over the top-left corner (at x 14, y 9), so the shell
+   leaves a 30px strip above the panels for them. The window's dark frame (that strip and the gutters), the sidebar's
+   top row and the editor toolbar drag the window, like a title bar; the controls in them stay clickable, and so do
+   dialogs over them. Full screen hides the traffic lights, and the strip goes with them. */
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .shell {
+  padding-top: 30px;
+  -webkit-app-region: drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.sidebar, .main) {
+  -webkit-app-region: no-drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .toolbar) {
+  -webkit-app-region: drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .toolbar) :is(button, a, input, select, textarea, label, [role="button"]),
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .scrim {
+  -webkit-app-region: no-drag;
+}

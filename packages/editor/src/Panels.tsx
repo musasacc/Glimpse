@@ -29,6 +29,7 @@ export function Layers() {
           key={node.id}
           className={`layer${state.multi.includes(node.id) ? " selected" : ""}`}
           style={{ paddingLeft: 10 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
+          title={node.source && `${node.source.file}:${node.source.line}`}
           onClick={(e) => (e.shiftKey ? store.toggleSelect(node.id) : store.select(node.id))}
           onMouseEnter={() => store.set({ hovered: node.id })}
           onMouseLeave={() => store.set({ hovered: null })}

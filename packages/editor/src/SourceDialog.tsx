@@ -3,6 +3,7 @@ import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
 import { handoffScreenshot } from "./loop";
 import { store } from "./store";
+import "./react.css";
 
 interface Preview {
   files: { file: string; diff: string }[];
@@ -20,12 +21,15 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sendRest, setSendRest] = useState(true);
+  // Elements the page renders more than once (list items, shared components): their edits go to the AI.
+  const [repeats] = useState(() => store.repeats);
+  const repeated = [...repeats.keys()];
 
   useEffect(() => {
     fetch("/api/patch/preview", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ changeList: list }),
+      body: JSON.stringify({ changeList: list, repeated }),
     })
       .then(async (r) => {
         const body = await r.json();
@@ -45,13 +49,23 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
       const screenshot = toAi ? await handoffScreenshot() : null;
       let written = 0;
       if (preview.files.length > 0) {
-        const res = await fetch("/api/patch/apply", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ changeList: list }),
-        });
-        const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
-        if (!res.ok) throw new Error(body.error ?? res.statusText);
+        // React renders from its own record of the page: our edits come off before the files change, and the
+        // update Vite sends for them shows the written source (see Store.takeOffEdits).
+        const react = store.isVitePage;
+        if (react) store.takeOffEdits();
+        let body: { files?: string[]; applied?: number; backup?: string; error?: string };
+        try {
+          const res = await fetch("/api/patch/apply", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ changeList: list, repeated }),
+          });
+          body = (await res.json()) as typeof body;
+          if (!res.ok) throw new Error(body.error ?? res.statusText);
+        } catch (e) {
+          if (react) store.putBackEdits(); // nothing was written: show the edits again
+          throw e;
+        }
         written = body.applied ?? 0;
         store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
       }
@@ -89,10 +103,16 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
             <div className="needs-ai">
               <h3>Needs AI ({preview.needsAi.length})</h3>
               <p className="hint">Moves, resizes, behaviors and notes need judgement about the code, so your agent does them.</p>
+              {preview.needsAi.some((c) => c.src && repeats.has(c.src)) && (
+                <p className="hint">
+                  So do edits of elements the page shows more than once (list items, shared components): writing them into the source would change every copy.
+                </p>
+              )}
               <ol className="changes">
                 {preview.needsAi.map((c, i) => (
                   <li key={i}>
                     <span className="op">{c.op}</span> {describeChange(c)}
+                    {c.src && repeats.has(c.src) && <span className="repeat-note">used in {repeats.get(c.src)} places → sent to AI</span>}
                   </li>
                 ))}
               </ol>

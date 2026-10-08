@@ -20,7 +20,7 @@ import {
 } from "electron";
 import { startGlimpse, VERSION as GLIMPSE_VERSION } from "../app/glimpse/lib.js";
 import { IPC, type AppInfo, type RecentEntry } from "./api.js";
-import { chromeScript, desktopPlatform, fullscreenScript, MAC_CHROME_CSS, MAC_TRAFFIC_LIGHTS, MCP_SETUP } from "./chrome.js";
+import { chromeScript, desktopPlatform, fullscreenScript, MAC_TRAFFIC_LIGHTS, MCP_SETUP } from "./chrome.js";
 import { canonicalDir, dirKey, folderName } from "./paths.js";
 import { ProjectServers } from "./projects.js";
 import { RecentProjects } from "./recent.js";
@@ -277,10 +277,7 @@ async function createProjectWindow(dir: string, key: string): Promise<void> {
 
   const wc = win.webContents;
   lockDown(wc, new URL(project.url).origin);
-  wc.on("dom-ready", () => {
-    if (isMac) void wc.insertCSS(MAC_CHROME_CSS);
-    void wc.executeJavaScript(chromeScript(platform, win.isFullScreen())).catch(() => {});
-  });
+  wc.on("dom-ready", () => void wc.executeJavaScript(chromeScript(platform, win.isFullScreen())).catch(() => {}));
   win.on("enter-full-screen", () => void wc.executeJavaScript(fullscreenScript(true)).catch(() => {}));
   win.on("leave-full-screen", () => void wc.executeJavaScript(fullscreenScript(false)).catch(() => {}));
   wc.on("render-process-gone", async (_event, details) => {
