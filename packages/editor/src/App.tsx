@@ -73,10 +73,10 @@ function Editor({ hidden }: { hidden: boolean }) {
       <header className="toolbar">
         <div className="seg" role="group" aria-label="Mode">
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} title="Edit: select, move and change elements">
-            <I.Pointer size={14} /> Edit
+            <I.Pointer size={14} /> <span className="tb-label-md">Edit</span>
           </button>
           <button className={mode === "interact" ? "active" : ""} onClick={() => setMode("interact")} title="Interact: use the page normally">
-            <I.Hand size={14} /> Interact
+            <I.Hand size={14} /> <span className="tb-label-md">Interact</span>
           </button>
         </div>
         <BoxPromptToggle onEnable={() => setMode("edit")} />
@@ -89,7 +89,7 @@ function Editor({ hidden }: { hidden: boolean }) {
         </div>
         <span className={`live${state.connected ? " on" : ""}`} title="Changes your AI makes to the files appear here instantly">
           <span className="dot" />
-          {state.connected ? "Live" : "Offline"}
+          <span className="tb-label">{state.connected ? "Live" : "Offline"}</span>
         </span>
         <LoopToolbar />
         <div className="spacer" />
@@ -106,10 +106,10 @@ function Editor({ hidden }: { hidden: boolean }) {
           title="Glimpse writes your edits straight into the files (with a diff preview)"
           onClick={() => setEditing(store.changeList())}
         >
-          <I.Code size={14} /> Edit source
+          <I.Code size={14} /> <span className="tb-label-md">Edit source</span>
         </button>
         <button className="btn primary" disabled={pending === 0} onClick={() => setSending(store.changeList())}>
-          <I.Send size={14} /> Send to AI <span className="count">{pending}</span>
+          <I.Send size={14} /> <span className="tb-label-sm">Send to AI</span> <span className="count">{pending}</span>
         </button>
         <button
           className={`icon-btn${state.inspectorOpen ? " on" : ""}`}
@@ -154,7 +154,9 @@ function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}) }),
       });
-      if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+      const body = (await res.json()) as { warning?: string; error?: string };
+      if (!res.ok) throw new Error(body.error ?? res.statusText);
+      if (body.warning) store.activity("warn", body.warning);
       store.commitHandoff();
       void store.refreshHandoffs();
       onClose();

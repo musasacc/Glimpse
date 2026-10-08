@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
 import { handoffScreenshot } from "./loop";
@@ -20,6 +20,9 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [sendRest, setSendRest] = useState(true);
+  /** The files were written (and the edits committed): a retry only sends the rest to the AI. */
+  const [written, setWritten] = useState(false);
+  const shot = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     fetch("/api/patch/preview", {
@@ -39,35 +42,45 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
     if (!preview) return;
     setBusy(true);
     setError(null);
+    let wrote = written;
     try {
       const toAi = sendRest && preview.needsAi.length > 0;
       // Picture the edited page before the files change under it (best effort, ≤ 3 s).
-      const screenshot = toAi ? await handoffScreenshot() : null;
-      let written = 0;
-      if (preview.files.length > 0) {
-        const res = await fetch("/api/patch/apply", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ changeList: list }),
+      if (toAi && shot.current === undefined) shot.current = await handoffScreenshot();
+      if (!wrote && preview.files.length > 0) {
+        const body = await store.writingSource(async () => {
+          const res = await fetch("/api/patch/apply", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ changeList: list }),
+          });
+          const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
+          if (!res.ok) throw new Error(body.error ?? res.statusText);
+          return body;
         });
-        const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
-        if (!res.ok) throw new Error(body.error ?? res.statusText);
-        written = body.applied ?? 0;
-        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
+        wrote = true;
+        setWritten(true);
+        const n = body.applied ?? 0;
+        store.activity("handoff", `Wrote ${n} change${n === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
       }
       if (toAi) {
+        const screenshot = shot.current;
         const res = await fetch("/api/handoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}) }),
         });
-        if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+        const body = (await res.json()) as { warning?: string; error?: string };
+        if (!res.ok) throw new Error(body.error ?? res.statusText);
+        if (body.warning) store.activity("warn", body.warning);
       }
-      store.commitHandoff();
+      // A write commits on its own (see writingSource).
+      if (!wrote) store.commitHandoff();
       void store.refreshHandoffs();
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const why = e instanceof Error ? e.message : String(e);
+      setError(wrote ? `Your edits were written, but sending the other ${preview.needsAi.length} to your AI failed: ${why}` : why);
       setBusy(false);
     }
   };
@@ -111,9 +124,9 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
           <button
             className="btn primary"
             onClick={apply}
-            disabled={busy || !preview || (nothingToWrite && (!sendRest || preview.needsAi.length === 0))}
+            disabled={busy || !preview || ((nothingToWrite || written) && (!sendRest || preview.needsAi.length === 0))}
           >
-            {nothingToWrite ? (
+            {nothingToWrite || written ? (
               <>
                 <I.Send size={14} /> Send to AI
               </>

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
 import type { ChangeList } from "@glimpse/core";
 import { startServer, type GlimpseServer } from "./index.js";
@@ -136,5 +138,88 @@ describe("server", () => {
 
   it("reports 'editing' when nothing was sent before the timeout", async () => {
     expect(await srv.nextHandoff(0, 50)).toBeNull();
+  });
+
+  it("starts nothing when the port is taken, so the retry on another port is the only Glimpse", async () => {
+    const other = await mkdtemp(join(tmpdir(), "glimpse-busy-"));
+    try {
+      await expect(startServer({ dir: other, port: srv.port })).rejects.toMatchObject({ code: "EADDRINUSE" });
+      // No initial snapshot, so no history (or watcher) was left running for that project.
+      expect(existsSync(join(other, ".glimpse", "history"))).toBe(false);
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses cross-site requests and foreign hosts", async () => {
+    // Raw requests, so the headers are exactly what a browser would send.
+    const raw = (method: string, path: string, headers: Record<string, string>, body?: string) =>
+      new Promise<number>((ok, fail) => {
+        const req = httpRequest(`${srv.url}${path}`, { method, headers }, (res) => {
+          res.resume();
+          ok(res.statusCode ?? 0);
+        });
+        req.on("error", fail);
+        req.end(body);
+      });
+    const json = { "content-type": "application/json" };
+    // A page on another site posting to Glimpse (fetch with mode "no-cors", or a form).
+    expect(await raw("POST", "/api/history/s1/restore", { ...json, origin: "https://evil.example" }, "{}")).toBe(403);
+    expect(await raw("POST", "/api/request", { "content-type": "text/plain", "sec-fetch-site": "cross-site" }, '{"text":"rm -rf"}')).toBe(403);
+    expect(await raw("POST", "/api/request", { "content-type": "text/plain" }, '{"text":"rm -rf"}')).toBe(415);
+    // DNS rebinding: the attacker's name, pointed at 127.0.0.1.
+    expect(await raw("GET", "/api/history", { host: `evil.example:${srv.port}` })).toBe(403);
+    expect(await raw("GET", "/preview/", { host: `evil.example:${srv.port}` })).toBe(403);
+    // The editor itself, and local tools.
+    expect(await raw("GET", "/api/history", { "sec-fetch-site": "same-origin" })).toBe(200);
+    expect(await raw("POST", "/api/status", { ...json, origin: srv.url, "sec-fetch-site": "same-origin" }, '{"message":"hi"}')).toBe(200);
+    expect(await raw("GET", "/api/session", { host: `localhost:${srv.port}` })).toBe(200);
+    expect((await fetch(`${srv.url}/api/session`)).status).toBe(200);
+
+    const opened = (origin?: string) =>
+      new Promise<boolean>((ok) => {
+        const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws`, origin ? { origin } : {});
+        ws.once("open", () => (ws.close(), ok(true)));
+        ws.once("error", () => ok(false));
+      });
+    expect(await opened("https://evil.example")).toBe(false);
+    expect(await opened(srv.url)).toBe(true);
+  });
+
+  it("serves a placeholder page, not JSON, for a version without the page", async () => {
+    const empty = await mkdtemp(join(tmpdir(), "glimpse-empty-"));
+    const other = await startServer({ dir: empty, port: 0 });
+    try {
+      await writeFile(join(empty, "index.html"), "<p>built</p>");
+      const res = await fetch(`${other.url}/snapshot/s1/`);
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(await res.text()).toContain("This version has no <code");
+      expect((await fetch(`${other.url}/snapshot/s1/missing.css`)).headers.get("content-type")).toContain("json");
+    } finally {
+      await other.close();
+      await rm(empty, { recursive: true, force: true });
+    }
+  });
+
+  it("records an AI round as soon as the agent waits again", async () => {
+    const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws`);
+    const seen = (type: string) => new Promise<void>((ok) => ws.on("message", (raw) => JSON.parse(String(raw)).type === type && ok()));
+    await new Promise((ok) => ws.once("open", ok));
+    const changed = seen("file-changed");
+    const recorded = seen("snapshot");
+    await writeFile(join(dir, "style.css"), "button{color:blue}");
+    await changed;
+    const t0 = Date.now();
+    // Inside the quiet period: waiting ends the round, so it's recorded right away.
+    expect(await srv.nextHandoff(undefined, 10)).toBeNull();
+    await recorded;
+    expect(Date.now() - t0).toBeLessThan(1500);
+    ws.close();
+    const { snapshots } = (await (await fetch(`${srv.url}/api/history`)).json()) as { snapshots: { kind: string; label: string }[] };
+    expect(snapshots.map((x) => [x.kind, x.label])).toEqual([
+      ["initial", "Opened in Glimpse"],
+      ["ai", "AI edited style.css"],
+    ]);
   });
 });

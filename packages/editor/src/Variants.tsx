@@ -9,6 +9,9 @@ import "./loop.css";
 
 const COUNTS = [2, 3, 4];
 
+/** Variants are written as files, so the element has to be in one. */
+export const NO_SOURCE = "Variants need an element that is in the files. Send or write this one to the source first.";
+
 /** "Variants…": ask the agent for a few alternative designs of one element, to pick from side by side. */
 export function VariantsDialog({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
   const state = useStore();
@@ -183,7 +186,7 @@ export function VariantsView({ jobId }: { jobId: string }) {
         {ks.map((k) => {
           const ready = job.ready.includes(k);
           return (
-            <section key={k} className={`vr-cell${ready ? "" : " waiting"}`}>
+            <section key={k} className={`vr-cell${ready ? "" : " is-waiting"}`}>
               <header>
                 <span className="vr-name">Variant {k}</span>
                 {!ready && <span className="meta">waiting for your agent…</span>}
@@ -293,15 +296,26 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
     if (!menu) return;
     const close = () => setMenu(null);
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+    // The right-click left focus in the page, so Esc arrives there. Catch it before the page's
+    // shortcuts do (they would clear the selection the menu acts on) and only close the menu.
+    const pageWin = store.bridge?.doc.defaultView;
+    const onPageKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+    };
     window.addEventListener("mousedown", close);
     window.addEventListener("keydown", onKey);
     window.addEventListener("resize", close);
     window.addEventListener("blur", close);
+    pageWin?.addEventListener("keydown", onPageKey, true);
     return () => {
       window.removeEventListener("mousedown", close);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
+      pageWin?.removeEventListener("keydown", onPageKey, true);
     };
   }, [menu]);
 
@@ -321,7 +335,7 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
       <button role="menuitem" onClick={run(openTalk)}>
         <L.Message size={14} /> Talk to AI <span className="kbd">T</span>
       </button>
-      <button role="menuitem" onClick={run(() => loop.openVariants(menu.id))}>
+      <button role="menuitem" disabled={!node.source} title={node.source ? undefined : NO_SOURCE} onClick={run(() => loop.openVariants(menu.id))}>
         <L.Grid size={14} /> Variants…
       </button>
       <button role="menuitem" onClick={run(() => store.duplicateSelected())}>

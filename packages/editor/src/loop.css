@@ -52,7 +52,8 @@
 }
 .tl-head {
   flex: none;
-  width: 150px;
+  /* Room for "Versions 123" beside the hide button. */
+  width: 172px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -446,6 +447,11 @@
 }
 .ctx-menu .kbd {
   margin-left: auto;
+}
+.menu.ctx-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: transparent;
 }
 .ctx-menu button.danger,
 .ctx-menu button.danger svg {

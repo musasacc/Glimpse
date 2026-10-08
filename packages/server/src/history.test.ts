@@ -83,10 +83,11 @@ describe("version history", () => {
     const same = (await (await post("/api/history/snapshot", { label: "Checkpoint" })).json()) as { snapshot: PublicSnapshot; created: boolean };
     expect(same).toMatchObject({ created: false, snapshot: { id: "s1" } });
 
+    // Saves nobody recorded yet are the AI's: saving by hand records them as its round, not under another name.
     await mkdir(join(dir, "pages"));
     await writeFile(join(dir, "pages", "about.html"), "<p>About</p>");
     const manual = (await (await post("/api/history/snapshot", { label: "Checkpoint" })).json()) as { snapshot: PublicSnapshot; created: boolean };
-    expect(manual).toMatchObject({ created: true, snapshot: { id: "s2", kind: "manual", label: "Checkpoint", fileCount: 3 } });
+    expect(manual).toMatchObject({ created: true, snapshot: { id: "s2", kind: "ai", label: "AI edited pages/about.html", fileCount: 3 } });
     expect(await srv.snapshot()).toMatchObject({ id: "s2" });
 
     const stored = JSON.parse(await readFile(join(dir, ".glimpse", "history", "snapshots.json"), "utf8")) as { files: Record<string, string> }[];
@@ -116,7 +117,10 @@ describe("version history", () => {
       deleted: string[];
     };
     expect(res.restored).toMatchObject({ id: "s1", kind: "initial" });
-    expect(res.backup).toMatchObject({ id: "s2", kind: "restore", label: "Before restoring Opened in Glimpse", fileCount: 3 });
+    // The agent's unrecorded saves are kept as its round before anything is overwritten…
+    expect(res.backup).toMatchObject({ id: "s2", kind: "ai", label: "AI edited extra.js, style.css", fileCount: 3 });
+    // …and the restored state is the newest version, which the AI's next round starts from.
+    expect(res.snapshot).toMatchObject({ id: "s3", kind: "restore", label: "Restored Opened in Glimpse", fileCount: 2 });
     expect(res.written).toEqual(["style.css"]);
     expect(res.deleted).toEqual(["extra.js"]);
     expect(await readFile(join(dir, "style.css"), "utf8")).toBe("button{color:red}");
@@ -124,12 +128,14 @@ describe("version history", () => {
     await live.waitFor((m) => m.type === "reload");
 
     // The backup can itself be restored.
-    await post("/api/history/s2/restore");
+    const again = (await (await post("/api/history/s2/restore")).json()) as { backup: PublicSnapshot; snapshot: PublicSnapshot };
+    expect(again.backup).toMatchObject({ id: "s3" });
+    expect(again.snapshot).toMatchObject({ id: "s4", kind: "restore", label: "Restored AI edited extra.js, style.css" });
     expect(await readFile(join(dir, "extra.js"), "utf8")).toBe("console.log(1)");
 
     // Well past the quiet period: Glimpse's own writes didn't produce an "ai" snapshot.
     await sleep(2500);
-    expect((await snapshots()).map((s) => s.kind)).toEqual(["initial", "restore", "restore"]);
+    expect((await snapshots()).map((s) => s.kind)).toEqual(["initial", "ai", "restore", "restore"]);
     expect((await post("/api/history/s99/restore")).status).toBe(404);
     live.close();
   }, 15_000);
@@ -181,7 +187,10 @@ describe("version history", () => {
     expect((await readFile(abs)).toString("base64")).toBe(PNG_B64);
     const shot = await fetch(`${srv.url}/api/handoffs/1/screenshot`);
     expect(shot.headers.get("content-type")).toBe("image/png");
-    expect((await post("/api/handoff", { kind: "ai", changeList: aiChangeList, screenshot: "data:text/plain,hi" })).status).toBe(400);
+    // A screenshot Glimpse can't use is left out; the edits still go to the agent.
+    const noShot = await post("/api/handoff", { kind: "ai", changeList: aiChangeList, screenshot: "data:text/plain,hi" });
+    expect(await noShot.json()).toMatchObject({ seq: 2, warning: expect.stringContaining("left out") });
+    expect(await get("/api/handoffs/2")).not.toHaveProperty("screenshot");
 
     await writeFile(join(dir, "notes.txt"), "a request is coming");
     await post("/api/request", { text: "add a footer" });
@@ -190,10 +199,11 @@ describe("version history", () => {
     expect(applied.snapshot).toMatchObject({ kind: "source", label: "Wrote 1 change to source" });
     expect(await readFile(join(dir, "index.html"), "utf8")).toContain("<button>Hello</button>");
 
+    // Saves still inside the quiet period count as the AI's round, recorded before what the human sent.
     expect((await snapshots()).map((s) => [s.kind, s.label])).toEqual([
       ["initial", "Opened in Glimpse"],
-      ["handoff", "Sent 1 change to the AI"],
-      ["handoff", "Sent a request"],
+      ["ai", "AI edited style.css"],
+      ["ai", "AI edited notes.txt"],
       ["source", "Wrote 1 change to source"],
     ]);
     expect((await fetch(`${srv.url}/api/handoffs/2/screenshot`)).status).toBe(404);

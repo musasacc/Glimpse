@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   alignDeltas,
+  applyOp,
+  invertOp,
   buildChangeList,
   changeListToPrompt,
   createScene,
@@ -78,6 +80,43 @@ describe("OpLog", () => {
     log.undo();
     expect(log.scene.nodes.b1!.layout.x).toBe(20);
     expect(log.scene.nodes.b2!.layout.x).toBe(140);
+  });
+
+  it("keeps a step whose undo fails, with everything it changed", () => {
+    // An applier that fails like the DOM does when page JS removed an element the inverse needs.
+    let failOn: string | null = null;
+    const calls: [string, boolean][] = [];
+    const log = new OpLog(fixture(), (scene, op, undo) => {
+      calls.push([op.op, undo]);
+      applyOp(scene, op);
+      if (failOn && op.op === failOn) {
+        applyOp(scene, invertOp(op));
+        throw new Error("NotFoundError");
+      }
+    });
+    const ops = groupOps(log.scene, ["b1", "b2"], node("g", "nav", { type: "box", tag: "div" }));
+    log.apply(...ops);
+    expect(calls.every(([, undo]) => !undo)).toBe(true);
+
+    calls.length = 0;
+    failOn = "delete"; // the last inverse: removing the group's box
+    expect(() => log.undo()).toThrow("NotFoundError");
+    // Still done, still in the scene and the change list, and undo can be tried again.
+    expect(log.canUndo).toBe(true);
+    expect(log.canRedo).toBe(false);
+    expect(log.scene.nodes.g!.children).toEqual(["b1", "b2"]);
+    expect(buildChangeList(log).changes.map((c) => c.op)).toContain("add");
+    expect(calls.slice(0, 3).map(([, undo]) => undo)).toEqual([true, true, true]); // the inverses…
+    expect(calls.slice(3).every(([, undo]) => !undo)).toBe(true); // …then re-applied
+
+    failOn = null;
+    expect(log.undo()).toBe(true);
+    expect(log.scene.nodes.g).toBeUndefined();
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    failOn = "add";
+    expect(() => log.redo()).toThrow("NotFoundError");
+    expect(log.canRedo).toBe(true);
+    expect(log.scene.nodes.g).toBeUndefined();
   });
 
   it("does not mutate the base scene", () => {

@@ -4,7 +4,8 @@ import { canUngroup, ungroupSelection } from "./arrange";
 import { SelectionInspector } from "./EditTools";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
-import { loop } from "./loop";
+import { loop, useLoopLive } from "./loop";
+import { NO_SOURCE } from "./Variants";
 import { MOD } from "./platform";
 
 /** Layers: the element tree of the page. */
@@ -58,7 +59,17 @@ const TYPES: NodeType[] = ["box", "text", "button", "link", "input", "image", "l
 /** Inspector: text, style, type, visibility, behavior and pinned instructions. */
 export function Inspector({ openTalk }: { openTalk: () => void }) {
   const state = useStore();
+  const live = useLoopLive();
   const node = state.selected ? store.scene?.nodes[state.selected] : undefined;
+  // Edits here would change the live page hidden under a version, comparison or variants.
+  if (!live) {
+    return (
+      <div className="section">
+        <h3>Inspector</h3>
+        <div className="hint">You're looking at another version of the page. Go back to the live page to edit it.</div>
+      </div>
+    );
+  }
   if (store.selection.length > 1) return <SelectionInspector />;
   if (!node) {
     return (
@@ -187,7 +198,13 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
         <button className="btn" onClick={openTalk}>
           🎤 Point &amp; talk <span className="kbd">T</span>
         </button>
-        <button className="btn" style={{ marginLeft: 6 }} title="Ask your agent for a few alternative designs of this element" onClick={() => loop.openVariants(node.id)}>
+        <button
+          className="btn"
+          style={{ marginLeft: 6 }}
+          disabled={!node.source}
+          title={node.source ? "Ask your agent for a few alternative designs of this element" : NO_SOURCE}
+          onClick={() => loop.openVariants(node.id)}
+        >
           Variants…
         </button>
       </div>

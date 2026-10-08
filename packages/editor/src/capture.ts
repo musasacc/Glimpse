@@ -22,7 +22,8 @@ export async function capturePreview(target: HTMLIFrameElement | Document | null
     const root = doc?.documentElement;
     if (!doc || !win || !root) return null;
     const width = root.clientWidth || win.innerWidth;
-    const height = Math.min(root.clientHeight || win.innerHeight, opts.maxHeight ?? Infinity);
+    // One viewport: a page without a doctype (quirks mode) reports its whole height as clientHeight.
+    const height = Math.min(root.clientHeight || win.innerHeight, win.innerHeight || Infinity, opts.maxHeight ?? Infinity);
     if (!width || !height) return null;
     const scale = Math.min(1, (opts.maxWidth ?? width) / width);
     const dx = opts.atScroll ? win.scrollX : 0;
@@ -73,8 +74,9 @@ export function captureUrl(url: string, size: { width: number; height: number },
     };
     const timer = setTimeout(() => finish(null), 15000);
     frame.onload = () => {
-      // An error (JSON) instead of a page: nothing worth a picture.
-      if (frame.contentDocument?.contentType !== "text/html") return finish(null);
+      // An error (JSON) or the "this version has no page" placeholder: nothing worth a picture.
+      const doc = frame.contentDocument;
+      if (doc?.contentType !== "text/html" || doc.querySelector('meta[name="glimpse-missing"]')) return finish(null);
       // Give scripts, images and layout a moment to settle.
       setTimeout(() => void capturePreview(frame, opts).then(finish), 600);
     };

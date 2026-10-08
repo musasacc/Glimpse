@@ -10,6 +10,12 @@ export class DomBridge {
   private els = new Map<string, Element>();
   /** Where each element was originally laid out, so moves can be shown as translates. */
   private origins = new Map<string, { x: number; y: number }>();
+  /**
+   * Where reorders and deletes took elements from, newest last, so undoing puts
+   * them back exactly: between the same text and untracked nodes, which the
+   * scene doesn't know about ("Total: <b>$20</b> per month").
+   */
+  private spots = new WeakMap<Element, { parent: Node; next: Node | null }[]>();
   private next = 1;
 
   constructor(readonly doc: Document) {}
@@ -28,6 +34,8 @@ export class DomBridge {
 
   /** Walk the page and build a scene that mirrors it. */
   buildScene(): Scene {
+    // A new op log starts from this scene; nothing before it can be undone.
+    this.spots = new WeakMap();
     const body = this.doc.body;
     const scene = createScene("html", { x: 0, y: 0, w: body.scrollWidth, h: body.scrollHeight });
     this.register(body, "root");
@@ -105,14 +113,15 @@ export class DomBridge {
   }
 
   /**
-   * Apply an op to the scene and the live DOM. Used as the OpLog applier. The
-   * scene goes first because it rejects ops that don't fit (e.g. replayed after
-   * the AI changed the page) before the DOM is touched.
+   * Apply an op to the scene and the live DOM. Used as the OpLog applier
+   * (`undo`: the op is the inverse of an earlier one). The scene goes first
+   * because it rejects ops that don't fit (e.g. replayed after the AI changed
+   * the page) before the DOM is touched.
    */
-  apply(scene: Scene, op: Op): void {
+  apply(scene: Scene, op: Op, undo = false): void {
     applyOp(scene, op);
     try {
-      this.applyDom(scene, op);
+      this.applyDom(scene, op, undo);
     } catch (err) {
       applyOp(scene, invertOp(op));
       throw err;
@@ -120,7 +129,7 @@ export class DomBridge {
   }
 
   /** Mirror an op in the DOM. `scene` already has the op applied. */
-  private applyDom(scene: Scene, op: Op): void {
+  private applyDom(scene: Scene, op: Op, undo: boolean): void {
     switch (op.op) {
       case "move": {
         // Moves are previewed as a translate relative to where the page laid the element out.
@@ -157,22 +166,28 @@ export class DomBridge {
         return;
       case "reorder": {
         const el = this.els.get(op.node)!;
+        if (undo && this.restoreSpot(el, scene, op.to.parent, op.to.index, op.node)) return;
+        const spot = { parent: el.parentNode, next: el.nextSibling };
         this.insertAt(el, scene, op.to.parent, op.to.index, op.node);
+        if (!undo && spot.parent) this.pushSpot(el, { parent: spot.parent, next: spot.next });
         return;
       }
       case "add": {
         const top = op.nodes[0]!;
         // Undoing a delete (or an ungroup) brings back the original element, with
-        // its text and anything Glimpse doesn't track inside it.
+        // its text and anything Glimpse doesn't track inside it, where it was.
         const el = this.els.get(top.id) ?? this.create(op.nodes, top.id);
-        this.insertAt(el, scene, op.parent, op.index, top.id);
+        if (!(undo && this.restoreSpot(el, scene, op.parent, op.index, top.id))) this.insertAt(el, scene, op.parent, op.index, top.id);
         // Later moves of new elements are translates relative to where they were added.
         for (const n of op.nodes) if (!this.origins.has(n.id)) this.origins.set(n.id, { x: n.layout.x, y: n.layout.y });
         return;
       }
-      case "delete":
-        this.els.get(op.nodes[0]!.id)?.remove();
+      case "delete": {
+        const el = this.els.get(op.nodes[0]!.id);
+        if (el?.parentNode && !undo) this.pushSpot(el, { parent: el.parentNode, next: el.nextSibling });
+        el?.remove();
         return;
+      }
       default:
         return; // swapType, setLocked and annotations are editor-only until handed off
     }
@@ -199,6 +214,36 @@ export class DomBridge {
     const siblings = scene.nodes[parentId]!.children.filter((c) => c !== movingId);
     const before = siblings[index] ? (this.els.get(siblings[index]!) ?? null) : null;
     this.els.get(parentId)!.insertBefore(el, before);
+  }
+
+  private pushSpot(el: Element, spot: { parent: Node; next: Node | null }): void {
+    const stack = this.spots.get(el);
+    if (stack) stack.push(spot);
+    else this.spots.set(el, [spot]);
+  }
+
+  /**
+   * Undo: put `el` back where the reorder or delete being undone took it from,
+   * if that place is still there and agrees with the scene (its tracked
+   * neighbours are the scene's). False when the caller should place it by the
+   * scene alone.
+   */
+  private restoreSpot(el: Element, scene: Scene, parentId: string, index: number, movingId: string): boolean {
+    const spot = this.spots.get(el)?.pop();
+    const parent = this.els.get(parentId);
+    if (!spot || !parent || spot.parent !== parent || (spot.next && spot.next.parentNode !== parent)) return false;
+    parent.insertBefore(el, spot.next);
+    const siblings = scene.nodes[parentId]!.children.filter((c) => c !== movingId);
+    const prev = index > 0 ? (this.els.get(siblings[index - 1]!) ?? null) : null;
+    const next = index < siblings.length ? (this.els.get(siblings[index]!) ?? null) : null;
+    return this.tracked(el, "previousElementSibling") === prev && this.tracked(el, "nextElementSibling") === next;
+  }
+
+  /** The nearest element sibling the scene tracks, in one direction. */
+  private tracked(el: Element, dir: "previousElementSibling" | "nextElementSibling"): Element | null {
+    let s = el[dir];
+    while (s && !(this.ids.has(s) && isEditable(s))) s = s[dir];
+    return s;
   }
 
   private register(el: Element, id: string): void {

@@ -3,7 +3,7 @@ import { describeNode, topLevel, type Layout, type Op } from "@glimpse/core";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import { TalkPopover } from "./Talk";
 import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
-import { loop } from "./loop";
+import { loop, useLoopLive } from "./loop";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -26,6 +26,8 @@ const canvas = { mode: "edit" as Mode, cancel: () => {} };
  */
 export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: boolean; setTalkOpen: (v: boolean) => void }) {
   const state = useStore();
+  // A version, comparison or variants may cover the page; its notices belong to the page.
+  const pageShown = useLoopLive();
   const iframe = useRef<HTMLIFrameElement>(null);
   const [, setTick] = useState(0);
   const modeRef = useRef(mode);
@@ -59,22 +61,17 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
     if (doc) setPageCursor(doc, crosshair ? "crosshair" : null);
   }, [crosshair]);
 
-  useEffect(() => {
-    const onMessage = (ev: MessageEvent) => {
-      // Only our own page: compare and variant frames run the live client too.
-      if (ev.data?.glimpse === "morphed" && ev.source === iframe.current?.contentWindow) {
-        store.pageChanged();
-        rerender();
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
-
   const onLoad = () => {
     const doc = iframe.current?.contentDocument;
     if (!doc) return;
     store.attach(doc);
+    // The AI saved the page and the live client morphs it in place (only our own page:
+    // compare and variant frames run the client too). The edits come off around it.
+    doc.defaultView?.addEventListener("glimpse:before-morph", () => store.beforeMorph());
+    doc.defaultView?.addEventListener("glimpse:after-morph", () => {
+      store.pageChanged();
+      rerender();
+    });
     setDraft(null);
     cancelGesture.current = installPageHandlers(doc, {
       mode: () => modeRef.current,
@@ -125,7 +122,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
 
   return (
     <div className="canvas">
-      {state.stale && (
+      {state.stale && pageShown && (
         <div className="banner">
           Some edits could not be replayed after the AI changed the page.
           <button className="btn" onClick={() => store.set({ stale: false })}>

@@ -85,7 +85,11 @@ export const CLIENT_SCRIPT = String.raw`(() => {
     const res = await fetch(location.href, { cache: "no-store" });
     const doc = new DOMParser().parseFromString(await res.text(), "text/html");
     const changed = new Set();
-    morph(document.body, doc.body, changed);
+    // The editor takes the human's unsent edits off the page around the morph (it pairs
+    // elements by position) and puts them back after. Both events are synchronous.
+    dispatchEvent(new Event("glimpse:before-morph"));
+    try { morph(document.body, doc.body, changed); }
+    finally { dispatchEvent(new Event("glimpse:after-morph")); }
     for (const el of changed) flash(el);
     parent.postMessage({ glimpse: "morphed", count: changed.size }, "*");
   }

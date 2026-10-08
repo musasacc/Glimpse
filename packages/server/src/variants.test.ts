@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -140,9 +140,11 @@ describe("variants", () => {
     expect((await post(`/api/variants/v1/choose`, { k: 3 })).status).toBe(400);
     expect((await post(`/api/variants/v1/choose`, { k: 2 })).status).toBe(409);
     const res = await post(`/api/variants/v1/choose`, { k: 1 });
-    const body = (await res.json()) as { files: string[]; backup: PublicSnapshot };
+    const body = (await res.json()) as { files: string[]; backup: PublicSnapshot; snapshot: PublicSnapshot };
     expect(body.files).toEqual(["css/extra.css", "index.html"]);
-    expect(body.backup).toMatchObject({ kind: "variant", label: 'Before using variant 1 of button "Hi"' });
+    // The unrecorded save is kept as the AI's round first; the chosen variant is the newest version.
+    expect(body.backup).toMatchObject({ kind: "ai", label: "AI edited style.css" });
+    expect(body.snapshot).toMatchObject({ kind: "variant", label: 'Used variant 1 of button "Hi"', fileCount: 3 });
 
     expect(await readFile(join(dir, "index.html"), "utf8")).toContain("<button class=big>Hi</button>");
     expect(await readFile(join(dir, "css", "extra.css"), "utf8")).toBe(".big{font-size:2em}");
@@ -171,5 +173,63 @@ describe("variants", () => {
     await srv.close();
     srv = await startServer({ dir, port: 0 });
     expect((await createJob(2)).id).toBe("v2");
+  });
+
+  it("withdraws the request when the job is discarded before an agent got it", async () => {
+    await createJob(2);
+    expect(await (await post("/api/variants/v1/discard")).json()).toEqual({ ok: true });
+    expect(await srv.nextHandoff(undefined, 50)).toBeNull();
+    expect(await srv.nextHandoff(0, 50)).toBeNull();
+    const list = await get<{ handoffs: { seq: number; delivered: boolean; cancelled?: boolean }[] }>("/api/handoffs");
+    expect(list.handoffs[0]).toMatchObject({ seq: 1, delivered: true, cancelled: true });
+  });
+
+  it("still delivers a request no agent got before Glimpse restarted", async () => {
+    await createJob(2);
+    await srv.close();
+    srv = await startServer({ dir, port: 0 });
+    expect(await get("/api/variants")).toMatchObject({ jobs: [{ id: "v1", ready: [] }] });
+    expect(await srv.nextHandoff(undefined, 1000)).toMatchObject({ kind: "variants", variants: { id: "v1" } });
+  });
+
+  it("applies a variant once, however many times it is chosen at once", async () => {
+    const job = await createJob(2);
+    const live = await listen();
+    for (const k of [1, 2]) for (let i = 0; i < 30; i++) await writeVariant(job.id, k, `css/f${i}.css`, `/* ${k} */`);
+    await live.waitFor((m) => m.type === "variants" && (m.job as VariantJob).ready.length === 2);
+    const res = await Promise.all([post("/api/variants/v1/choose", { k: 1 }), post("/api/variants/v1/choose", { k: 2 }), post("/api/variants/v1/discard")]);
+    // Whichever came first wins; the others are told it's busy instead of backing up for nothing or copying half a folder.
+    expect(res.map((r) => r.status).sort()).toEqual([200, 409, 409]);
+    const winner = res.findIndex((r) => r.status === 200);
+    const labels = (await get<{ snapshots: PublicSnapshot[] }>("/api/history")).snapshots.map((s) => s.label);
+    if (winner === 2) expect(labels).toEqual(["Opened in Glimpse"]);
+    else {
+      expect(labels).toEqual(["Opened in Glimpse", `Used variant ${winner + 1} of button "Hi"`]);
+      for (let i = 0; i < 30; i++) expect(await readFile(join(dir, "css", `f${i}.css`), "utf8")).toBe(`/* ${winner + 1} */`);
+    }
+    live.close();
+  });
+
+  it("never copies a variant into git, Glimpse's state or through a symlink", async () => {
+    const job = await createJob(2);
+    await writeVariant(job.id, 1, ".Git/config", "[core]\n\tfsmonitor = evil");
+    await writeVariant(job.id, 1, ".GLIMPSE/history/snapshots.json", "[]");
+    await writeVariant(job.id, 1, "index.html", "<p>variant</p>");
+    let outside: string | null = null;
+    if (process.platform !== "win32") {
+      outside = await mkdtemp(join(tmpdir(), "glimpse-outside-"));
+      await writeFile(join(outside, "theme.css"), "PRECIOUS");
+      await symlink(outside, join(dir, "shared"));
+      await writeVariant(job.id, 1, "shared/theme.css", "FROM VARIANT");
+    }
+    try {
+      const body = (await (await post("/api/variants/v1/choose", { k: 1 })).json()) as { files: string[]; skipped: string[] };
+      expect(body.files).toEqual(["index.html"]);
+      expect(body.skipped.sort()).toEqual([".GLIMPSE/history/snapshots.json", ".Git/config", ...(outside ? ["shared/theme.css"] : [])].sort());
+      expect(existsSync(join(dir, ".Git"))).toBe(false);
+      if (outside) expect(await readFile(join(outside, "theme.css"), "utf8")).toBe("PRECIOUS");
+    } finally {
+      if (outside) await rm(outside, { recursive: true, force: true });
+    }
   });
 });

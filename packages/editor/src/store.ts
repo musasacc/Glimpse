@@ -25,6 +25,8 @@ export interface HandoffSummary {
   title: string;
   count: number;
   delivered: boolean;
+  /** Withdrawn before an agent got it (its variants were chosen or discarded). */
+  cancelled?: boolean;
   /** A screenshot of the edited page went with it (newer servers). */
   screenshot?: boolean;
 }
@@ -93,6 +95,13 @@ class Store {
   log: OpLog | null = null;
   private listeners = new Set<() => void>();
   private activitySeq = 0;
+  /** Unsent edits taken off the page for a live morph (see beforeMorph), until they are replayed. */
+  private parked: readonly { ops: Op[] }[] | null = null;
+  /** While Edit source writes the files, replayed edits that are already in them can't apply; that's expected. */
+  private writing = 0;
+  private morphedWhileWriting = false;
+  /** Edit source wrote the files and the page becomes the new base once their morph has come through. */
+  private commitTimer: ReturnType<typeof setTimeout> | undefined;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -113,7 +122,7 @@ class Store {
   }
 
   get pendingCount(): number {
-    return this.log ? buildChangeList(this.log).changes.length : 0;
+    return this.log && this.commitTimer === undefined ? buildChangeList(this.log).changes.length : 0;
   }
 
   /**
@@ -121,9 +130,28 @@ class Store {
    * reloaded because the AI saved a file), replay them on top of the new page.
    */
   attach(doc: Document): void {
-    const pending = this.log?.entries ?? [];
+    const pending = this.unsent();
     this.bridge = new DomBridge(doc);
     this.rebase(pending);
+    if (this.commitTimer !== undefined) this.finishWrite();
+  }
+
+  /**
+   * The AI saved the page and the live client is about to morph it into the new
+   * source. The morph pairs elements by position, so the human's edits come off
+   * the page first: otherwise a group's new box is morphed into a sibling, the
+   * elements after it shift, and replayed edits land on the wrong ones.
+   */
+  beforeMorph(): void {
+    // Edit source's own write: the page already shows what was written (deletes, moves in the
+    // tree…), so it is morphed as it is and only the rest is replayed.
+    if (!this.log || this.parked || this.writing) return;
+    this.parked = [...this.log.entries];
+    try {
+      while (this.log.undo());
+    } catch {
+      // The page's own scripts took something away; what's left on stays on, as before.
+    }
   }
 
   /**
@@ -132,14 +160,57 @@ class Store {
    */
   pageChanged(): void {
     if (!this.bridge) return;
-    this.rebase(this.log?.entries ?? []);
+    if (this.writing) this.morphedWhileWriting = true;
+    this.rebase(this.unsent());
+    if (this.commitTimer !== undefined) this.finishWrite();
   }
 
   /** After a handoff, the current page (with the human's edits) becomes the new base. */
   commitHandoff(): void {
     if (!this.bridge) return;
+    if (this.parked) this.rebase(this.unsent());
     this.log = this.newLog();
     this.set({ stale: false });
+  }
+
+  /**
+   * Run Edit source's write, then make the page the new base (the files have
+   * the edits now; they must never be written twice). Rebases meanwhile replay
+   * edits the new source already has, so those not applying isn't a loss. The
+   * write morphs the page; when that hasn't come through yet, the commit waits
+   * for it (briefly), so the edits that went to the AI instead are replayed
+   * through the morph rather than wiped by it.
+   */
+  async writingSource<T>(write: () => Promise<T>): Promise<T> {
+    this.writing++;
+    this.morphedWhileWriting = false;
+    try {
+      const result = await write();
+      if (this.morphedWhileWriting) this.commitHandoff();
+      else {
+        this.writing++;
+        this.commitTimer = setTimeout(() => this.finishWrite(), 1500);
+        this.set({});
+      }
+      return result;
+    } finally {
+      this.writing--;
+    }
+  }
+
+  private finishWrite(): void {
+    if (this.commitTimer === undefined) return;
+    clearTimeout(this.commitTimer);
+    this.commitTimer = undefined;
+    this.writing--;
+    this.commitHandoff();
+  }
+
+  /** The unsent edits, wherever they are right now. */
+  private unsent(): readonly { ops: Op[] }[] {
+    const entries = this.parked ?? this.log?.entries ?? [];
+    this.parked = null;
+    return entries;
   }
 
   private rebase(entries: readonly { ops: Op[] }[]): void {
@@ -152,13 +223,14 @@ class Store {
         dropped++;
       }
     }
-    if (dropped) this.activity("warn", `${dropped} of your edits no longer match the page after the AI's change and were dropped`);
-    this.set({ ...this.existingSelection(), hovered: null, stale: dropped > 0 });
+    const lost = dropped > 0 && this.writing === 0;
+    if (lost) this.activity("warn", `${dropped} of your edits no longer match the page after the AI's change and were dropped`);
+    this.set({ ...this.existingSelection(), hovered: null, stale: lost });
   }
 
   private newLog(): OpLog {
     const bridge = this.bridge!;
-    return new OpLog(bridge.buildScene(), (scene, op) => bridge.apply(scene, op));
+    return new OpLog(bridge.buildScene(), (scene, op, undo) => bridge.apply(scene, op, undo));
   }
 
   edit(...ops: Op[]): void {
@@ -168,11 +240,20 @@ class Store {
   }
 
   undo(): void {
-    if (this.log?.undo()) this.set(this.existingSelection());
+    this.step(() => this.log?.undo() ?? false, "undo");
   }
 
   redo(): void {
-    if (this.log?.redo()) this.set(this.existingSelection());
+    this.step(() => this.log?.redo() ?? false, "redo");
+  }
+
+  /** Undo or redo one step; it is all or nothing, so a failure leaves the step where it was. */
+  private step(run: () => boolean, what: string): void {
+    try {
+      if (run()) this.set(this.existingSelection());
+    } catch {
+      this.activity("warn", `Couldn't ${what} that step: the page changed under it (its own scripts may have removed an element).`);
+    }
   }
 
   /** The selected elements that are on the page (never the root), primary included. */
@@ -237,7 +318,13 @@ class Store {
    * the page from source. `attach` then starts a fresh log with nothing to replay.
    */
   discard(): void {
+    if (this.commitTimer !== undefined) {
+      clearTimeout(this.commitTimer);
+      this.commitTimer = undefined;
+      this.writing--;
+    }
     this.log = null;
+    this.parked = null;
     this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
 
@@ -291,7 +378,7 @@ class Store {
   }
 
   changeList(note?: string): ChangeList | null {
-    return this.log ? buildChangeList(this.log, note) : null;
+    return this.log && this.commitTimer === undefined ? buildChangeList(this.log, note) : null;
   }
 
   activity(kind: ActivityItem["kind"], text: string): void {

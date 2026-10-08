@@ -569,6 +569,35 @@ code {
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
+  container: toolbar / inline-size;
+  /* Last resort on very narrow windows: scroll rather than squeeze controls to nothing. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
+}
+/* Controls keep their size; on narrower windows the labels give way to icons (each keeps its tooltip). */
+.toolbar > * {
+  flex: none;
+}
+.toolbar > .spacer {
+  flex: 1 1 0;
+}
+@container toolbar (max-width: 1060px) {
+  .toolbar .tb-label {
+    display: none;
+  }
+}
+@container toolbar (max-width: 880px) {
+  .toolbar .tb-label-md {
+    display: none;
+  }
+}
+@container toolbar (max-width: 700px) {
+  .toolbar .tb-label-sm {
+    display: none;
+  }
 }
 .no-sidebar .toolbar {
   padding-left: 48px;

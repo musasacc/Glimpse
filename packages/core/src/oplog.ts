@@ -7,8 +7,12 @@ export interface LogEntry {
   at: number;
 }
 
-/** Applies one op to a scene. The editor swaps this to also update the live DOM. */
-export type Applier = (scene: Scene, op: Op) => void;
+/**
+ * Applies one op to a scene. The editor swaps this to also update the live DOM.
+ * `undo` is set when the op is the inverse of one applied earlier (undo, or a
+ * rollback), so the DOM can put things back exactly where they were.
+ */
+export type Applier = (scene: Scene, op: Op, undo: boolean) => void;
 
 /**
  * Append-only history of human edits on top of a base scene, with undo/redo.
@@ -55,34 +59,41 @@ export class OpLog {
    */
   apply(...ops: Op[]): void {
     if (ops.length === 0) return;
-    let i = 0;
-    try {
-      for (; i < ops.length; i++) this.applier(this.current, ops[i]!);
-    } catch (err) {
-      while (i-- > 0) this.applier(this.current, invertOp(ops[i]!));
-      throw err;
-    }
+    this.run(ops, false);
     this.done.push({ ops, at: Date.now() });
     this.undone = [];
     this.emit();
   }
 
+  /** Undo the last step. All or nothing too: if an inverse fails, the step stays done (and the error is thrown). */
   undo(): boolean {
-    const entry = this.done.pop();
+    const entry = this.done.at(-1);
     if (!entry) return false;
-    for (const op of [...entry.ops].reverse()) this.applier(this.current, invertOp(op));
-    this.undone.push(entry);
+    this.run(entry.ops, true);
+    this.undone.push(this.done.pop()!);
     this.emit();
     return true;
   }
 
   redo(): boolean {
-    const entry = this.undone.pop();
+    const entry = this.undone.at(-1);
     if (!entry) return false;
-    for (const op of entry.ops) this.applier(this.current, op);
-    this.done.push(entry);
+    this.run(entry.ops, false);
+    this.done.push(this.undone.pop()!);
     this.emit();
     return true;
+  }
+
+  /** Apply `ops` (or, `backwards`, their inverses in reverse order), rolling back the ones before a failure. */
+  private run(ops: Op[], backwards: boolean): void {
+    const steps = backwards ? [...ops].reverse().map(invertOp) : ops;
+    let i = 0;
+    try {
+      for (; i < steps.length; i++) this.applier(this.current, steps[i]!, backwards);
+    } catch (err) {
+      while (i-- > 0) this.applier(this.current, invertOp(steps[i]!), !backwards);
+      throw err;
+    }
   }
 
   /** Drop all edits and return to the base scene. */

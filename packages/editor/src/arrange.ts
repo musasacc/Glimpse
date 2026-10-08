@@ -131,9 +131,13 @@ export function groupSelection(): void {
   store.select(group.id);
 }
 
-/** A box that can be ungrouped: it has children and isn't the page itself. */
+/**
+ * A box that can be ungrouped: it has children, isn't the page itself, and has
+ * no text of its own. That text would vanish from the page with the box, while
+ * the handoff tells the agent to keep everything but the tags.
+ */
 export function canUngroup(n: SceneNode | undefined): boolean {
-  return !!n && n.parent !== null && n.children.length > 0 && (n.type === "box" || n.type === "card");
+  return !!n && n.parent !== null && n.children.length > 0 && (n.type === "box" || n.type === "card") && !n.props.text?.trim();
 }
 
 /** Replace the selected box by its children (MOD+Shift+G) and select them. */
@@ -141,7 +145,11 @@ export function ungroupSelection(): void {
   const scene = store.scene;
   const id = store.state.selected;
   const n = id ? scene?.nodes[id] : undefined;
-  if (!scene || !n || !canUngroup(n)) return;
+  if (!scene || !n) return;
+  if (!canUngroup(n)) {
+    if (n.props.text?.trim() && n.children.length > 0) store.activity("warn", "This box has text of its own, which ungrouping would drop. Ask the AI instead.");
+    return;
+  }
   const children = [...n.children];
   store.edit(...ungroupOps(scene, n.id));
   store.selectMany(children);

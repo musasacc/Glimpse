@@ -39,7 +39,7 @@ export function LoopToolbar() {
       </button>
       {round && (
         <button className="btn" title={`Before/after the AI's last round: “${round.before.label}” vs. now`} onClick={() => loop.compare(round.before.id, null)}>
-          <L.Split size={14} /> Compare
+          <L.Split size={14} /> <span className="tb-label">Compare</span>
         </button>
       )}
     </>

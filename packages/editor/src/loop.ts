@@ -125,12 +125,19 @@ class Loop {
   }
 
   compare(before: string, after: string | null = null): void {
+    this.leaveLivePage();
     const cur = this.state.view;
     this.set({ view: { kind: "compare", before, after, back: cur.kind === "compare" ? cur.back : cur } });
   }
 
   showVariants(job: string): void {
+    this.leaveLivePage();
     this.set({ view: { kind: "variants", job } });
+  }
+
+  /** The Inspector would otherwise keep editing the hidden live page, unseen. */
+  private leaveLivePage(): void {
+    if (store.state.selected || store.state.hovered || store.state.multi.length) store.set({ selected: null, hovered: null });
   }
 
   backToLive(): void {
@@ -182,10 +189,14 @@ class Loop {
     const s = this.snapshot(id);
     this.restoring = true;
     try {
-      // `backup` may be an older snapshot when nothing changed since it (then no new one is made).
-      const res = await api<{ restored: PublicSnapshot; backup?: PublicSnapshot }>(`/api/history/${enc(id)}/restore`, {});
-      if (res.backup) this.onSnapshot(res.backup);
-      store.activity("info", `Restored “${s?.label ?? id}”.${res.backup ? ` The files before it are saved as “${res.backup.label}”.` : ""}`);
+      // `backup` is the files as they were (usually a version saved already), `snapshot` the restored state.
+      const res = await api<{ restored: PublicSnapshot; backup?: PublicSnapshot; snapshot?: PublicSnapshot; skipped?: string[] }>(
+        `/api/history/${enc(id)}/restore`,
+        {},
+      );
+      for (const x of [res.backup, res.snapshot]) if (x) this.onSnapshot(x);
+      store.activity("info", `Restored “${s?.label ?? id}”.${res.backup ? ` The files before it are kept as “${res.backup.label}”.` : ""}`);
+      if (res.skipped?.length) store.activity("warn", leftAlone(res.skipped));
       this.set({ view: { kind: "live" }, confirmRestore: null });
     } finally {
       // The server reloads the preview right after; let that settle before capturing it again.
@@ -221,6 +232,7 @@ class Loop {
   private async captureThumb(s: PublicSnapshot, fromLive = true): Promise<void> {
     if (this.capturing.has(s.id) || this.snapshot(s.id)?.thumb) return;
     this.capturing.add(s.id);
+    let outdated = false;
     try {
       const doc = store.bridge?.doc;
       await sleep(600);
@@ -242,6 +254,8 @@ class Loop {
         (liveMatches ? await capturePreview(doc, opts) : null) ??
         (await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts));
       if (!dataUrl || !this.snapshot(s.id)) return;
+      // An AI round that grew while we captured needs a new picture.
+      if (this.snapshot(s.id)!.at !== s.at) return void (outdated = true);
       const res = await fetch(`/api/history/${enc(s.id)}/thumb`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -257,6 +271,8 @@ class Loop {
     } finally {
       this.capturing.delete(s.id);
     }
+    const now = this.snapshot(s.id);
+    if (outdated && now) void this.captureThumb(now, fromLive);
   }
 
   // ── Variants ─────────────────────────────────────────
@@ -285,10 +301,11 @@ class Loop {
   /** Copy variant k into the project and go back to the (now updated) live page. */
   async choose(id: string, k: number): Promise<void> {
     const job = this.state.jobs.find((j) => j.id === id);
-    const res = await api<{ files?: string[]; backup?: PublicSnapshot }>(`/api/variants/${enc(id)}/choose`, { k });
-    if (res.backup) this.onSnapshot(res.backup);
+    const res = await api<{ files?: string[]; skipped?: string[]; backup?: PublicSnapshot; snapshot?: PublicSnapshot }>(`/api/variants/${enc(id)}/choose`, { k });
+    for (const x of [res.backup, res.snapshot]) if (x) this.onSnapshot(x);
     const files = res.files ?? [];
     store.activity("info", `Used variant ${k} of ${job?.label ?? "the element"}${files.length ? `: wrote \`${files.join("`, `")}\`` : ""}`);
+    if (res.skipped?.length) store.activity("warn", leftAlone(res.skipped));
     this.removeJob(id);
     this.backToLive();
   }
@@ -335,12 +352,14 @@ class Loop {
         break;
       case "snapshot-updated": {
         // A thumbnail arrived (maybe from another editor tab): show it, past the image cache.
+        // Or the AI's round grew: its old thumbnail is gone, so take a new one.
         const s = msg.snapshot as PublicSnapshot;
         if (!s?.id || !this.snapshot(s.id)) break;
         this.set({
           snapshots: this.state.snapshots.map((x) => (x.id === s.id ? { ...x, ...s } : x)),
           thumbRev: { ...this.state.thumbRev, [s.id]: (this.state.thumbRev[s.id] ?? 0) + 1 },
         });
+        if (!s.thumb) void this.captureThumb(this.snapshot(s.id)!);
         break;
       }
       case "variants":
@@ -362,6 +381,11 @@ export const loop = new Loop();
 
 export function useLoop(): LoopState {
   return useSyncExternalStore(loop.subscribe, loop.getSnapshot);
+}
+
+/** Whether the live page is on screen (no version, comparison or variants over it). */
+export function useLoopLive(): boolean {
+  return useSyncExternalStore(loop.subscribe, () => loop.live);
 }
 
 /** Just the timeline toggle, so the whole editor doesn't re-render on every loop update. */
@@ -389,7 +413,8 @@ export function initLoop(): () => void {
  */
 export function handoffScreenshot(): Promise<string | null> {
   const doc = store.bridge?.doc;
-  const shot = capturePreview(doc, { maxWidth: 1280, atScroll: true }).then((png) => {
+  // One screen of a tall window is plenty, and keeps the PNG well under the server's 5 MB.
+  const shot = capturePreview(doc, { maxWidth: 1280, maxHeight: 1600, atScroll: true }).then((png) => {
     if (!png) return null;
     const regions = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
     const boxes = regions.flatMap((r, i): MarkBox[] => {
@@ -439,8 +464,8 @@ export const KIND_TITLE: Record<SnapshotKind, string> = {
   ai: "AI round",
   handoff: "Sent to AI",
   source: "Edit source",
-  restore: "Before restore",
-  variant: "Before variant",
+  restore: "Restore",
+  variant: "Variant",
   manual: "Saved by you",
 };
 
@@ -462,6 +487,13 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
   const data = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(data.error ?? (res.status === 404 ? UNSUPPORTED : res.statusText));
   return data;
+}
+
+/** Why a restore or variant didn't touch some files. */
+function leftAlone(paths: string[]): string {
+  const one = paths.length === 1;
+  const shown = paths.slice(0, 3).map((p) => `\`${p}\``).join(", ") + (paths.length > 3 ? ` and ${paths.length - 3} more` : "");
+  return `Left ${shown} as ${one ? "it is" : "they are"}: Glimpse has no backup of ${one ? "it" : "them"} (too big, past the file limit, a link, or its own folders), so it doesn't overwrite or delete ${one ? "it" : "them"}.`;
 }
 
 function bySeq(list: PublicSnapshot[]): PublicSnapshot[] {

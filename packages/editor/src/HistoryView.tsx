@@ -11,6 +11,7 @@ interface FullHandoff {
   createdAt: string;
   prompt: string;
   delivered: boolean;
+  cancelled?: boolean;
   /** Project-relative path of the PNG the editor sent along (newer servers). */
   screenshot?: string;
 }
@@ -66,7 +67,7 @@ export function HistoryView() {
                   </span>
                   <span className="title ellipsis">{h.title}</span>
                   <span className="meta">
-                    #{h.seq} · {ago(h.createdAt)} · {h.delivered ? "received" : "waiting for agent"}
+                    #{h.seq} · {ago(h.createdAt)} · {h.cancelled ? "withdrawn" : h.delivered ? "received" : "waiting for agent"}
                   </span>
                 </button>
               </li>
@@ -76,7 +77,8 @@ export function HistoryView() {
             {open ? (
               <>
                 <div className="meta">
-                  #{open.seq} · {new Date(open.createdAt).toLocaleString()} · {open.delivered ? "received by agent" : "queued"}
+                  #{open.seq} · {new Date(open.createdAt).toLocaleString()} ·{" "}
+                  {open.cancelled ? "withdrawn before an agent got it" : open.delivered ? "received by agent" : "queued"}
                   {open.screenshot && " · with screenshot"}
                 </div>
                 <pre>{open.prompt}</pre>

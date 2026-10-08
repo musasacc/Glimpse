@@ -75,27 +75,34 @@ snapshot) and deletes the job.
 
 ## Version history
 
-Glimpse snapshots the project's files (everything except `node_modules`, `.git`, `.glimpse` and `dist`; files over 5 MB
-are skipped, at most 2000 files) into `.glimpse/history/`: when it opens, after each AI round (once your saves have
-been quiet for 1.5 s), when the human sends something, after **Edit source**, and before Glimpse overwrites files
-(restore, variants). Identical states are stored once. You never need to do anything for this; it is what lets the
-human scrub through versions and undo a round.
+Glimpse snapshots the project's files into `.glimpse/history/`. It skips `node_modules`, `.git`, `.glimpse`, build
+output and caches (`dist`, `.next`, `.nuxt`, `.svelte-kit`, `.venv`, `venv`, `__pycache__`, `.yarn`, `.turbo`, `.cache`,
+`.parcel-cache`, `.pnpm-store`, `coverage`), OS and editor junk (`.DS_Store`, `Thumbs.db`, swap files), files over 5 MB,
+and anything past the first 2000 files (dot-folders are walked last).
+
+A snapshot is taken when Glimpse opens, for each AI round, after **Edit source**, and after Glimpse restores a version
+or uses a variant. An AI round is everything you save until you wait for the human again (`glimpse wait` /
+`glimpse_wait_for_done`): it appears once your saves have been quiet for 1.5 s and grows with your later saves (until you wait, or after a
+minute without saves), so one response to the human is one version. Identical states are stored once. You never need to do anything for this; it is
+what lets the human scrub through versions, compare your last round and undo it.
 
 ## HTTP API
 
-The editor talks to the server over these routes; agents normally only need `glimpse wait` / MCP.
+The editor talks to the server over these routes; agents normally only need `glimpse wait` / MCP. Requests from other
+web sites are refused (`Origin` / `Sec-Fetch-Site`), as are unknown `Host` names, and POST bodies must be
+`application/json`.
 
 | Route | Body → response |
 |---|---|
 | `GET /api/history` | → `{ snapshots: [{ id, seq, at, kind, label, fileCount, thumb }] }`, oldest first |
 | `POST /api/history/snapshot` | `{ label? }` → `{ snapshot, created }` |
-| `POST /api/history/<id>/restore` | → `{ restored, backup, written, deleted }` |
+| `POST /api/history/<id>/restore` | → `{ restored, backup, snapshot, written, deleted, skipped }`; `skipped`: files left alone because no version holds them |
 | `PUT /api/history/<id>/thumb` | `{ dataUrl: "data:image/png;base64,…" }` → `{ snapshot }`; `GET` returns the PNG |
 | `GET /snapshot/<id>/<path>` | A file as it was in that snapshot (default: the entry page) |
 | `GET /api/variants` | → `{ jobs: [{ id, src?, label, count, hint?, createdAt, ready, seq }] }` |
 | `POST /api/variants` | `{ label, count: 2–4, src?, hint? }` → `{ job, seq, delivered }`; queues a `variants` handoff |
 | `GET /api/variants/<id>` | → `{ job, files: { <k>: paths } }` |
-| `POST /api/variants/<id>/choose` | `{ k }` → `{ files, backup }` |
+| `POST /api/variants/<id>/choose` | `{ k }` → `{ files, skipped, backup, snapshot }` |
 | `POST /api/variants/<id>/discard` | → `{ ok }` |
 | `GET /variant/<id>/<k>/<path>` | Variant k overlaid on the project, instrumented like the preview |
 | `GET /api/handoffs/<seq>/screenshot` | The handoff's PNG |

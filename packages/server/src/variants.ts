@@ -1,5 +1,6 @@
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { writeFileAtomic } from "./history.js";
 
 /** A "show me N versions of this element" request: the agent writes candidates, the human picks one. */
 export interface VariantJob {
@@ -46,6 +47,10 @@ export class Variants {
     }
     // The agent may have written variants while Glimpse wasn't running.
     for (const job of this.jobs) await this.refreshReady(job.id);
+    // Folders of jobs that were chosen or discarded: what an agent wrote there late, or what Windows wouldn't let go of.
+    for (const name of await readdir(this.root).catch(() => [] as string[])) {
+      if (/^v\d+$/.test(name) && Number(name.slice(1)) < this.next && !this.get(name)) await this.removeFolder(name);
+    }
   }
 
   list(): VariantJob[] {
@@ -97,10 +102,22 @@ export class Variants {
       if (i < 0) return false;
       this.jobs.splice(i, 1);
       await this.save();
-      // Retries: on Windows the file watcher can briefly hold the folder open.
-      await rm(join(this.root, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      await this.removeFolder(id);
       return true;
     });
+  }
+
+  /**
+   * Best effort: the job is gone either way. On Windows the watcher can briefly hold the folder
+   * open (hence the retries), and a shell whose working directory is inside it holds it for good;
+   * load() tries again next time.
+   */
+  private async removeFolder(id: string): Promise<void> {
+    try {
+      await rm(join(this.root, id), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (err) {
+      console.warn(`glimpse: couldn't delete ${join(this.root, id)} (${err instanceof Error ? err.message : String(err)})`);
+    }
   }
 
   /** Folder of variant k of job `id`. */
@@ -127,7 +144,7 @@ export class Variants {
 
   private async save(): Promise<void> {
     await mkdir(this.root, { recursive: true });
-    await writeFile(join(this.root, "jobs.json"), JSON.stringify({ next: this.next, jobs: this.jobs }, null, 2));
+    await writeFileAtomic(join(this.root, "jobs.json"), JSON.stringify({ next: this.next, jobs: this.jobs }, null, 2));
   }
 
   /** Resolves once every queued operation has finished. */
