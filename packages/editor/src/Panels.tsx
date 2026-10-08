@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { NodeType, Op, SceneNode } from "@glimpse/core";
+import { canUngroup, ungroupSelection } from "./arrange";
+import { SelectionInspector } from "./EditTools";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { MOD } from "./platform";
@@ -24,9 +26,9 @@ export function Layers() {
       {rows.map(({ node, depth }) => (
         <div
           key={node.id}
-          className={`layer${state.selected === node.id ? " selected" : ""}`}
+          className={`layer${state.multi.includes(node.id) ? " selected" : ""}`}
           style={{ paddingLeft: 10 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
-          onClick={() => store.set({ selected: node.id })}
+          onClick={(e) => (e.shiftKey ? store.toggleSelect(node.id) : store.select(node.id))}
           onMouseEnter={() => store.set({ hovered: node.id })}
           onMouseLeave={() => store.set({ hovered: null })}
         >
@@ -56,6 +58,7 @@ const TYPES: NodeType[] = ["box", "text", "button", "link", "input", "image", "l
 export function Inspector({ openTalk }: { openTalk: () => void }) {
   const state = useStore();
   const node = state.selected ? store.scene?.nodes[state.selected] : undefined;
+  if (store.selection.length > 1) return <SelectionInspector />;
   if (!node) {
     return (
       <div className="section">
@@ -65,6 +68,9 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
           <br />
           <span className="kbd">T</span> talk to the AI about it · <span className="kbd">Del</span> delete ·{" "}
           <span className="kbd">{MOD}D</span> duplicate · <span className="kbd">{MOD}Z</span> undo · arrows nudge
+          <br />
+          Shift-click or drag on the background to select several · <span className="kbd">{MOD}G</span> group ·{" "}
+          <span className="kbd">R</span> or Alt-drag: draw a box and tell the AI what goes there
         </div>
       </div>
     );
@@ -130,6 +136,11 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
           >
             {node.locked ? "Unlock" : "Lock"}
           </button>
+          {canUngroup(node) && (
+            <button className="btn" title={`Replace this box by its children (${MOD}Shift+G)`} onClick={ungroupSelection}>
+              Ungroup
+            </button>
+          )}
           <button className="btn" style={{ color: "var(--danger)" }} onClick={() => store.deleteSelected()}>
             Delete
           </button>

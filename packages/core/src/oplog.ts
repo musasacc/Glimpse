@@ -49,9 +49,19 @@ export class OpLog {
     return this.undone.length > 0;
   }
 
+  /**
+   * Apply ops as one undo step. All or nothing: if an op fails (e.g. an edit
+   * replayed after the AI changed the page), the ones before it are rolled back.
+   */
   apply(...ops: Op[]): void {
     if (ops.length === 0) return;
-    for (const op of ops) this.applier(this.current, op);
+    let i = 0;
+    try {
+      for (; i < ops.length; i++) this.applier(this.current, ops[i]!);
+    } catch (err) {
+      while (i-- > 0) this.applier(this.current, invertOp(ops[i]!));
+      throw err;
+    }
     this.done.push({ ops, at: Date.now() });
     this.undone = [];
     this.emit();

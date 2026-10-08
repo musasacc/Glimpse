@@ -1,10 +1,13 @@
 import { useSyncExternalStore } from "react";
-import { buildChangeList, deleteOp, duplicateOp, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
 export const DEVICE_WIDTH: Record<Device, number | null> = { desktop: null, tablet: 820, mobile: 390 };
+
+/** Canvas tool: select and move elements, or draw a box prompt ("AI, put X here"). */
+export type Tool = "select" | "region";
 
 export interface ActivityItem {
   id: number;
@@ -33,8 +36,12 @@ export interface ProjectInfo {
 interface State {
   project: ProjectInfo | null;
   connected: boolean;
+  /** The primary selected element (Inspector, talk, resize handle). */
   selected: string | null;
+  /** Every selected element, the primary included. Setting only `selected` resets it to that one. */
+  multi: string[];
   hovered: string | null;
+  tool: Tool;
   device: Device;
   activity: ActivityItem[];
   view: View;
@@ -64,7 +71,9 @@ class Store {
     project: null,
     connected: false,
     selected: null,
+    multi: [],
     hovered: null,
+    tool: "select",
     device: "desktop",
     activity: [],
     view: "home",
@@ -91,6 +100,8 @@ class Store {
   getSnapshot = () => this.state;
 
   set(patch: Partial<State>): void {
+    // A plain single selection (most callers) replaces the multi-selection.
+    if ("selected" in patch && !("multi" in patch)) patch = { ...patch, multi: patch.selected ? [patch.selected] : [] };
     this.state = { ...this.state, ...patch, rev: this.state.rev + 1 };
     for (const fn of this.listeners) fn();
   }
@@ -140,8 +151,7 @@ class Store {
       }
     }
     if (dropped) this.activity("warn", `${dropped} of your edits no longer match the page after the AI's change and were dropped`);
-    const selected = this.state.selected && this.log.scene.nodes[this.state.selected] ? this.state.selected : null;
-    this.set({ selected, hovered: null, stale: dropped > 0 });
+    this.set({ ...this.existingSelection(), hovered: null, stale: dropped > 0 });
   }
 
   private newLog(): OpLog {
@@ -156,27 +166,77 @@ class Store {
   }
 
   undo(): void {
-    if (this.log?.undo()) this.set({});
+    if (this.log?.undo()) this.set(this.existingSelection());
   }
 
   redo(): void {
-    if (this.log?.redo()) this.set({});
+    if (this.log?.redo()) this.set(this.existingSelection());
   }
 
+  /** The selected elements that are on the page (never the root), primary included. */
+  get selection(): string[] {
+    const scene = this.scene;
+    if (!scene) return [];
+    return this.state.multi.filter((id) => id !== scene.rootId && scene.nodes[id]);
+  }
+
+  /** Select one element, or nothing. */
+  select(id: string | null): void {
+    this.set({ selected: id });
+  }
+
+  /** Shift+click: add an element to the selection (it becomes the primary) or take it out. */
+  toggleSelect(id: string): void {
+    const has = this.state.multi.includes(id);
+    const multi = has ? this.state.multi.filter((x) => x !== id) : [...this.state.multi, id];
+    const selected = !has ? id : this.state.selected !== id ? this.state.selected : (multi.at(-1) ?? null);
+    this.set({ selected, multi });
+  }
+
+  /** Select several elements; the first one is the primary. */
+  selectMany(ids: string[]): void {
+    const multi = [...new Set(ids)];
+    this.set({ selected: multi[0] ?? null, multi });
+  }
+
+  /** Forget selected elements that are gone (e.g. undoing the step that created them). */
+  private existingSelection(): Pick<State, "selected" | "multi"> {
+    const nodes = this.scene?.nodes ?? {};
+    const multi = this.state.multi.filter((id) => nodes[id]);
+    const selected = this.state.selected && nodes[this.state.selected] ? this.state.selected : (multi[0] ?? null);
+    return { selected, multi };
+  }
+
+  setTool(tool: Tool): void {
+    if (tool !== this.state.tool) this.set({ tool });
+  }
+
+  /** Delete every selected element as one undo step. */
   deleteSelected(): void {
-    const id = this.state.selected;
-    if (!id || !this.log || id === this.log.scene.rootId) return;
-    this.edit(deleteOp(this.log.scene, id));
+    if (!this.log) return;
+    const ops = deleteManyOps(this.log.scene, this.selection);
+    if (ops.length === 0) return;
+    this.edit(...ops);
     this.set({ selected: null });
   }
 
+  /** Duplicate every selected element (each copy right after its original) and select the copies. */
   duplicateSelected(): void {
-    const id = this.state.selected;
-    if (!id || !this.log || !this.bridge || id === this.log.scene.rootId) return;
+    if (!this.log || !this.bridge) return;
     const bridge = this.bridge;
-    const op = duplicateOp(this.log.scene, id, () => bridge.newId());
-    this.edit(op);
-    if (op.op === "add") this.set({ selected: op.nodes[0]!.id });
+    const ops = duplicateManyOps(this.log.scene, this.selection, () => bridge.newId());
+    if (ops.length === 0) return;
+    this.edit(...ops);
+    this.selectMany(ops.flatMap((op) => (op.op === "add" ? [op.nodes[0]!.id] : [])));
+  }
+
+  /**
+   * Drop every unsent edit (and the redo stack): forget the op log and reload
+   * the page from source. `attach` then starts a fresh log with nothing to replay.
+   */
+  discard(): void {
+    this.log = null;
+    this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
 
   /**

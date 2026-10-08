@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { describeChange, type ChangeList } from "@glimpse/core";
 import { Canvas, handleKey, type Mode } from "./Canvas";
 import { Activity, Inspector } from "./Panels";
+import { BoxPromptToggle, DiscardButton } from "./EditTools";
 import { Sidebar } from "./Sidebar";
 import { MOD } from "./platform";
 import { Home } from "./Home";
@@ -71,6 +72,7 @@ function Editor({ hidden }: { hidden: boolean }) {
             <I.Hand size={14} /> Interact
           </button>
         </div>
+        <BoxPromptToggle onEnable={() => setMode("edit")} />
         <div className="seg" role="group" aria-label="Device width">
           {DEVICES.map((d) => (
             <button key={d.id} className={state.device === d.id ? "active" : ""} onClick={() => store.set({ device: d.id })} title={d.label}>
@@ -89,6 +91,7 @@ function Editor({ hidden }: { hidden: boolean }) {
         <button className="icon-btn" title={`Redo (${MOD}Shift+Z)`} disabled={!store.log?.canRedo} onClick={() => store.redo()}>
           <I.Redo />
         </button>
+        <DiscardButton />
         <button
           className="btn"
           disabled={pending === 0}

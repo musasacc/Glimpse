@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  alignDeltas,
   buildChangeList,
   changeListToPrompt,
   createScene,
+  deleteManyOps,
   deleteOp,
+  describeChange,
+  distributeDeltas,
+  documentOrder,
+  duplicateManyOps,
   duplicateOp,
+  groupOps,
   OpLog,
+  topLevel,
+  ungroupOps,
   type Scene,
   type SceneNode,
 } from "./index.js";
@@ -191,5 +200,213 @@ describe("anchors", () => {
     expect(add.src).toBe(undefined); // nav has no source in the fixture
     const reorder = changes.find((c) => c.op === "reorder")!;
     expect(reorder.anchor).toEqual({ before: "index.html:10:5" });
+  });
+});
+
+describe("atomic steps", () => {
+  it("rolls back the whole step when one of its ops fails", () => {
+    const log = new OpLog(fixture());
+    expect(() =>
+      log.apply(
+        { op: "setText", node: "b1", from: "Button 1", to: "Changed" },
+        { op: "reorder", node: "b2", from: { parent: "nav", index: 1 }, to: { parent: "gone", index: 0 } },
+      ),
+    ).toThrow();
+    expect(log.scene.nodes.b1!.props.text).toBe("Button 1");
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    expect(log.scene.nodes.b2!.parent).toBe("nav");
+    expect(log.canUndo).toBe(false);
+  });
+
+  it("refuses to add a node whose id is taken", () => {
+    const log = new OpLog(fixture());
+    const copy = duplicateOp(log.scene, "b1", () => "b3");
+    expect(() => log.apply(copy)).toThrow(/already exists/);
+    expect(log.scene.nodes.b3!.props.text).toBe("Button 3");
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+  });
+});
+
+describe("box prompts (regions)", () => {
+  it("names and locates the element the box was drawn in", () => {
+    const log = new OpLog(fixture());
+    log.apply({ op: "region", id: "r1", parent: "b2", rect: { x: 4, y: 6, w: 50, h: 20 }, text: "put an icon here" });
+    const [c] = buildChangeList(log).changes;
+    expect(c).toMatchObject({ op: "region", label: 'button "Button 2"', src: "index.html:11:5" });
+    expect(describeChange(c!)).toBe('In the area 4,6 50×20 inside button "Button 2" (index.html:11:5): "put an icon here"');
+  });
+
+  it("calls the root the page, and drops boxes in deleted elements or undone ones", () => {
+    const log = new OpLog(fixture());
+    log.apply({ op: "region", id: "r1", parent: "root", rect: { x: 10, y: 80, w: 300, h: 120 }, text: "a hero image" });
+    log.apply({ op: "region", id: "r2", parent: "b3", rect: { x: 0, y: 0, w: 10, h: 10 }, text: "x" });
+    log.apply(deleteOp(log.scene, "b3"));
+    log.apply({ op: "region", id: "r3", parent: "b1", rect: { x: 0, y: 0, w: 10, h: 10 }, text: "undone" });
+    log.undo();
+    const notes = buildChangeList(log).changes.filter((c) => c.op === "region");
+    expect(notes.map((c) => describeChange(c))).toEqual(['In the area 10,80 300×120 inside the page: "a hero image"']);
+  });
+
+  it("names an element without text or id by its classes", () => {
+    const s = fixture();
+    s.nodes.nav!.props.class = "buttons main __glimpse-flash extra";
+    const log = new OpLog(s);
+    log.apply({ op: "region", id: "r1", parent: "nav", rect: { x: 0, y: 0, w: 40, h: 20 }, text: "a search field" });
+    expect(buildChangeList(log).changes[0]!.label).toBe("nav.buttons.main");
+  });
+});
+
+describe("align and distribute", () => {
+  const rects = [
+    { x: 10, y: 0, w: 50, h: 20 },
+    { x: 100, y: 30, w: 20, h: 40 },
+    { x: 40, y: 10, w: 30, h: 10 },
+  ];
+  const dx = (how: Parameters<typeof alignDeltas>[1]) => alignDeltas(rects, how).map((d) => d.dx);
+  const dy = (how: Parameters<typeof alignDeltas>[1]) => alignDeltas(rects, how).map((d) => d.dy);
+
+  it("lines rects up with the edges and center of their bounds", () => {
+    expect(dx("left")).toEqual([0, -90, -30]);
+    expect(dx("right")).toEqual([60, 0, 50]);
+    expect(dx("center")).toEqual([30, -45, 10]);
+    expect(dy("top")).toEqual([0, -30, -10]);
+    expect(dy("bottom")).toEqual([50, 0, 50]);
+    expect(dy("middle")).toEqual([25, -15, 20]);
+    expect(alignDeltas(rects, "left").every((d) => d.dy === 0)).toBe(true);
+  });
+
+  it("spaces rects evenly between the outer two", () => {
+    // By x: [10..60], [40..70], [100..120]: 10px of free space, so 5px gaps.
+    expect(distributeDeltas(rects, "x")).toEqual([
+      { dx: 0, dy: 0 },
+      { dx: 0, dy: 0 },
+      { dx: 25, dy: 0 },
+    ]);
+    // By y: [0..20], [10..20], [30..70]: no free space, so no gaps.
+    expect(distributeDeltas(rects, "y")).toEqual([
+      { dx: 0, dy: 0 },
+      { dx: 0, dy: 0 },
+      { dx: 0, dy: 10 },
+    ]);
+    expect(distributeDeltas(rects.slice(0, 2), "x")).toEqual([
+      { dx: 0, dy: 0 },
+      { dx: 0, dy: 0 },
+    ]);
+  });
+});
+
+describe("multi-selection", () => {
+  it("keeps only outermost nodes, in document order", () => {
+    const s = fixture();
+    expect(topLevel(s, ["b2", "nav", "root", "missing", "nav"])).toEqual(["nav"]);
+    expect(documentOrder(s, ["b3", "b1", "missing", "nav"])).toEqual(["nav", "b1", "b3"]);
+  });
+
+  it("deletes several elements as one undo step", () => {
+    const log = new OpLog(fixture());
+    const ops = deleteManyOps(log.scene, ["b3", "b1", "root"]);
+    expect(ops).toHaveLength(2);
+    log.apply(...ops);
+    expect(log.scene.nodes.nav!.children).toEqual(["b2"]);
+    log.undo();
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    expect(deleteManyOps(log.scene, ["nav", "b2"])).toHaveLength(1);
+  });
+
+  it("duplicates each element right after itself", () => {
+    const log = new OpLog(fixture());
+    let n = 0;
+    log.apply(...duplicateManyOps(log.scene, ["b3", "b1"], () => `c${++n}`));
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "c1", "b2", "b3", "c2"]);
+    log.undo();
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+  });
+});
+
+describe("group and ungroup", () => {
+  const box = (id: string): SceneNode => ({
+    id,
+    type: "box",
+    tag: "div",
+    parent: null,
+    children: [],
+    layout: { x: 140, y: 10, w: 220, h: 40 },
+    style: { display: "flex" },
+    props: {},
+  });
+
+  it("wraps siblings in a new box as one undo step", () => {
+    const log = new OpLog(fixture());
+    const ops = groupOps(log.scene, ["b3", "b2"], box("g1"));
+    expect(ops.map((o) => o.op)).toEqual(["add", "reorder", "reorder"]);
+    log.apply(...ops);
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "g1"]);
+    expect(log.scene.nodes.g1!.children).toEqual(["b2", "b3"]);
+    expect(log.scene.nodes.b3!.parent).toBe("g1");
+    log.undo();
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    expect(log.scene.nodes.g1).toBeUndefined();
+    log.redo();
+    expect(log.scene.nodes.g1!.children).toEqual(["b2", "b3"]);
+  });
+
+  it("only groups elements that share a parent", () => {
+    expect(groupOps(fixture(), ["nav", "b1"], box("g1"))).toEqual([]);
+    expect(groupOps(fixture(), ["root"], box("g1"))).toEqual([]);
+    expect(groupOps(fixture(), ["b1"], box("b2"))).toEqual([]); // id already taken
+  });
+
+  it("reports a group as a new box that wraps the existing elements", () => {
+    const log = new OpLog(fixture());
+    log.apply(...groupOps(log.scene, ["b1", "b2"], box("g1")));
+    const changes = buildChangeList(log).changes;
+    expect(changes.map((c) => c.op)).toEqual(["add", "reorder", "reorder"]);
+    const add = changes[0]!;
+    if (add.op !== "add") throw new Error();
+    expect(add.nodes.map((n) => n.id)).toEqual(["g1"]); // the wrapped buttons are not new
+    expect(add.intent).toContain('wraps button "Button 1" and button "Button 2"');
+    const reorder = changes[1]!;
+    expect(reorder).toMatchObject({ op: "reorder", node: "b1", to: { parent: "g1", index: 0 } });
+    expect(reorder.anchor).toBeUndefined();
+    expect(describeChange(add)).toContain("Add box<div> g1 with style {display: flex}");
+  });
+
+  it("ungroups a box into its parent, at its position", () => {
+    const s = fixture();
+    s.nodes.nav!.source = { file: "index.html", line: 9, col: 5 };
+    const log = new OpLog(s);
+    const ops = ungroupOps(log.scene, "nav");
+    expect(ops.map((o) => o.op)).toEqual(["reorder", "reorder", "reorder", "delete"]);
+    log.apply(...ops);
+    expect(log.scene.nodes.root!.children).toEqual(["b1", "b2", "b3"]);
+    expect(log.scene.nodes.nav).toBeUndefined();
+    expect(log.scene.nodes.b2!.parent).toBe("root");
+
+    const changes = buildChangeList(log).changes;
+    const del = changes.find((c) => c.op === "delete")!;
+    if (del.op !== "delete") throw new Error();
+    expect(del.nodes.map((n) => n.id)).toEqual(["nav"]); // the buttons survive
+    expect(describeChange(del)).toBe(
+      'Delete nav nav — unwrap: remove only its tags at index.html:9:5 and keep its children button "Button 1", button "Button 2" and button "Button 3" in its place.',
+    );
+    // Not located or anchored: the source patcher must not delete the nav's range
+    // (children included) or move children on its own; the AI does the unwrap.
+    expect(del.src).toBeUndefined();
+    const reorders = changes.filter((c) => c.op === "reorder");
+    expect(reorders).toHaveLength(3);
+    expect(reorders.every((c) => c.anchor === undefined && c.src !== undefined)).toBe(true);
+
+    log.undo();
+    expect(log.scene.nodes.root!.children).toEqual(["nav"]);
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    expect(ungroupOps(log.scene, "b1")).toEqual([]);
+  });
+
+  it("cancels out when a group is ungrouped again", () => {
+    const log = new OpLog(fixture());
+    log.apply(...groupOps(log.scene, ["b1", "b2"], box("g1")));
+    log.apply(...ungroupOps(log.scene, "g1"));
+    expect(log.scene.nodes.nav!.children).toEqual(["b1", "b2", "b3"]);
+    expect(buildChangeList(log).changes).toEqual([]);
   });
 });

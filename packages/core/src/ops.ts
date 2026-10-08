@@ -55,11 +55,15 @@ export function applyOp(scene: Scene, op: Op): void {
       return;
     case "reorder": {
       const n = getNode(scene, op.node);
+      getNode(scene, op.to.parent); // fail before detaching, so a bad op changes nothing
       detach(scene, n);
       attach(scene, n, op.to.parent, op.to.index);
       return;
     }
     case "add": {
+      getNode(scene, op.parent); // fail before inserting, so a bad op changes nothing
+      // An id that is already taken (e.g. a replayed edit after the page gained elements) would overwrite a node.
+      for (const n of op.nodes) if (scene.nodes[n.id]) throw new Error(`Node already exists: ${n.id}`);
       for (const n of op.nodes) scene.nodes[n.id] = structuredClone(n);
       const top = scene.nodes[op.nodes[0]!.id]!;
       top.parent = op.parent;

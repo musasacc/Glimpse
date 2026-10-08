@@ -1,4 +1,4 @@
-import { applyOp, createScene, type SourceLocation, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { applyOp, createScene, invertOp, type SourceLocation, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 
 /**
  * Bridge between the live preview DOM (same-origin iframe) and the Glimpse scene.
@@ -98,12 +98,28 @@ export class DomBridge {
     return undefined;
   }
 
-  /** Apply an op to the live DOM and to the scene. Used as the OpLog applier. */
-  apply(scene: Scene, op: Op): void {
-    this.applyDom(scene, op);
-    applyOp(scene, op);
+  /** The element's box in the page's viewport, or null when it is not on the page. */
+  rect(id: string): DOMRect | null {
+    const el = this.els.get(id);
+    return el?.isConnected ? el.getBoundingClientRect() : null;
   }
 
+  /**
+   * Apply an op to the scene and the live DOM. Used as the OpLog applier. The
+   * scene goes first because it rejects ops that don't fit (e.g. replayed after
+   * the AI changed the page) before the DOM is touched.
+   */
+  apply(scene: Scene, op: Op): void {
+    applyOp(scene, op);
+    try {
+      this.applyDom(scene, op);
+    } catch (err) {
+      applyOp(scene, invertOp(op));
+      throw err;
+    }
+  }
+
+  /** Mirror an op in the DOM. `scene` already has the op applied. */
   private applyDom(scene: Scene, op: Op): void {
     switch (op.op) {
       case "move": {
@@ -146,8 +162,12 @@ export class DomBridge {
       }
       case "add": {
         const top = op.nodes[0]!;
+        // Undoing a delete (or an ungroup) brings back the original element, with
+        // its text and anything Glimpse doesn't track inside it.
         const el = this.els.get(top.id) ?? this.create(op.nodes, top.id);
-        this.insertAt(el, scene, op.parent, op.index, null);
+        this.insertAt(el, scene, op.parent, op.index, top.id);
+        // Later moves of new elements are translates relative to where they were added.
+        for (const n of op.nodes) if (!this.origins.has(n.id)) this.origins.set(n.id, { x: n.layout.x, y: n.layout.y });
         return;
       }
       case "delete":
@@ -170,8 +190,12 @@ export class DomBridge {
     return el;
   }
 
-  /** Insert `el` so it becomes child number `index` of scene node `parentId`. */
-  private insertAt(el: Element, scene: Scene, parentId: string, index: number, movingId: string | null): void {
+  /**
+   * Insert `el` (scene node `movingId`) so it becomes child number `index` of
+   * scene node `parentId`. Its neighbours are its siblings other than itself, so
+   * this works whether or not the scene already has it at its new place.
+   */
+  private insertAt(el: Element, scene: Scene, parentId: string, index: number, movingId: string): void {
     const siblings = scene.nodes[parentId]!.children.filter((c) => c !== movingId);
     const before = siblings[index] ? (this.els.get(siblings[index]!) ?? null) : null;
     this.els.get(parentId)!.insertBefore(el, before);
