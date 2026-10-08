@@ -161,6 +161,14 @@ Prefer idiomatic layout changes (flex/grid order, spacing, alignment) over hard-
 | TUI (terminal UIs) | ✅ Editable mock + the real app in a terminal | The agent describes the layout in [`glimpse.scene.json`](docs/scene-schema.md) (Textual, Ink, Ratatui, Bubble Tea, …); Glimpse renders it as an editable character-cell grid, with the real app running in a terminal next to it (`glimpse open --run "python app.py"`, or **Run** in the editor) that restarts when the code changes. Edits are written back into the scene file and handed to the AI for the code. Example: [`examples/tui-todo`](examples/tui-todo) |
 | Native GUI (Qt, Tk, …) | ✅ Editable widget mock | Same scene file, rendered as themed widgets in pixels; the real app runs in its own window on demand, its output in Glimpse's log. Example: [`examples/native-settings`](examples/native-settings) |
 
+<p align="center">
+  <img src="docs/screenshot-tui.png" alt="A Textual terminal UI in Glimpse: the editable mock on a cell grid above, the real app running in a terminal below" width="900" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshot-native.png" alt="A Tkinter settings window in Glimpse, drawn in the macOS look (Windows and GNOME looks are one click away)" width="900" />
+</p>
+
 Under the hood, every target becomes the same **Glimpse Scene** (a tree of elements with layout, style and source
 locations). The editor, the edit operations and the AI handoff are written once for all of them.
 
@@ -172,7 +180,8 @@ packages/
   server/   Local server: live preview (instrumented with source locations), file watching, handoffs, version history,
             variants, Edit source patcher, scene files, the terminal that runs TUI apps
   react/    React/Vite engine: JSX source locations, the Vite plugin, the preview on the project's own Vite, JSX patcher
-  editor/   The black React editor: home, editor, history, compare, variants
+  editor/   The black React editor: home, editor, history, compare, variants, and the scene canvas for terminal UIs
+            and native GUIs (cell-grid and themed-widget renderers, the xterm.js terminal pane)
   mcp/      MCP server (stdio)
   cli/      The `glimpse` command (npm: glimpse-ui): one bundle with the editor inside
 apps/

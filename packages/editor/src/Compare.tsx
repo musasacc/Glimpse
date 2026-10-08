@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import * as L from "./loop-icons";
 import { enc, loop, readOnly, useLoop } from "./loop";
-import { DEVICE_WIDTH, useStore } from "./store";
+import { SceneCompareLayers } from "./SceneVersions";
+import { DEVICE_WIDTH, store, useStore } from "./store";
 import "./loop.css";
 
 /**
@@ -76,14 +77,21 @@ export function Compare({ before, after }: { before: string; after: string | nul
         </button>
       </div>
       <div className="frame cmp" ref={stage} style={{ width: width ? `${width}px` : "100%" }}>
-        <iframe ref={below} src={`/snapshot/${enc(before)}/`} title={`Before: ${b.label}`} onLoad={() => link(below, above)} />
-        <iframe
-          ref={above}
-          src={a ? `/snapshot/${enc(a.id)}/` : "/preview/"}
-          title={`After: ${afterLabel}`}
-          style={{ clipPath: `inset(0 0 0 ${pos}%)` }}
-          onLoad={() => link(above, below)}
-        />
+        {/* A terminal UI or native GUI: both sides are scene files, drawn like the canvas. */}
+        {store.sceneSurface ? (
+          <SceneCompareLayers before={before} after={a ? a.id : null} pos={pos} />
+        ) : (
+          <>
+            <iframe ref={below} src={`/snapshot/${enc(before)}/`} title={`Before: ${b.label}`} onLoad={() => link(below, above)} />
+            <iframe
+              ref={above}
+              src={a ? `/snapshot/${enc(a.id)}/` : "/preview/"}
+              title={`After: ${afterLabel}`}
+              style={{ clipPath: `inset(0 0 0 ${pos}%)` }}
+              onLoad={() => link(above, below)}
+            />
+          </>
+        )}
         <span className="cmp-label before" style={{ opacity: pos < 12 ? 0 : 1 }}>
           Before · {b.label}
         </span>

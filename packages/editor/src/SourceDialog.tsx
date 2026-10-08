@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
 import { handoffScreenshot } from "./loop";
+import { sceneMode } from "./scene-mode";
 import { store } from "./store";
 
 interface Preview {
@@ -22,11 +23,15 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const [sendRest, setSendRest] = useState(true);
 
   useEffect(() => {
-    fetch("/api/patch/preview", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ changeList: list }),
-    })
+    // A scene mock sends the edited scene along: Glimpse writes it into the scene file.
+    sceneMode
+      .writes(
+        fetch("/api/patch/preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ changeList: list, ...sceneMode.body() }),
+        }),
+      )
       .then(async (r) => {
         const body = await r.json();
         if (!r.ok) throw new Error(body.error ?? r.statusText);
@@ -45,22 +50,26 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
       const screenshot = toAi ? await handoffScreenshot() : null;
       let written = 0;
       if (preview.files.length > 0) {
-        const res = await fetch("/api/patch/apply", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ changeList: list }),
-        });
+        const res = await sceneMode.writes(
+          fetch("/api/patch/apply", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ changeList: list, ...sceneMode.body() }),
+          }),
+        );
         const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
         if (!res.ok) throw new Error(body.error ?? res.statusText);
         written = body.applied ?? 0;
-        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
+        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\`${body.backup ? ` (backup in \`${body.backup}\`)` : ""}`);
       }
       if (toAi) {
-        const res = await fetch("/api/handoff", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}) }),
-        });
+        const res = await sceneMode.writes(
+          fetch("/api/handoff", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}), ...sceneMode.body() }),
+          }),
+        );
         if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
       }
       store.commitHandoff();
@@ -88,7 +97,11 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
           {preview && preview.needsAi.length > 0 && (
             <div className="needs-ai">
               <h3>Needs AI ({preview.needsAi.length})</h3>
-              <p className="hint">Moves, resizes, behaviors and notes need judgement about the code, so your agent does them.</p>
+              <p className="hint">
+                {sceneMode.state.active
+                  ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: your agent does that.`
+                  : "Moves, resizes, behaviors and notes need judgement about the code, so your agent does them."}
+              </p>
               <ol className="changes">
                 {preview.needsAi.map((c, i) => (
                   <li key={i}>

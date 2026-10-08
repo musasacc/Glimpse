@@ -111,9 +111,12 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     if (!f) continue;
     const { x: bx, y: by, w: bw, h: bh } = b.layout;
     const { x: fx, y: fy, w: fw, h: fh } = f.layout;
+    // A mock (terminal UI, native GUI) places nodes by their layout. One that changed parent (group,
+    // ungroup) but kept its place on screen only has new coordinates relative to that parent.
+    const stayed = b.parent !== f.parent && PLACED.has(final.target) && samePlace(base, final, id);
     if (bw !== fw || bh !== fh) {
       edits.push(withMeta(final, f, { op: "resize", node: id, from: b.layout, to: f.layout }, resizeIntent(final, b, f)));
-    } else if (bx !== fx || by !== fy) {
+    } else if ((bx !== fx || by !== fy) && !stayed) {
       edits.push(
         withMeta(final, f, { op: "move", node: id, from: { x: bx, y: by }, to: { x: fx, y: fy } }, moveIntent(final, b, f)),
       );
@@ -150,6 +153,23 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
   }
 
   return [...deletes, ...adds, ...reorders, ...edits, ...notes];
+}
+
+/** Targets whose layout places nodes (rather than being measured from a page that lays itself out). */
+const PLACED = new Set<Target>(["tui", "native"]);
+
+/** The node is at the same place relative to the root in both scenes. */
+function samePlace(base: Scene, final: Scene, id: string): boolean {
+  const at = (scene: Scene) => {
+    let x = 0;
+    let y = 0;
+    for (let n = scene.nodes[id]; n && n.parent !== null; n = scene.nodes[n.parent]) {
+      x += n.layout.x;
+      y += n.layout.y;
+    }
+    return `${x},${y}`;
+  };
+  return at(base) === at(final);
 }
 
 export function describeNode(n: SceneNode): string {

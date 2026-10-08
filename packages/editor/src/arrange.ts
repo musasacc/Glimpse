@@ -15,13 +15,13 @@ import {
 import { store } from "./store";
 
 /**
- * Multi-selection editing that needs the live page: align, distribute, nudge,
- * group/ungroup, marquee hits and box-prompt targets. The structural and
- * geometric work happens in @glimpse/core; this measures the page and records
- * the resulting ops as one undo step each.
+ * Multi-selection editing that needs the live page (or a scene mock): align,
+ * distribute, nudge, group/ungroup, marquee hits and box-prompt targets. The
+ * structural and geometric work happens in @glimpse/core; this measures the
+ * surface and records the resulting ops as one undo step each.
  */
 
-/** A rectangle in the preview's viewport (the overlay uses the same coordinates). */
+/** A rectangle in the preview's viewport (the overlay uses the same coordinates), or in a scene mock's layout units. */
 export interface Rect {
   left: number;
   top: number;
@@ -29,12 +29,9 @@ export interface Rect {
   height: number;
 }
 
-/** Element box in page coordinates (viewport + scroll), so it doesn't depend on where the page is scrolled. */
+/** Element box in page coordinates, so it doesn't depend on where the page is scrolled. */
 function pageRect(id: string): Layout | null {
-  const r = store.bridge?.rect(id);
-  const win = store.bridge?.doc.defaultView;
-  if (!r || !win) return null;
-  return { x: r.left + win.scrollX, y: r.top + win.scrollY, w: r.width, h: r.height };
+  return store.surface?.box(id) ?? null;
 }
 
 /** Selected elements that can be moved as a unit: no root, nothing inside another selected element. */
@@ -106,9 +103,9 @@ export function groupProblem(): string | null {
  */
 export function groupSelection(): void {
   const scene = store.scene;
-  const bridge = store.bridge;
+  const surface = store.surface;
   const ids = store.selection;
-  if (!scene || !bridge || ids.length === 0) return;
+  if (!scene || !surface || ids.length === 0) return;
   const problem = groupProblem();
   if (problem) {
     store.activity("warn", problem);
@@ -116,24 +113,26 @@ export function groupSelection(): void {
   }
   const parent = scene.nodes[ids[0]!]!.parent!;
   const group: SceneNode = {
-    id: bridge.newId(),
+    id: surface.newId(),
     type: "box",
-    tag: "div",
+    ...(!surface.positioned && { tag: "div" }),
     parent,
     children: [],
     layout: unionLayout(ids, parent),
-    style: flexLike(bridge.el(parent)),
+    style: surface.positioned ? {} : flexLike(store.bridge?.el(parent)),
     props: {},
   };
   const ops = groupOps(scene, ids, group);
   if (ops.length === 0) return;
+  // A mock places children relative to their parent: keep them where they are on screen.
+  if (surface.positioned) ops.push(...shiftOps(scene, ids, -group.layout.x, -group.layout.y));
   store.edit(...ops);
   store.select(group.id);
 }
 
 /** A box that can be ungrouped: it has children and isn't the page itself. */
 export function canUngroup(n: SceneNode | undefined): boolean {
-  return !!n && n.parent !== null && n.children.length > 0 && (n.type === "box" || n.type === "card");
+  return !!n && n.parent !== null && n.children.length > 0 && (n.type === "box" || n.type === "card" || n.type === "panel");
 }
 
 /** Replace the selected box by its children (MOD+Shift+G) and select them. */
@@ -143,8 +142,19 @@ export function ungroupSelection(): void {
   const n = id ? scene?.nodes[id] : undefined;
   if (!scene || !n || !canUngroup(n)) return;
   const children = [...n.children];
-  store.edit(...ungroupOps(scene, n.id));
+  const ops = ungroupOps(scene, n.id);
+  if (store.surface?.positioned) ops.push(...shiftOps(scene, children, n.layout.x, n.layout.y));
+  store.edit(...ops);
   store.selectMany(children);
+}
+
+/** Moves that shift nodes by (dx, dy) in their parent's coordinates (they keep their place when the parent changes). */
+function shiftOps(scene: Scene, ids: string[], dx: number, dy: number): Op[] {
+  if (!dx && !dy) return [];
+  return ids.map((id): Op => {
+    const { x, y } = scene.nodes[id]!.layout;
+    return { op: "move", node: id, from: { x, y }, to: { x: x + dx, y: y + dy } };
+  });
 }
 
 /** The group's box relative to its parent: the union of the grouped elements. */
@@ -178,12 +188,12 @@ function flexLike(parent: Element | undefined): Record<string, string> {
  */
 export function elementsIn(rect: Rect): string[] {
   const scene = store.scene;
-  const bridge = store.bridge;
-  if (!scene || !bridge) return [];
+  const surface = store.surface;
+  if (!scene || !surface) return [];
   const hits: string[] = [];
   for (const id of Object.keys(scene.nodes)) {
     if (id === scene.rootId || scene.nodes[id]!.hidden) continue;
-    const r = bridge.rect(id);
+    const r = surface.rect(id);
     if (r && r.width > 0 && r.height > 0 && inside(r, rect)) hits.push(id);
   }
   const covered = new Set<string>();
@@ -199,17 +209,17 @@ export function elementsIn(rect: Rect): string[] {
  */
 export function regionTarget(rect: Rect): { parent: string; rect: Layout } {
   const scene = store.scene!;
-  const bridge = store.bridge!;
+  const surface = store.surface!;
   let best = scene.rootId;
   let bestDepth = 0;
   for (const id of Object.keys(scene.nodes)) {
     if (id === scene.rootId || scene.nodes[id]!.hidden) continue;
-    const r = bridge.rect(id);
+    const r = surface.rect(id);
     if (!r || !inside(rect, r)) continue;
     const depth = depthOf(scene, id);
     if (depth > bestDepth) [best, bestDepth] = [id, depth];
   }
-  const p = bridge.rect(best) ?? { left: 0, top: 0 };
+  const p = surface.rect(best) ?? { left: 0, top: 0 };
   return {
     parent: best,
     rect: { x: Math.round(rect.left - p.left), y: Math.round(rect.top - p.top), w: Math.round(rect.width), h: Math.round(rect.height) },
@@ -218,7 +228,7 @@ export function regionTarget(rect: Rect): { parent: string; rect: Layout } {
 
 /** Where a region op's box is on screen right now (it follows its element). */
 export function regionRect(op: Extract<Op, { op: "region" }>): Rect | null {
-  const p = store.bridge?.rect(op.parent);
+  const p = store.surface?.rect(op.parent);
   if (!p || !store.scene?.nodes[op.parent]) return null;
   return { left: p.left + op.rect.x, top: p.top + op.rect.y, width: op.rect.w, height: op.rect.h };
 }

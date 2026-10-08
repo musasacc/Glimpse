@@ -425,6 +425,7 @@ function setPageCursor(doc: Document, cursor: string | null): void {
 
 /** Inline text editing: the element becomes contentEditable until Enter/blur. */
 export function editText(id: string): void {
+  if (store.sceneSurface?.editText) return store.sceneSurface.editText(id);
   const el = store.bridge?.el(id) as HTMLElement | undefined;
   const node = store.scene?.nodes[id];
   if (!el || !node || node.children.length > 0) return;

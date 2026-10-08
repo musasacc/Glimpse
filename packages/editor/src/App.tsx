@@ -13,12 +13,17 @@ import { store, useStore, type Device } from "./store";
 import { connectLive } from "./live";
 import { handoffScreenshot, initLoop, loop, useTimelineOpen } from "./loop";
 import { LoopStage, LoopToolbar } from "./Timeline";
+import { SceneCanvas } from "./SceneCanvas";
+import { SceneToolbar } from "./SceneToolbar";
+import { isSceneTarget } from "./scene-geometry";
+import { sceneMode } from "./scene-mode";
 
 export function App() {
   const state = useStore();
 
   useEffect(() => connectLive(), []);
   useEffect(() => initLoop(), []);
+  useEffect(() => sceneMode.init(), []);
   useEffect(() => {
     void store.refreshHandoffs();
   }, []);
@@ -67,6 +72,8 @@ function Editor({ hidden }: { hidden: boolean }) {
   useEffect(() => setTalkOpen(false), [state.selected]);
 
   const pending = store.pendingCount;
+  // A terminal UI or native GUI: its mock from glimpse.scene.json instead of a live page.
+  const scene = isSceneTarget(state.project?.target);
 
   return (
     <div className={`editor${state.inspectorOpen ? "" : " no-inspector"}${timelineOpen ? " with-timeline" : ""}`} hidden={hidden}>
@@ -80,13 +87,17 @@ function Editor({ hidden }: { hidden: boolean }) {
           </button>
         </div>
         <BoxPromptToggle onEnable={() => setMode("edit")} />
-        <div className="seg" role="group" aria-label="Device width">
-          {DEVICES.map((d) => (
-            <button key={d.id} className={state.device === d.id ? "active" : ""} onClick={() => store.set({ device: d.id })} title={d.label}>
-              {d.icon}
-            </button>
-          ))}
-        </div>
+        {scene ? (
+          <SceneToolbar />
+        ) : (
+          <div className="seg" role="group" aria-label="Device width">
+            {DEVICES.map((d) => (
+              <button key={d.id} className={state.device === d.id ? "active" : ""} onClick={() => store.set({ device: d.id })} title={d.label}>
+                {d.icon}
+              </button>
+            ))}
+          </div>
+        )}
         <span className={`live${state.connected ? " on" : ""}`} title="Changes your AI makes to the files appear here instantly">
           <span className="dot" />
           {state.connected ? "Live" : "Offline"}
@@ -120,7 +131,7 @@ function Editor({ hidden }: { hidden: boolean }) {
         </button>
       </header>
 
-      <Canvas mode={mode} talkOpen={talkOpen} setTalkOpen={setTalkOpen} />
+      {scene ? <SceneCanvas mode={mode} talkOpen={talkOpen} setTalkOpen={setTalkOpen} /> : <Canvas mode={mode} talkOpen={talkOpen} setTalkOpen={setTalkOpen} />}
       <LoopStage mode={mode} openTalk={() => setTalkOpen(true)} />
       {state.inspectorOpen && (
         <aside className="inspector">
@@ -149,11 +160,14 @@ function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }
       const changeList = { ...list, ...(note.trim() ? { note: note.trim() } : {}) };
       // A picture of the edited page helps the agent see what was meant (best effort, ≤ 3 s).
       const screenshot = await handoffScreenshot();
-      const res = await fetch("/api/handoff", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}) }),
-      });
+      // A scene mock: Glimpse writes the edited scene into its file first, so the agent only changes the code.
+      const res = await sceneMode.writes(
+        fetch("/api/handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}), ...sceneMode.body() }),
+        }),
+      );
       if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
       store.commitHandoff();
       void store.refreshHandoffs();
