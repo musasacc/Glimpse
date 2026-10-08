@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -6,6 +6,23 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import type { Target } from "@glimpse/core";
 import { openBrowser, startServer, type GlimpseServer, type Handoff } from "@glimpse/server";
+import { registerSceneTools } from "./scene-tool.js";
+
+export { registerSceneTools, sceneExamplesText, type SceneToolOptions } from "./scene-tool.js";
+
+/** Set to glimpse-ui's version when bundled (packages/cli/scripts/bundle.mjs). */
+declare const __GLIMPSE_VERSION__: string | undefined;
+
+/** The version this MCP server reports: glimpse-ui's when bundled, else this package's. */
+const VERSION: string = typeof __GLIMPSE_VERSION__ === "string" ? __GLIMPSE_VERSION__ : ownVersion();
+
+function ownVersion(): string {
+  try {
+    return (JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }).version;
+  } catch {
+    return "0.0.0-dev";
+  }
+}
 
 export interface McpOptions {
   /** Directory with the built editor UI, served by Glimpse. */
@@ -21,6 +38,15 @@ interface Project {
   url: string;
   /** Set when this MCP process hosts the Glimpse server itself. */
   own?: GlimpseServer;
+  /** For a Glimpse started elsewhere: its token from .glimpse/server.json, for POST /api/terminal/run. */
+  token?: string;
+}
+
+/** What `glimpse open`, the MCP server and the desktop app write into <project>/.glimpse/server.json. */
+interface ServerInfo {
+  url: string;
+  pid: number;
+  token?: string;
 }
 
 const AGENT_GUIDE = `How to work with Glimpse:
@@ -32,6 +58,8 @@ const AGENT_GUIDE = `How to work with Glimpse:
    - a request for design variants of one element: write each variant into .glimpse/variants/<id>/<k>/
      exactly as the message says, never into the real files; the human picks one in Glimpse.
    If it returns "still editing", just call it again.
+   For a terminal UI or desktop GUI, also write glimpse.scene.json next to the code (glimpse_scene_schema for the
+   format, glimpse_scene_validate to check) and pass the run command to glimpse_open.
 3. Do what it says in the real source code. Apply edits 1:1, preferring idiomatic layout
    (flex/grid order, gap, alignment) over hard-coded pixel offsets. Optionally report progress
    with glimpse_status.
@@ -42,9 +70,10 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
   const projects = new Map<string, Project>();
   let current: string | undefined;
 
-  const mcp = new McpServer({ name: "glimpse", version: "0.1.0" }, { instructions: AGENT_GUIDE });
+  const mcp = new McpServer({ name: "glimpse", version: VERSION }, { instructions: AGENT_GUIDE });
+  registerSceneTools(mcp, { defaultDir: () => current });
 
-  async function ensure(dirArg?: string, target?: Target, entry?: string): Promise<{ project: Project; opened: boolean }> {
+  async function ensure(dirArg?: string, target?: Target, entry?: string, command?: string): Promise<{ project: Project; opened: boolean }> {
     const dir = resolve(dirArg ?? current ?? process.cwd());
     const known = projects.get(dir);
     if (known) {
@@ -55,10 +84,10 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     const infoFile = join(dir, ".glimpse", "server.json");
     if (existsSync(infoFile)) {
       try {
-        const info = JSON.parse(await readFile(infoFile, "utf8")) as { url: string };
+        const info = JSON.parse(await readFile(infoFile, "utf8")) as ServerInfo;
         const res = await fetch(`${info.url}/api/session`);
         if (res.ok) {
-          const project = { dir, url: info.url };
+          const project: Project = { dir, url: info.url, ...(typeof info.token === "string" && { token: info.token }) };
           projects.set(dir, project);
           current = dir;
           return { project, opened: true };
@@ -68,13 +97,14 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       }
     }
     if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    const base = { dir, target, entry, editorDir: opts.editorDir };
+    const base = { dir, target, entry, command, editorDir: opts.editorDir };
     const own = await startServer({ ...base, port: opts.port ?? 4321 }).catch((err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE") return startServer({ ...base, port: 0 });
       throw err;
     });
     await mkdir(dirname(infoFile), { recursive: true });
-    await writeFile(infoFile, JSON.stringify({ url: own.url, pid: process.pid }, null, 2));
+    // The token lets other local tools ask this server to run commands; keep the file private to this user.
+    await writeFile(infoFile, JSON.stringify({ url: own.url, pid: process.pid, token: own.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
     const project = { dir, url: own.url, own };
     projects.set(dir, project);
     current = dir;
@@ -92,6 +122,37 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
   };
 
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+
+  /** Run the real app in the project's Glimpse terminal: in-process, or through the token-guarded endpoint. */
+  async function runIn(p: Project, command: string): Promise<string> {
+    try {
+      if (p.own) {
+        await p.own.run(command);
+      } else {
+        if (!p.token) return `Couldn't run \`${command}\`: the Glimpse at ${p.url} didn't leave a token in .glimpse/server.json. Restart it with --run "${command}".`;
+        const res = await fetch(`${p.url}/api/terminal/run`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-glimpse-token": p.token },
+          body: JSON.stringify({ command }),
+        });
+        if (!res.ok) return `Couldn't run \`${command}\`: ${((await res.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${res.status}`}`;
+      }
+      return `Running \`${command}\` in Glimpse's terminal.`;
+    } catch (err) {
+      return `Couldn't run \`${command}\`: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  /** One line about the scene file of a TUI/native project: missing, broken, or how many problems it has. */
+  async function sceneStatus(p: Project): Promise<string> {
+    const s = await api<{ exists: boolean; file: string; errors?: string[]; invalid?: { message: string } }>(p, "/api/scene");
+    if (!s.exists) return `${s.file} doesn't exist yet: write it (glimpse_scene_schema has the format) and the mock appears live.`;
+    if (s.invalid) return `${s.file} isn't valid JSON: ${s.invalid.message}. Fix it (glimpse_scene_validate checks it).`;
+    const n = s.errors?.length ?? 0;
+    return n === 0
+      ? `${s.file} has no problems. The human can now see and edit the mock.`
+      : `${s.file} has ${n} problem${n === 1 ? "" : "s"}; the human can edit the mock, but call glimpse_scene_validate for the list and fix them.`;
+  }
 
   /** A handoff as tool output: the instructions, plus the human's screenshot as an image when they sent one. */
   const handoffResult = async (p: Project, h: Handoff) => {
@@ -122,20 +183,31 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
         dir: z.string().describe("Project directory with the UI (created if missing)"),
         target: z.enum(["html", "react", "tui", "native"]).optional().describe("Kind of UI (auto-detected)"),
         entry: z.string().optional().describe("Page or scene file to show (default index.html)"),
+        command: z
+          .string()
+          .optional()
+          .describe(
+            "Shell command that runs the real app (TUI/native), e.g. 'python app.py'; a TUI runs in Glimpse's terminal next to the mock. Defaults to meta.command in glimpse.scene.json.",
+          ),
       },
     },
-    async ({ dir, target, entry }) => {
-      const { project } = await ensure(dir, target, entry);
-      const session = await api<{ project: { target: string; entry: string }; entryExists: boolean }>(project, "/api/session");
-      return text(
-        [
-          `Glimpse is open at ${project.url} (project ${project.dir}, ${session.project.target}, entry ${session.project.entry}).`,
-          session.entryExists
-            ? "The human can now see and edit it."
-            : `${session.project.entry} doesn't exist yet; create it and it appears live.`,
-          "Next: call glimpse_wait_for_done to receive the human's request or edits.",
-        ].join("\n"),
+    async ({ dir, target, entry, command }) => {
+      const { project, opened } = await ensure(dir, target, entry, command);
+      const run = command?.trim();
+      // A server this call just started got the command already; one that was running needs to be told.
+      const ran = run ? (opened && project.own ? `Running \`${run}\` in Glimpse's terminal.` : await runIn(project, run)) : undefined;
+      const session = await api<{ project: { target: string; entry: string }; entryExists: boolean; previewError?: string | null }>(
+        project,
+        "/api/session",
       );
+      const { target: kind, entry: file } = session.project;
+      const lines = [`Glimpse is open at ${project.url} (project ${project.dir}, ${kind}, entry ${file}).`];
+      if (kind === "tui" || kind === "native") lines.push(await sceneStatus(project));
+      else if (session.previewError) lines.push(`The preview can't run yet: ${session.previewError}`);
+      else lines.push(session.entryExists ? "The human can now see and edit it." : `${file} doesn't exist yet; create it and it appears live.`);
+      if (ran) lines.push(ran);
+      lines.push("Next: call glimpse_wait_for_done to receive the human's request or edits.");
+      return text(lines.join("\n"));
     },
   );
 

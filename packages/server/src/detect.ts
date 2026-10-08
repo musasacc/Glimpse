@@ -32,7 +32,12 @@ export function detectProject(dir: string, override?: { target?: Target; entry?:
 
   const pkgPath = join(dir, "package.json");
   if (existsSync(pkgPath)) {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<string, Record<string, string> | undefined>;
+    let pkg: Record<string, Record<string, string> | undefined> = {};
+    try {
+      pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as typeof pkg;
+    } catch {
+      // Half-written by the agent; Glimpse detects again once it changes.
+    }
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
     if (deps.react && (override?.target ?? "react") === "react") {
       return { dir, target: "react", entry: override?.entry ?? "index.html" };

@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 
-/** Paths Glimpse never watches as project files nor puts into the history. */
-export const IGNORED = /(^|[\\/])(node_modules|\.git|\.glimpse|dist)([\\/]|$)/;
-const IGNORED_DIRS = new Set(["node_modules", ".git", ".glimpse", "dist"]);
+/**
+ * Paths Glimpse never watches as project files nor puts into the history: dependencies, build output, its own
+ * state, and what Python writes while the app runs in Glimpse's terminal (bytecode caches, virtualenvs).
+ */
+export const IGNORED = /(^|[\\/])(node_modules|\.git|\.glimpse|dist|__pycache__|\.venv)([\\/]|$)/;
+const IGNORED_DIRS = new Set(["node_modules", ".git", ".glimpse", "dist", "__pycache__", ".venv"]);
 
 /** Bigger files (videos, datasets) aren't versioned. */
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;

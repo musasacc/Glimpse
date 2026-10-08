@@ -5,7 +5,8 @@
 Glimpse is the visual editing layer between you and your AI coding agent (Claude Code, Codex, Cursor, Gemini CLI,
 Antigravity, …). Your agent builds a UI and you watch it appear live; then you drag, delete, add, restyle and annotate
 elements visually, and either let Glimpse write the edits into the source or send them to your agent with exact
-`file:line:col` locations. macOS · Windows · Linux, Node.js 20+.
+`file:line:col` locations. Works with HTML pages, React/Vite apps, terminal UIs and native desktop GUIs.
+macOS · Windows · Linux, Node.js 20+.
 
 ```bash
 npx glimpse-ui open .            # or: npm i -g glimpse-ui && glimpse open .
@@ -38,7 +39,7 @@ With a global install (`npm i -g glimpse-ui`) use `glimpse mcp` as the command i
 ## CLI
 
 ```text
-glimpse open [dir]          Start Glimpse for a project (--port, --target, --entry, --no-browser)
+glimpse open [dir]          Start Glimpse for a project (--port, --target, --entry, --run, --no-browser)
 glimpse wait [dir]          Block until the human sends a request or edits, then print them (--json, --timeout)
 glimpse changes [dir]       Print the most recent handoff again
 glimpse status <message>    Show a status line in Glimpse's live activity feed

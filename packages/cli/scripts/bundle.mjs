@@ -8,6 +8,8 @@
 // Every @glimpse/* workspace package is inlined; every other package stays an import, so it must be one of
 // glimpse-ui's own "dependencies" (only those get installed for users). This script collects the runtime
 // dependencies of every bundled workspace package (transitively) and fails if glimpse-ui doesn't list them.
+// A workspace package's "optionalDependencies" (node-pty: loaded with a guarded dynamic import, so the bundle
+// keeps it external and works without it) belong in glimpse-ui's "optionalDependencies".
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { builtinModules, createRequire } from "node:module";
@@ -95,43 +97,54 @@ function checkDependencies(metafile) {
   }
 
   /** Runtime dependencies declared by the bundled workspace packages, following workspace deps transitively. */
-  const required = new Map(); // name → [{ range, from }]
+  const required = new Map(); // name → [{ range, from, optional }]
   const seen = new Set();
   const visit = (name) => {
     if (seen.has(name)) return;
     seen.add(name);
     const ws = workspace.get(name);
-    for (const [dep, range] of Object.entries(runtimeDeps(ws.pkg))) {
+    for (const [dep, { range, optional }] of Object.entries(runtimeDeps(ws.pkg))) {
       if (workspace.has(dep) || range.startsWith("workspace:")) {
         if (workspace.has(dep)) visit(dep);
         continue;
       }
       if (!required.has(dep)) required.set(dep, []);
-      required.get(dep).push({ range, from: name });
+      required.get(dep).push({ range, from: name, optional });
     }
   };
   for (const name of bundled) visit(name);
   // Imported but not declared by the importing workspace package: still needed at runtime.
   for (const [name, from] of imported) {
-    if (!required.has(name)) required.set(name, [...from].map((f) => ({ range: undefined, from: f })));
+    if (!required.has(name)) required.set(name, [...from].map((f) => ({ range: undefined, from: f, optional: false })));
   }
 
   const own = pkg.dependencies ?? {};
+  const ownOptional = pkg.optionalDependencies ?? {};
   const errors = [];
-  for (const [dep, range] of Object.entries(own)) {
+  for (const [dep, range] of Object.entries({ ...own, ...ownOptional })) {
     if (workspace.has(dep) || String(range).startsWith("workspace:")) {
       errors.push(`"${dep}" is a workspace package: it is inlined into dist/, so list it in "devDependencies", not "dependencies".`);
     }
   }
   const missing = [];
+  const missingOptional = [];
   for (const [dep, sources] of [...required].sort(([a], [b]) => a.localeCompare(b))) {
     const ranges = [...new Set(sources.map((s) => s.range).filter(Boolean))];
     const from = [...new Set(sources.map((s) => s.from))].join(", ");
-    if (!(dep in own)) {
-      missing.push(`    "${dep}": "${ranges[0] ?? "<version>"}",   (from ${from})`);
-    } else if (ranges.length && !ranges.includes(own[dep])) {
-      errors.push(`"${dep}" is "${own[dep]}" in glimpse-ui but ${from} declares ${ranges.map((r) => `"${r}"`).join(" / ")}; use the same range.`);
-    }
+    // Optional only when every package that needs it can do without it.
+    const optional = sources.every((s) => s.optional);
+    const line = `    "${dep}": "${ranges[0] ?? "<version>"}",   (from ${from})`;
+    if (dep in own) {
+      if (ranges.length && !ranges.includes(own[dep])) {
+        errors.push(`"${dep}" is "${own[dep]}" in glimpse-ui but ${from} declares ${ranges.map((r) => `"${r}"`).join(" / ")}; use the same range.`);
+      }
+    } else if (dep in ownOptional) {
+      if (!optional) {
+        errors.push(`"${dep}" is required by ${from} but only in glimpse-ui's "optionalDependencies"; move it to "dependencies".`);
+      } else if (ranges.length && !ranges.includes(ownOptional[dep])) {
+        errors.push(`"${dep}" is "${ownOptional[dep]}" in glimpse-ui but ${from} declares ${ranges.map((r) => `"${r}"`).join(" / ")}; use the same range.`);
+      }
+    } else (optional ? missingOptional : missing).push(line);
   }
   if (missing.length) {
     errors.push(
@@ -143,7 +156,17 @@ function checkDependencies(metafile) {
       ].join("\n"),
     );
   }
-  for (const dep of Object.keys(own)) {
+  if (missingOptional.length) {
+    errors.push(
+      [
+        "These optional dependencies of the bundled workspace packages are missing from glimpse-ui's \"optionalDependencies\".",
+        "Without them users never get the feature they enable (e.g. node-pty: a real terminal for TUI apps).",
+        `Add them to ${rel(join(cliDir, "package.json"))} under "optionalDependencies":`,
+        ...missingOptional,
+      ].join("\n"),
+    );
+  }
+  for (const dep of Object.keys({ ...own, ...ownOptional })) {
     if (!required.has(dep) && !workspace.has(dep)) {
       console.warn(`glimpse-ui: dependency "${dep}" isn't used by anything in the bundle; consider removing it.`);
     }
@@ -206,8 +229,13 @@ function packageName(spec) {
   return spec.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
 }
 
+/** name → { range, optional } of the dependencies a package needs at runtime. */
 function runtimeDeps(p) {
-  return { ...p.peerDependencies, ...p.optionalDependencies, ...p.dependencies };
+  const out = {};
+  for (const [field, optional] of [["peerDependencies", false], ["optionalDependencies", true], ["dependencies", false]]) {
+    for (const [dep, range] of Object.entries(p[field] ?? {})) out[dep] = { range, optional: optional || (field === "peerDependencies" && !!p.peerDependenciesMeta?.[dep]?.optional) };
+  }
+  return out;
 }
 
 /** The workspace package a file belongs to, if any. */

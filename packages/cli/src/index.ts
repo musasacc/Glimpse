@@ -7,6 +7,7 @@ import { parseArgs } from "node:util";
 import type { Target } from "@glimpse/core";
 import { openBrowser, startServer, type Handoff } from "@glimpse/server";
 import { runStdio } from "@glimpse/mcp";
+import { VERSION } from "./lib.js";
 
 const HELP = `glimpse — see what your AI built, edit it visually, hand the changes back.
 
@@ -15,6 +16,8 @@ Usage
       --port <n>            Port (default 4321, falls back to a free port)
       --target <t>          html | react | tui | native (auto-detected)
       --entry <file>        Page or scene file to open (default index.html)
+      --run <command>       Run the real app (TUI/native) inside Glimpse, e.g. --run "python app.py"
+                            (default: meta.command, started from the editor)
       --no-browser          Don't open a browser window
   glimpse wait [dir]        Block until the human sends something (a build request or edits), then print it
       --after <seq>         Only return handoffs newer than this number (default: the next undelivered one)
@@ -27,13 +30,16 @@ Usage
       --no-browser          Don't open a browser window when a project is opened
       --port <n>            Preferred port (default 4321)
 
-Agents: add the MCP server (\`claude mcp add glimpse -- npx glimpse mcp\`), or run
+Agents: add the MCP server (\`claude mcp add glimpse -- npx -y glimpse-ui mcp\`), or run
 \`glimpse open\` once and loop on \`glimpse wait\`, applying what it prints.
 `;
 
+/** <project>/.glimpse/server.json: how local tools (glimpse wait, the MCP server) find a running Glimpse. */
 interface ServerInfo {
   url: string;
   pid: number;
+  /** For privileged requests (x-glimpse-token), e.g. POST /api/terminal/run. */
+  token?: string;
 }
 
 async function main(): Promise<void> {
@@ -56,7 +62,7 @@ async function main(): Promise<void> {
       return;
     case "--version":
     case "-v":
-      process.stdout.write("0.1.0\n");
+      process.stdout.write(`${VERSION}\n`);
       return;
     default:
       process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
@@ -72,17 +78,20 @@ async function open(args: string[]): Promise<void> {
       port: { type: "string" },
       target: { type: "string" },
       entry: { type: "string" },
+      run: { type: "string" },
       "no-browser": { type: "boolean", default: false },
     },
   });
   const dir = resolve(positionals[0] ?? ".");
   if (!existsSync(dir)) throw new Error(`No such directory: ${dir}`);
+  const command = values.run?.trim() || undefined;
 
   const editorDir = join(dirname(fileURLToPath(import.meta.url)), "editor");
   const base = {
     dir,
     target: values.target as Target | undefined,
     entry: values.entry,
+    command,
     editorDir: existsSync(editorDir) ? editorDir : undefined,
   };
   const wanted = values.port ? Number(values.port) : 4321;
@@ -93,7 +102,8 @@ async function open(args: string[]): Promise<void> {
 
   const infoFile = join(dir, ".glimpse", "server.json");
   await mkdir(dirname(infoFile), { recursive: true });
-  await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid } satisfies ServerInfo, null, 2));
+  // The token lets local tools ask this server to run commands; keep the file private to this user.
+  await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid, token: srv.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
 
   process.stdout.write(
     [
@@ -101,6 +111,7 @@ async function open(args: string[]): Promise<void> {
       `  ◉ glimpse  ${srv.url}`,
       `    project  ${dir}`,
       `    target   ${srv.project.target} (${srv.project.entry})`,
+      ...(command ? [`    run      ${command}`] : []),
       "",
       "  Live mode is on: file changes appear in Glimpse instantly.",
       "  Agents: run `glimpse wait` to receive the human's edits.",
@@ -109,7 +120,10 @@ async function open(args: string[]): Promise<void> {
   );
   if (!values["no-browser"]) openBrowser(srv.url);
 
+  let stopping = false;
   const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
     await rm(infoFile, { force: true });
     await srv.close();
     process.exit(0);

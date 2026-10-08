@@ -13,9 +13,13 @@ files:
   - assets/**/*
   - "!**/*.map"
   - "!**/*.d.ts"
-# glimpse-ui's runtime dependencies (package.json "dependencies") are packed automatically; none are native.
+# glimpse-ui's runtime dependencies (package.json "dependencies") are packed automatically. The only native one is
+# the optional node-pty (a real terminal for TUI apps): it is N-API, so the build npm made for Node also loads in
+# Electron (macOS and Windows use its prebuilds), and it stays outside the asar because it starts helper executables.
 npmRebuild: false
 asar: true
+asarUnpack:
+  - "**/node_modules/node-pty/**"
 icon: assets/icon.png
 artifactName: ${productName}-${version}-${os}-${arch}.${ext}
 publish: null

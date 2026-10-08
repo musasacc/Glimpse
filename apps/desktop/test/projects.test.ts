@@ -25,10 +25,10 @@ const started: string[] = [];
 async function start(dir: string): Promise<StartedServer> {
   started.push(dir);
   const srv = await startGlimpse({ dir, port: 0 });
-  return { url: srv.url, close: () => srv.close() };
+  return { url: srv.url, token: srv.token, close: () => srv.close() };
 }
 
-const info = (dir: string) => JSON.parse(readFileSync(join(dir, ".glimpse", "server.json"), "utf8")) as { url: string; pid: number };
+const info = (dir: string) => JSON.parse(readFileSync(join(dir, ".glimpse", "server.json"), "utf8")) as { url: string; pid: number; token?: string };
 const alive = (url: string) =>
   fetch(`${url}/api/session`).then(
     (r) => r.ok,
@@ -50,7 +50,8 @@ describe("ProjectServers", () => {
     assert.match(home, /id="root"/, "GET / is the bundled editor");
     const preview = await fetch(`${a.url}/preview/`).then((r) => r.text());
     assert.match(preview, /Donut Shop/);
-    assert.deepEqual(info(dir), { url: a.url, pid: 4242 }, "agents can find it through .glimpse/server.json");
+    assert.deepEqual(info(dir), { url: a.url, pid: 4242, token: info(dir).token }, "agents can find it through .glimpse/server.json");
+    assert.match(info(dir).token ?? "", /^[\w-]{40,}$/, "with the token that lets the MCP server run the app there");
 
     await servers.close(dir);
     assert.equal(servers.size, 0);

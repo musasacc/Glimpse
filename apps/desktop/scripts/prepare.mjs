@@ -36,17 +36,21 @@ export function prepare({ ifBuilt = false } = {}) {
 function checkDependencies() {
   const cli = JSON.parse(readFileSync(join(cliDir, "package.json"), "utf8"));
   const desktop = JSON.parse(readFileSync(join(desktopDir, "package.json"), "utf8"));
-  const own = desktop.dependencies ?? {};
   const problems = [];
-  for (const [dep, range] of Object.entries(cli.dependencies ?? {})) {
-    if (!(dep in own)) problems.push(`    "${dep}": "${range}",   (missing)`);
-    else if (own[dep] !== range) problems.push(`    "${dep}": "${range}",   (is "${own[dep]}")`);
+  // Optional ones (node-pty, a native module the bundle loads only if it's there) stay optional here too.
+  for (const field of ["dependencies", "optionalDependencies"]) {
+    const own = desktop[field] ?? {};
+    for (const [dep, range] of Object.entries(cli[field] ?? {})) {
+      if (!(dep in own)) problems.push(`    ${field}: "${dep}": "${range}",   (missing)`);
+      else if (own[dep] !== range) problems.push(`    ${field}: "${dep}": "${range}",   (is "${own[dep]}")`);
+    }
   }
   if (problems.length) {
     throw new Error(
       [
-        "glimpse-desktop: apps/desktop/package.json \"dependencies\" must match glimpse-ui's (packages/cli/package.json),",
-        "because the bundled Glimpse library imports them at runtime. Set these, then run `npm install` in apps/desktop:",
+        "glimpse-desktop: apps/desktop/package.json \"dependencies\" and \"optionalDependencies\" must match glimpse-ui's",
+        "(packages/cli/package.json), because the bundled Glimpse library imports them at runtime. Set these, then run",
+        "`npm install` in apps/desktop:",
         ...problems,
       ].join("\n"),
     );

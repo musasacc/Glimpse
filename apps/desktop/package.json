@@ -26,6 +26,7 @@
     "icon": "node scripts/make-icon.mjs"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.9",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "chokidar": "^5.0.0",
     "diff": "^9.0.0",
@@ -33,6 +34,9 @@
     "parse5": "^8.0.1",
     "ws": "^8.18.3",
     "zod": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

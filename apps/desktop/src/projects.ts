@@ -6,6 +6,8 @@ import { canonicalDir, dirKey } from "./paths.js";
 /** A Glimpse server this app started (the desktop app passes startGlimpse from glimpse-ui). */
 export interface StartedServer {
   url: string;
+  /** The server's token for local tools (x-glimpse-token), written into `.glimpse/server.json` next to the URL. */
+  token?: string;
   close(): Promise<void>;
 }
 
@@ -103,7 +105,9 @@ export class ProjectServers {
     try {
       const info = join(dir, ".glimpse", "server.json");
       await mkdir(join(dir, ".glimpse"), { recursive: true });
-      await writeFile(info, JSON.stringify({ url: server.url, pid: this.pid }, null, 2));
+      // The token lets local tools (MCP) ask the server to run commands; keep the file private to this user.
+      const data = { url: server.url, pid: this.pid, ...(server.token && { token: server.token }) };
+      await writeFile(info, JSON.stringify(data, null, 2), { mode: 0o600 });
     } catch {
       // A read-only folder still works in the app; agents just can't discover it.
     }

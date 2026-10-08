@@ -2,7 +2,8 @@
 // directory from the registry, then run the installed `glimpse` the way users will:
 //   - `npx glimpse --version` and `npx glimpse help`
 //   - `npx glimpse open <copy of examples/donut> --no-browser --port <port>`: GET / is the editor, /preview/ the page
-//   - `node_modules/.bin/glimpse mcp --no-browser` over stdio: list the tools, open a project, close it
+//   - `node_modules/.bin/glimpse mcp --no-browser` over stdio: list the tools (incl. the scene tools) and the version,
+//     open a project, close it
 //
 // Usage: node packages/cli/scripts/smoke-pack.mjs [--port 4790] [--keep]
 // Needs a built package (pnpm build) and registry access. Cross-platform; only kills processes it started.
@@ -147,6 +148,9 @@ async function main() {
   assert(session.project?.target === "html", "GET /api/session looks wrong");
   ok(`GET /api/session → target ${session.project.target}, entry ${session.project.entry}`);
   assert(existsSync(join(project, ".glimpse", "server.json")), ".glimpse/server.json wasn't written");
+  const info = JSON.parse(readFileSync(join(project, ".glimpse", "server.json"), "utf8"));
+  assert(info.url === url && typeof info.token === "string" && info.token.length >= 40, `.glimpse/server.json looks wrong: ${JSON.stringify(Object.keys(info))}`);
+  ok(".glimpse/server.json has the URL and the server's token");
   await stop(server);
   ok(`stopped pid ${server.pid}`);
 
@@ -165,10 +169,14 @@ async function main() {
   try {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
-    for (const t of ["glimpse_open", "glimpse_wait_for_done", "glimpse_get_changes", "glimpse_status", "glimpse_update", "glimpse_close"]) {
+    const expected = ["glimpse_open", "glimpse_wait_for_done", "glimpse_get_changes", "glimpse_status", "glimpse_update", "glimpse_close"];
+    for (const t of [...expected, "glimpse_scene_schema", "glimpse_scene_validate"]) {
       assert(names.includes(t), `MCP tool ${t} is missing (got ${names.join(", ")})`);
     }
     ok(`tools: ${names.join(", ")}`);
+    const server = client.getServerVersion();
+    assert(server?.version === pkg.version, `MCP server reports version ${server?.version}, expected ${pkg.version}`);
+    ok(`server ${server.name} ${server.version}`);
     const mcpProject = join(work, "donut-mcp");
     cpSync(example, mcpProject, { recursive: true });
     const opened = await client.callTool({ name: "glimpse_open", arguments: { dir: mcpProject } });

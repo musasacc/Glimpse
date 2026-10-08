@@ -51,6 +51,7 @@
     "postpack": "node scripts/prepack.mjs --cleanup"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.9",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "chokidar": "^5.0.0",
     "diff": "^9.0.0",
@@ -59,10 +60,14 @@
     "ws": "^8.18.3",
     "zod": "^4.0.0"
   },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
   "devDependencies": {
     "@glimpse/core": "workspace:*",
     "@glimpse/editor": "workspace:*",
     "@glimpse/mcp": "workspace:*",
+    "@glimpse/react": "workspace:*",
     "@glimpse/server": "workspace:*",
     "dts-bundle-generator": "^9.5.1",
     "esbuild": "^0.28.2"

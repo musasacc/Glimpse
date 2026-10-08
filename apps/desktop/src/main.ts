@@ -47,6 +47,7 @@ const servers = new ProjectServers({
     const srv = await startGlimpse({ dir });
     return {
       url: srv.url,
+      token: srv.token,
       async close() {
         const closing = srv.close();
         // Don't let a long-polling agent request hold the app open.
