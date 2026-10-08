@@ -1,3 +1,4 @@
+import { loop } from "./loop";
 import { store } from "./store";
 
 /**
@@ -51,8 +52,15 @@ export function connectLive(): () => void {
           store.activity("ai-status", msg.message);
           break;
         case "handoff":
-          if (msg.kind !== "request") store.activity("handoff", `Sent ${msg.count} change${msg.count === 1 ? "" : "s"} to the AI (#${msg.seq})`);
+          if (msg.kind !== "request" && msg.kind !== "variants") store.activity("handoff", `Sent ${msg.count} change${msg.count === 1 ? "" : "s"} to the AI (#${msg.seq})`);
           void store.refreshHandoffs();
+          break;
+        // Version history and variants (see loop.ts).
+        case "snapshot":
+        case "variants":
+        case "variant-updated":
+        case "variants-removed":
+          loop.onMessage(msg);
           break;
       }
     };

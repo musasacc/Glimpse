@@ -12,6 +12,8 @@ export default defineConfig({
     proxy: {
       "/api": server,
       "/preview": server,
+      "/snapshot": server,
+      "/variant/": server,
       "/__glimpse": { target: server, ws: true },
     },
   },

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { NodeType, SceneNode } from "@glimpse/core";
 import * as I from "./icons";
+import * as L from "./loop-icons";
 import { Layers } from "./Panels";
 import { store, useStore, type View } from "./store";
 
@@ -85,7 +86,9 @@ export function Sidebar() {
             {state.handoffs.length === 0 && <div className="side-empty">Nothing sent to the AI yet</div>}
             {state.handoffs.slice(0, 30).map((h) => (
               <button key={h.seq} className="side-item" onClick={() => store.set({ view: "history", openHandoff: h.seq })}>
+                {h.kind === "variants" && <L.Grid size={14} />}
                 <span className="grow ellipsis">{h.title}</span>
+                {h.screenshot && <L.Camera size={13} />}
                 <span className="meta">{ago(h.createdAt)}</span>
               </button>
             ))}

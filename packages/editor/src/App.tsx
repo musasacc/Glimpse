@@ -10,11 +10,14 @@ import { SourceDialog } from "./SourceDialog";
 import * as I from "./icons";
 import { store, useStore, type Device } from "./store";
 import { connectLive } from "./live";
+import { handoffScreenshot, initLoop, loop, useTimelineOpen } from "./loop";
+import { LoopStage, LoopToolbar } from "./Timeline";
 
 export function App() {
   const state = useStore();
 
   useEffect(() => connectLive(), []);
+  useEffect(() => initLoop(), []);
   useEffect(() => {
     void store.refreshHandoffs();
   }, []);
@@ -49,10 +52,14 @@ function Editor({ hidden }: { hidden: boolean }) {
   const [talkOpen, setTalkOpen] = useState(false);
   const [sending, setSending] = useState<ChangeList | null>(null);
   const [editing, setEditing] = useState<ChangeList | null>(null);
+  const timelineOpen = useTimelineOpen();
 
   useEffect(() => {
     if (hidden) return;
-    const onKey = (e: KeyboardEvent) => handleKey(e, () => setTalkOpen(true));
+    const onKey = (e: KeyboardEvent) => {
+      // Not while a past version, comparison or variants dialog is on screen.
+      if (!loop.blocksEditorKeys) handleKey(e, () => setTalkOpen(true));
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [hidden]);
@@ -61,7 +68,7 @@ function Editor({ hidden }: { hidden: boolean }) {
   const pending = store.pendingCount;
 
   return (
-    <div className={`editor${state.inspectorOpen ? "" : " no-inspector"}`} hidden={hidden}>
+    <div className={`editor${state.inspectorOpen ? "" : " no-inspector"}${timelineOpen ? " with-timeline" : ""}`} hidden={hidden}>
       <header className="toolbar">
         <div className="seg" role="group" aria-label="Mode">
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} title="Edit: select, move and change elements">
@@ -82,6 +89,7 @@ function Editor({ hidden }: { hidden: boolean }) {
           <span className="dot" />
           {state.connected ? "Live" : "Offline"}
         </span>
+        <LoopToolbar />
         <div className="spacer" />
         <button className="icon-btn" title={`Undo (${MOD}Z)`} disabled={!store.log?.canUndo} onClick={() => store.undo()}>
           <I.Undo />
@@ -110,6 +118,7 @@ function Editor({ hidden }: { hidden: boolean }) {
       </header>
 
       <Canvas mode={mode} talkOpen={talkOpen} setTalkOpen={setTalkOpen} />
+      <LoopStage mode={mode} openTalk={() => setTalkOpen(true)} />
       {state.inspectorOpen && (
         <aside className="inspector">
           <Inspector openTalk={() => setTalkOpen(true)} />
@@ -135,10 +144,12 @@ function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }
     setError(null);
     try {
       const changeList = { ...list, ...(note.trim() ? { note: note.trim() } : {}) };
+      // A picture of the edited page helps the agent see what was meant (best effort, ≤ 3 s).
+      const screenshot = await handoffScreenshot();
       const res = await fetch("/api/handoff", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: "ai", changeList }),
+        body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}) }),
       });
       if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
       store.commitHandoff();
