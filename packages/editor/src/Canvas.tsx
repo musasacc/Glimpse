@@ -1,16 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { describeNode, type Op } from "@glimpse/core";
+import { describeNode, topLevel, type Layout, type Op } from "@glimpse/core";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import { TalkPopover } from "./Talk";
+import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
+import "./editing.css";
 
 export type Mode = "edit" | "interact";
 
-interface Rect {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
+/** What the overlay draws while a gesture is in progress (written by the page handlers). */
+interface Live {
+  marquee: Rect | null;
+  region: Rect | null;
 }
+
+/** A box prompt that has been drawn and is waiting for its instruction. */
+type Draft = { parent: string; rect: Layout };
+
+/** Lets editor shortcuts reach the canvas: R only works in edit mode, Escape cancels what is in progress. */
+const canvas = { mode: "edit" as Mode, cancel: () => {} };
 
 /**
  * The preview iframe plus the editing overlay. The page is same-origin, so the
@@ -22,9 +29,34 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const [, setTick] = useState(0);
   const modeRef = useRef(mode);
   modeRef.current = mode;
+  canvas.mode = mode;
+  const live = useRef<Live>({ marquee: null, region: null }).current;
+  const cancelGesture = useRef(() => {});
+  const [draft, setDraft] = useState<Draft | null>(null);
 
   // Re-render the overlay when the page scrolls or resizes.
   const rerender = () => setTick((t) => t + 1);
+
+  useEffect(() => {
+    canvas.cancel = () => {
+      cancelGesture.current();
+      setDraft(null);
+    };
+  }, []);
+
+  // Tools and half-done gestures belong to edit mode.
+  useEffect(() => {
+    if (mode === "edit") return;
+    canvas.cancel();
+    store.setTool("select");
+  }, [mode]);
+
+  // Crosshair over the page while the box prompt tool is on (onLoad covers a fresh page).
+  const crosshair = mode === "edit" && state.tool === "region";
+  useEffect(() => {
+    const doc = iframe.current?.contentDocument;
+    if (doc) setPageCursor(doc, crosshair ? "crosshair" : null);
+  }, [crosshair]);
 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
@@ -41,24 +73,34 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
     const doc = iframe.current?.contentDocument;
     if (!doc) return;
     store.attach(doc);
-    installPageHandlers(doc, () => modeRef.current, () => setTalkOpen(true), rerender);
+    setDraft(null);
+    cancelGesture.current = installPageHandlers(doc, {
+      mode: () => modeRef.current,
+      openTalk: () => setTalkOpen(true),
+      rerender,
+      live,
+      onPress: () => setDraft(null),
+      onRegion: (rect) => setDraft(regionTarget(rect)),
+    });
+    setPageCursor(doc, modeRef.current === "edit" && store.state.tool === "region" ? "crosshair" : null);
     rerender();
   };
 
   const width = DEVICE_WIDTH[state.device];
-  const doc = iframe.current?.contentDocument;
   const rectOf = (id: string | null): Rect | null => {
-    if (!id || !store.bridge || !doc) return null;
-    const el = store.bridge.el(id);
-    if (!el || !el.isConnected) return null;
-    const r = el.getBoundingClientRect();
-    return { left: r.left, top: r.top, width: r.width, height: r.height };
+    const r = id ? store.bridge?.rect(id) : null;
+    return r ? { left: r.left, top: r.top, width: r.width, height: r.height } : null;
   };
 
   const selected = state.selected ? store.scene?.nodes[state.selected] : undefined;
   const selRect = rectOf(state.selected);
-  const hovRect = state.hovered !== state.selected ? rectOf(state.hovered) : null;
-  const pins = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
+  const multi = store.selection;
+  const single = multi.length <= 1;
+  const hovRect = state.tool === "select" && state.hovered && !multi.includes(state.hovered) ? rectOf(state.hovered) : null;
+  const ops = store.log?.ops ?? [];
+  const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
+  const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+  const draftRect = draft ? regionRect({ op: "region", id: "draft", text: "", ...draft }) : null;
 
   if (!state.entryExists) {
     return (
@@ -93,12 +135,39 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
         <iframe key={state.reloadKey} ref={iframe} src="/preview/" title="Preview" onLoad={onLoad} />
         {mode === "edit" && (
           <div className="overlay">
+            {regions.map((r, i) => {
+              const box = regionRect(r);
+              return box ? (
+                <div key={r.id} className="region" style={rectStyle(box)}>
+                  <span className="region-num">{i + 1}</span>
+                  <span className="region-text">{r.text}</span>
+                </div>
+              ) : null;
+            })}
             {hovRect && <div className="box hover" style={rectStyle(hovRect)} />}
-            {selRect && selected && (
-              <div className="box selected" style={rectStyle(selRect)}>
-                <span className="label">{describeNode(selected)}</span>
-                <ResizeHandle id={selected.id} />
-              </div>
+            {multi.map((id) => {
+              const r = id === state.selected ? selRect : rectOf(id);
+              if (!r) return null;
+              const primary = id === state.selected && selected;
+              return (
+                <div key={id} className={`box selected${single ? "" : " multi"}`} style={rectStyle(r)}>
+                  {primary && <span className="label">{single ? describeNode(selected) : `${multi.length} selected`}</span>}
+                  {primary && single && <ResizeHandle id={id} />}
+                </div>
+              );
+            })}
+            {live.marquee && <div className="marquee" style={rectStyle(live.marquee)} />}
+            {live.region && <div className="region drawing" style={rectStyle(live.region)} />}
+            {draft && draftRect && (
+              <>
+                <div className="region drawing" style={rectStyle(draftRect)} />
+                <TalkPopover
+                  anchor={draftRect}
+                  placeholder="What should the AI put here? e.g. a search field with a filter button"
+                  onPin={(text) => store.edit({ op: "region", id: `r${Date.now().toString(36)}`, parent: draft.parent, rect: draft.rect, text })}
+                  onClose={() => setDraft(null)}
+                />
+              </>
             )}
             {pins.map((p, i) => {
               const r = rectOf(p.node);
@@ -155,23 +224,106 @@ function ResizeHandle({ id }: { id: string }) {
   return <span className="handle" onPointerDown={onPointerDown} />;
 }
 
-/** Mouse and keyboard handling inside the previewed page. */
-function installPageHandlers(doc: Document, mode: () => Mode, openTalk: () => void, rerender: () => void): void {
+interface Point {
+  x: number;
+  y: number;
+}
+
+/** A mouse gesture in the page, from mousedown to mouseup. */
+type Gesture =
+  /** Dragging the selected elements. `single` is set when the press landed on one of several selected elements. */
+  | { kind: "move"; start: Point; ids: string[]; from: Map<string, Point>; moved: boolean; single: string | null }
+  /** Rubber-band selection from the empty page background; `base` is kept (Shift adds). */
+  | { kind: "marquee"; start: Point; base: string[] }
+  /** Drawing a box prompt. */
+  | { kind: "region"; start: Point };
+
+interface PageHooks {
+  mode: () => Mode;
+  openTalk: () => void;
+  rerender: () => void;
+  live: Live;
+  /** Any press in the page (closes an unanswered box prompt). */
+  onPress: () => void;
+  /** A box prompt was drawn. */
+  onRegion: (rect: Rect) => void;
+}
+
+/** Mouse and keyboard handling inside the previewed page. Returns a function that cancels the current gesture. */
+function installPageHandlers(doc: Document, h: PageHooks): () => void {
   const win = doc.defaultView!;
-  let drag: { id: string; start: { x: number; y: number }; from: { x: number; y: number }; moved: boolean } | null = null;
+  let g: Gesture | null = null;
+  let last: Point = { x: 0, y: 0 };
+
+  const between = (a: Point, b: Point): Rect => ({
+    left: Math.min(a.x, b.x),
+    top: Math.min(a.y, b.y),
+    width: Math.abs(a.x - b.x),
+    height: Math.abs(a.y - b.y),
+  });
+  const toolCursor = () => setPageCursor(doc, h.mode() === "edit" && store.state.tool === "region" ? "crosshair" : null);
+
+  const cancel = () => {
+    if (g?.kind === "move") for (const id of g.ids) store.bridge?.previewMove(id, g.from.get(id)!);
+    g = null;
+    h.live.marquee = h.live.region = null;
+    toolCursor();
+    h.rerender();
+  };
+
+  const track = (p: Point) => {
+    if (!g) return;
+    const dx = p.x - g.start.x;
+    const dy = p.y - g.start.y;
+    if (g.kind === "move") {
+      if (!g.moved && Math.hypot(dx, dy) < 3) return;
+      g.moved = true;
+      for (const id of g.ids) {
+        const f = g.from.get(id)!;
+        store.bridge?.previewMove(id, { x: Math.round(f.x + dx), y: Math.round(f.y + dy) });
+      }
+    } else if (g.kind === "marquee") {
+      h.live.marquee = between(g.start, p);
+      const ids = [...new Set([...g.base, ...elementsIn(h.live.marquee)])];
+      if (ids.join() !== store.state.multi.join()) store.selectMany(ids);
+    } else {
+      h.live.region = between(g.start, p);
+    }
+    h.rerender();
+  };
+
+  const finish = (p: Point) => {
+    const done = g;
+    if (!done) return;
+    g = null;
+    h.live.marquee = h.live.region = null;
+    if (done.kind === "move") {
+      const dx = Math.round(p.x - done.start.x);
+      const dy = Math.round(p.y - done.start.y);
+      if (!done.moved) {
+        // A click (no drag) on one of several selected elements selects just that one.
+        if (done.single) store.select(done.single);
+      } else if (dx || dy) {
+        store.edit(...done.ids.map((id): Op => {
+          const from = done.from.get(id)!;
+          return { op: "move", node: id, from, to: { x: from.x + dx, y: from.y + dy } };
+        }));
+      } else {
+        for (const id of done.ids) store.bridge?.previewMove(id, done.from.get(id)!); // dragged back to the start
+      }
+    } else if (done.kind === "region") {
+      toolCursor();
+      const rect = between(done.start, p);
+      if (rect.width >= 8 && rect.height >= 8) h.onRegion(rect);
+    }
+    h.rerender();
+  };
 
   doc.addEventListener("mousemove", (e) => {
-    if (mode() !== "edit") return;
-    if (drag) {
-      const dx = e.clientX - drag.start.x;
-      const dy = e.clientY - drag.start.y;
-      if (!drag.moved && Math.hypot(dx, dy) < 3) return;
-      drag.moved = true;
-      store.bridge?.previewMove(drag.id, { x: Math.round(drag.from.x + dx), y: Math.round(drag.from.y + dy) });
-      rerender();
-      return;
-    }
-    const id = store.bridge?.pick(e.target) ?? null;
+    if (h.mode() !== "edit") return;
+    last = { x: e.clientX, y: e.clientY };
+    if (g) return track(last);
+    const id = store.state.tool === "select" ? (store.bridge?.pick(e.target) ?? null) : null;
     if (id !== store.state.hovered) store.set({ hovered: id });
   });
 
@@ -180,34 +332,56 @@ function installPageHandlers(doc: Document, mode: () => Mode, openTalk: () => vo
   doc.addEventListener(
     "mousedown",
     (e) => {
-      if (mode() !== "edit" || e.button !== 0) return;
+      if (h.mode() !== "edit" || e.button !== 0) return;
       if ((e.target as HTMLElement).isContentEditable) return;
-      const id = store.bridge?.pick(e.target);
       e.preventDefault();
-      store.set({ selected: id ?? null });
-      const node = id ? store.scene?.nodes[id] : undefined;
-      if (node && !node.locked) {
-        drag = { id: node.id, start: { x: e.clientX, y: e.clientY }, from: { x: node.layout.x, y: node.layout.y }, moved: false };
+      h.onPress();
+      const start = (last = { x: e.clientX, y: e.clientY });
+      // Box prompt: with the tool on, or Alt+drag anywhere.
+      if (store.state.tool === "region" || e.altKey) {
+        g = { kind: "region", start };
+        setPageCursor(doc, "crosshair");
+        store.set({ hovered: null });
+        return;
       }
+      const id = store.bridge?.pick(e.target);
+      const scene = store.scene;
+      if (!id || !scene) {
+        // Empty page background: marquee selection.
+        g = { kind: "marquee", start, base: e.shiftKey ? store.selection : [] };
+        if (!e.shiftKey) store.select(null);
+        return;
+      }
+      if (e.shiftKey) {
+        store.toggleSelect(id);
+        return;
+      }
+      // Pressing on a selected element keeps the multi-selection, so all of it can be dragged.
+      const keep = store.state.multi.includes(id) && store.selection.length > 1;
+      if (keep) store.set({ selected: id, multi: store.state.multi });
+      else store.select(id);
+      if (scene.nodes[id]?.locked) return;
+      const ids = topLevel(scene, store.selection).filter((x) => !scene.nodes[x]!.locked);
+      const from = new Map(ids.map((x): [string, Point] => [x, { x: scene.nodes[x]!.layout.x, y: scene.nodes[x]!.layout.y }]));
+      g = { kind: "move", start, ids, from, moved: false, single: keep ? id : null };
     },
     true,
   );
 
-  doc.addEventListener("mouseup", (e) => {
-    if (!drag) return;
-    const d = drag;
-    drag = null;
-    if (!d.moved) return;
-    const to = { x: Math.round(d.from.x + e.clientX - d.start.x), y: Math.round(d.from.y + e.clientY - d.start.y) };
-    store.edit({ op: "move", node: d.id, from: d.from, to });
-  });
+  doc.addEventListener("mouseup", (e) => finish({ x: e.clientX, y: e.clientY }));
+  // A drag released outside the preview still ends where the mouse was last seen in it.
+  const onEditorMouseUp = () => {
+    if (store.bridge?.doc !== doc) return window.removeEventListener("mouseup", onEditorMouseUp);
+    finish(last);
+  };
+  window.addEventListener("mouseup", onEditorMouseUp);
 
   // In edit mode the page should not react to clicks (links, buttons, forms).
   for (const type of ["click", "submit", "auxclick"]) {
     doc.addEventListener(
       type,
       (e) => {
-        if (mode() === "edit" && !(e.target as HTMLElement).isContentEditable) {
+        if (h.mode() === "edit" && !(e.target as HTMLElement).isContentEditable) {
           e.preventDefault();
           e.stopPropagation();
         }
@@ -217,14 +391,33 @@ function installPageHandlers(doc: Document, mode: () => Mode, openTalk: () => vo
   }
 
   doc.addEventListener("dblclick", (e) => {
-    if (mode() !== "edit") return;
+    if (h.mode() !== "edit" || store.state.tool !== "select") return;
     const id = store.bridge?.pick(e.target);
     if (id) editText(id);
   });
 
-  doc.addEventListener("keydown", (e) => handleKey(e, openTalk), true);
-  win.addEventListener("scroll", rerender, { passive: true });
-  win.addEventListener("resize", rerender);
+  doc.addEventListener("keydown", (e) => handleKey(e, h.openTalk), true);
+  // Keep the overlay on its elements: page and inner scrolling, resizes, layout changes.
+  doc.addEventListener("scroll", h.rerender, { capture: true, passive: true });
+  win.addEventListener("resize", h.rerender);
+  new win.ResizeObserver(() => h.rerender()).observe(doc.documentElement);
+  return cancel;
+}
+
+/** Force a cursor over the whole page (a crosshair while drawing box prompts), or restore the page's own. */
+function setPageCursor(doc: Document, cursor: string | null): void {
+  let style = doc.getElementById("__glimpse-cursor");
+  if (!cursor) {
+    style?.remove();
+    return;
+  }
+  if (!style) {
+    style = doc.createElement("style");
+    style.id = "__glimpse-cursor";
+    style.setAttribute("data-glimpse-internal", "");
+    (doc.head ?? doc.documentElement).append(style);
+  }
+  style.textContent = `html, html * { cursor: ${cursor} !important; }`;
 }
 
 /** Inline text editing: the element becomes contentEditable until Enter/blur. */
@@ -273,33 +466,41 @@ export function handleKey(e: KeyboardEvent, openTalk: () => void): void {
   const t = e.target as HTMLElement;
   if (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
   const mod = e.metaKey || e.ctrlKey;
+  const key = e.key.toLowerCase();
   const id = store.state.selected;
-  if (mod && e.key.toLowerCase() === "z") {
+  const any = store.selection.length > 0;
+  if (mod && key === "z") {
     e.preventDefault();
     if (e.shiftKey) store.redo();
     else store.undo();
-  } else if (mod && e.key.toLowerCase() === "y") {
+  } else if (mod && key === "y") {
     e.preventDefault();
     store.redo();
-  } else if (mod && e.key.toLowerCase() === "d") {
+  } else if (mod && key === "d") {
     e.preventDefault();
     store.duplicateSelected();
-  } else if (!mod && (e.key === "Delete" || e.key === "Backspace") && id) {
+  } else if (mod && key === "g") {
+    e.preventDefault();
+    if (e.shiftKey) ungroupSelection();
+    else groupSelection();
+  } else if (!mod && (e.key === "Delete" || e.key === "Backspace") && any) {
     e.preventDefault();
     store.deleteSelected();
-  } else if (!mod && e.key.toLowerCase() === "t" && id) {
+  } else if (!mod && key === "t" && id) {
     e.preventDefault();
     openTalk();
+  } else if (!mod && !e.altKey && key === "r" && canvas.mode === "edit") {
+    e.preventDefault();
+    store.setTool(store.state.tool === "region" ? "select" : "region");
   } else if (e.key === "Escape") {
-    store.set({ selected: null });
-  } else if (id && e.key.startsWith("Arrow")) {
-    const node = store.scene?.nodes[id];
-    if (!node || node.locked) return;
+    // Stop whatever is in progress, leave the box prompt tool and clear the selection.
+    canvas.cancel();
+    store.set({ selected: null, tool: "select" });
+  } else if (any && e.key.startsWith("Arrow")) {
     e.preventDefault();
     const step = e.shiftKey ? 10 : 1;
     const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
     const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
-    const from = { x: node.layout.x, y: node.layout.y };
-    store.edit({ op: "move", node: id, from, to: { x: from.x + dx, y: from.y + dy } });
+    nudgeSelection(dx, dy);
   }
 }

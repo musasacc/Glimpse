@@ -26,7 +26,7 @@ export function describeChange(c: Change): string {
     : "";
   switch (c.op) {
     case "delete":
-      return `Delete ${who}${at}.`;
+      return `Delete ${who}${at}${hint}.`;
     case "add": {
       const top = c.nodes[0]!;
       const styles = Object.entries(top.style).map(([k, v]) => `${k}: ${v}`).join("; ");
@@ -59,6 +59,7 @@ export function describeChange(c: Change): string {
     case "behavior":
       return `Behavior for ${who}${at}: on ${c.event} → ${c.action}${c.detail ? ` (${c.detail})` : ""}.`;
     case "region":
-      return `In the area x=${c.rect.x}, y=${c.rect.y}, ${c.rect.w}×${c.rect.h}: "${c.text}"`;
+      // `who`/`at` name the element the box was drawn in; the rect is relative to it.
+      return `In the area ${c.rect.x},${c.rect.y} ${c.rect.w}×${c.rect.h} inside ${c.label ?? "the page"}${at}: "${c.text}"`;
   }
 }

@@ -1,5 +1,5 @@
 import type { Op } from "./ops.js";
-import { formatSource, getNode, subtreeIds, type Scene, type SceneNode, type Target } from "./scene.js";
+import { formatSource, getNode, type Scene, type SceneNode, type Target } from "./scene.js";
 import type { OpLog } from "./oplog.js";
 
 /** One entry of the change list handed to the AI (or to the source patcher). */
@@ -55,14 +55,17 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     const n = base.nodes[id]!;
     if (n.parent !== null && !final.nodes[n.parent]) continue;
     const parent = getNode(base, n.parent!);
-    deletes.push(
-      withMeta(base, n, {
-        op: "delete",
-        parent: n.parent!,
-        index: parent.children.indexOf(id),
-        nodes: subtreeIds(base, id).map((nid) => base.nodes[nid]!),
-      }),
-    );
+    // Children that were moved out before the delete (ungroup) are not deleted.
+    const { nodes, kept } = splitSubtree(base, final, id);
+    const change = withMeta(base, n, { op: "delete", parent: n.parent!, index: parent.children.indexOf(id), nodes });
+    if (kept.length) {
+      // Unwrap: only the tags go. Deleting the element's source range (what a
+      // located delete means to the source patcher) would take the children
+      // with it, so the location moves into the instruction for the AI.
+      change.intent = `unwrap: remove only its tags${change.src ? ` at ${change.src}` : ""} and keep its children ${listNodes(final, kept)} in its place`;
+      delete change.src;
+    }
+    deletes.push(change);
   }
 
   // Added: final nodes missing from base. Only report the top of each added subtree.
@@ -71,13 +74,16 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     const n = final.nodes[id]!;
     if (n.parent !== null && !base.nodes[n.parent]) continue;
     const parent = getNode(final, n.parent!);
+    // Existing elements moved into a new one (group) are reported as reorders, not as new.
+    const { nodes, kept } = splitSubtree(final, base, id);
+    const wraps = kept.length ? `; wraps ${listNodes(final, kept)}` : "";
     adds.push(
       withMeta(final, n, {
         op: "add",
         parent: n.parent!,
         index: parent.children.indexOf(id),
-        nodes: subtreeIds(final, id).map((nid) => final.nodes[nid]!),
-      }, positionIntent(final, n), anchorOf(final, n)),
+        nodes,
+      }, positionIntent(final, n) + wraps, anchorOf(final, n)),
     );
   }
 
@@ -85,13 +91,16 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
   for (const id of movedInTree(base, final)) {
     const b = base.nodes[id]!;
     const f = final.nodes[id]!;
+    // Into a new parent (group) or out of a removed one (ungroup), the move is part
+    // of a structural change the AI does as a whole; neighbours alone can't place it.
+    const anchor = base.nodes[f.parent!] && final.nodes[b.parent!] ? anchorOf(final, f) : undefined;
     reorders.push(
       withMeta(final, f, {
         op: "reorder",
         node: id,
         from: { parent: b.parent!, index: getNode(base, b.parent!).children.indexOf(id) },
         to: { parent: f.parent!, index: getNode(final, f.parent!).children.indexOf(id) },
-      }, positionIntent(final, f), anchorOf(final, f)),
+      }, positionIntent(final, f), anchor),
     );
   }
 
@@ -134,7 +143,9 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
       const n = final.nodes[op.node];
       if (n) notes.push(withMeta(final, n, op));
     } else if (op.op === "region") {
-      if (final.nodes[op.parent]) notes.push({ ...op });
+      // Named after (and located at) the element the box was drawn in.
+      const parent = final.nodes[op.parent];
+      if (parent) notes.push(withMeta(final, parent, op));
     }
   }
 
@@ -142,10 +153,14 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
 }
 
 export function describeNode(n: SceneNode): string {
+  if (n.type === "root") return "the page";
   const name = n.tag && n.tag !== n.type ? `${n.type}<${n.tag}>` : n.type;
   const text = n.props.text?.trim();
   if (text) return `${name} "${text.length > 32 ? text.slice(0, 31) + "…" : text}"`;
   if (n.props.id) return `${name}#${n.props.id}`;
+  // Class names (not Glimpse's own) say more than an editor id, e.g. box<div>.stage
+  const classes = (n.props.class ?? "").split(/\s+/).filter((c) => c && !c.startsWith("__glimpse"));
+  if (classes.length) return `${name}.${classes.slice(0, 2).join(".")}`;
   return `${name} ${n.id}`;
 }
 
@@ -170,6 +185,30 @@ function anchorOf(scene: Scene, n: SceneNode): Change["anchor"] {
   const after = formatSource(withSource(siblings.slice(0, i).reverse()));
   const before = formatSource(withSource(siblings.slice(i + 1)));
   return { ...(after ? { after } : {}), ...(before ? { before } : {}) };
+}
+
+/**
+ * The part of `id`'s subtree in `scene` that is missing from `other` (the
+ * nodes really added or deleted), plus the ids where the walk stopped because
+ * the node exists in both: elements wrapped by a new group, or kept by an ungroup.
+ */
+function splitSubtree(scene: Scene, other: Scene, id: string): { nodes: SceneNode[]; kept: string[] } {
+  const nodes: SceneNode[] = [];
+  const kept: string[] = [];
+  const walk = (nid: string) => {
+    nodes.push(scene.nodes[nid]!);
+    for (const c of scene.nodes[nid]!.children) {
+      if (other.nodes[c]) kept.push(c);
+      else walk(c);
+    }
+  };
+  walk(id);
+  return { nodes, kept };
+}
+
+function listNodes(scene: Scene, ids: string[]): string {
+  const names = ids.map((id) => describeNode(getNode(scene, id)));
+  return names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0]!;
 }
 
 function unionKeys(a: Record<string, string>, b: Record<string, string>): string[] {

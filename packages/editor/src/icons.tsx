@@ -142,6 +142,86 @@ export const Hand = (p: P) => (
     <path d="M7 11V6a2 2 0 0 1 4 0v5M11 10V4a2 2 0 0 1 4 0v6M15 10V6a2 2 0 0 1 4 0v8a7 7 0 0 1-7 7h-1a7 7 0 0 1-6-3.5L3 14a2 2 0 0 1 3.5-2L7 13" />
   </Icon>
 );
+/* Multi-select editing: align, distribute, group, box prompt, discard. */
+export const AlignLeft = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 3v18" />
+    <rect x="8" y="6" width="12" height="4" rx="1" />
+    <rect x="8" y="14" width="7" height="4" rx="1" />
+  </Icon>
+);
+export const AlignCenter = (p: P) => (
+  <Icon {...p}>
+    <path d="M12 3v3M12 10v4M12 18v3" />
+    <rect x="5" y="6" width="14" height="4" rx="1" />
+    <rect x="8" y="14" width="8" height="4" rx="1" />
+  </Icon>
+);
+export const AlignRight = (p: P) => (
+  <Icon {...p}>
+    <path d="M20 3v18" />
+    <rect x="4" y="6" width="12" height="4" rx="1" />
+    <rect x="9" y="14" width="7" height="4" rx="1" />
+  </Icon>
+);
+export const AlignTop = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 4h18" />
+    <rect x="6" y="8" width="4" height="12" rx="1" />
+    <rect x="14" y="8" width="4" height="7" rx="1" />
+  </Icon>
+);
+export const AlignMiddle = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 12h3M10 12h4M18 12h3" />
+    <rect x="6" y="5" width="4" height="14" rx="1" />
+    <rect x="14" y="8" width="4" height="8" rx="1" />
+  </Icon>
+);
+export const AlignBottom = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 20h18" />
+    <rect x="6" y="4" width="4" height="12" rx="1" />
+    <rect x="14" y="9" width="4" height="7" rx="1" />
+  </Icon>
+);
+export const DistributeH = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 3v18M20 3v18" />
+    <rect x="9" y="7" width="6" height="10" rx="1" />
+  </Icon>
+);
+export const DistributeV = (p: P) => (
+  <Icon {...p}>
+    <path d="M3 4h18M3 20h18" />
+    <rect x="7" y="9" width="10" height="6" rx="1" />
+  </Icon>
+);
+export const Group = (p: P) => (
+  <Icon {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" strokeDasharray="3 3" />
+    <rect x="7" y="7" width="5" height="5" rx="1" />
+    <rect x="12" y="12" width="5" height="5" rx="1" />
+  </Icon>
+);
+export const Ungroup = (p: P) => (
+  <Icon {...p}>
+    <rect x="3" y="3" width="8" height="8" rx="1.5" />
+    <rect x="13" y="13" width="8" height="8" rx="1.5" />
+  </Icon>
+);
+export const BoxPrompt = (p: P) => (
+  <Icon {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="2" strokeDasharray="3 2.5" />
+    <path d="M8 12h8M12 9v6" />
+  </Icon>
+);
+export const Trash = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 7h16M10 11v6M14 11v6" />
+    <path d="m6 7 1 13h10l1-13M9 7V4h6v3" />
+  </Icon>
+);
 export const Code = (p: P) => (
   <Icon {...p}>
     <path d="m8 7-5 5 5 5M16 7l5 5-5 5" />
