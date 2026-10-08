@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
+import type { Target } from "@glimpse/core";
+import { startServer, type Handoff } from "@glimpse/server";
+
+const HELP = `glimpse — see what your AI built, edit it visually, hand the changes back.
+
+Usage
+  glimpse open [dir]        Open a project in Glimpse (default: current directory)
+      --port <n>            Port (default 4321, falls back to a free port)
+      --target <t>          html | react | tui | native (auto-detected)
+      --entry <file>        Page or scene file to open (default index.html)
+      --no-browser          Don't open a browser window
+  glimpse wait [dir]        Block until the human clicks "Send to AI", then print the instructions
+      --after <seq>         Only return handoffs newer than this number (default: latest seen)
+      --timeout <sec>       Give up after this long and print {"status":"editing"} (default 300)
+      --json                Print the full handoff as JSON
+  glimpse changes [dir]     Print the latest handoff (add --json for JSON)
+  glimpse status <message>  Show a status line in Glimpse's live activity feed
+      --dir <dir>           Project directory (default: current directory)
+
+Agents: run \`glimpse open\` once, then loop on \`glimpse wait\` and apply what it prints.
+`;
+
+interface ServerInfo {
+  url: string;
+  pid: number;
+}
+
+async function main(): Promise<void> {
+  const [command = "help", ...rest] = process.argv.slice(2);
+  switch (command) {
+    case "open":
+      return open(rest);
+    case "wait":
+      return wait(rest);
+    case "changes":
+      return changes(rest);
+    case "status":
+      return status(rest);
+    case "help":
+    case "--help":
+    case "-h":
+      process.stdout.write(HELP);
+      return;
+    case "--version":
+    case "-v":
+      process.stdout.write("0.1.0\n");
+      return;
+    default:
+      process.stderr.write(`Unknown command: ${command}\n\n${HELP}`);
+      process.exitCode = 1;
+  }
+}
+
+async function open(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      port: { type: "string" },
+      target: { type: "string" },
+      entry: { type: "string" },
+      "no-browser": { type: "boolean", default: false },
+    },
+  });
+  const dir = resolve(positionals[0] ?? ".");
+  if (!existsSync(dir)) throw new Error(`No such directory: ${dir}`);
+
+  const editorDir = join(dirname(fileURLToPath(import.meta.url)), "editor");
+  const base = {
+    dir,
+    target: values.target as Target | undefined,
+    entry: values.entry,
+    editorDir: existsSync(editorDir) ? editorDir : undefined,
+  };
+  const wanted = values.port ? Number(values.port) : 4321;
+  const srv = await startServer({ ...base, port: wanted }).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE" && !values.port) return startServer({ ...base, port: 0 });
+    throw err;
+  });
+
+  const infoFile = join(dir, ".glimpse", "server.json");
+  await mkdir(dirname(infoFile), { recursive: true });
+  await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid } satisfies ServerInfo, null, 2));
+
+  process.stdout.write(
+    [
+      "",
+      `  ◉ glimpse  ${srv.url}`,
+      `    project  ${dir}`,
+      `    target   ${srv.project.target} (${srv.project.entry})`,
+      "",
+      "  Live mode is on: file changes appear in Glimpse instantly.",
+      "  Agents: run `glimpse wait` to receive the human's edits.",
+      "",
+    ].join("\n") + "\n",
+  );
+  if (!values["no-browser"]) openBrowser(srv.url);
+
+  const shutdown = async () => {
+    await rm(infoFile, { force: true });
+    await srv.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+async function wait(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      after: { type: "string" },
+      timeout: { type: "string", default: "300" },
+      json: { type: "boolean", default: false },
+    },
+  });
+  const dir = resolve(positionals[0] ?? ".");
+  const server = await findServer(dir);
+  const after = values.after !== undefined ? Number(values.after) : await lastSeq(server);
+  const timeout = Number(values.timeout);
+
+  // Long-poll in chunks so proxies and agent tool timeouts don't cut the request.
+  const deadline = Date.now() + timeout * 1000;
+  while (Date.now() < deadline) {
+    const chunk = Math.max(1, Math.min(60, Math.ceil((deadline - Date.now()) / 1000)));
+    const res = await fetch(`${server.url}/api/handoff/next?after=${after}&timeout=${chunk}`);
+    const body = (await res.json()) as { status: string; handoff?: Handoff };
+    if (body.status === "ready" && body.handoff) {
+      printHandoff(body.handoff, values.json, dir);
+      return;
+    }
+  }
+  process.stdout.write(values.json ? `${JSON.stringify({ status: "editing" })}\n` : "Still editing — nothing sent yet. Run `glimpse wait` again.\n");
+}
+
+async function changes(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { json: { type: "boolean", default: false } } });
+  const dir = resolve(positionals[0] ?? ".");
+  const file = join(dir, ".glimpse", "latest.json");
+  if (!existsSync(file)) {
+    process.stdout.write(values.json ? `${JSON.stringify({ status: "none" })}\n` : "Nothing has been sent from Glimpse yet.\n");
+    return;
+  }
+  printHandoff(JSON.parse(await readFile(file, "utf8")) as Handoff, values.json, dir);
+}
+
+async function status(args: string[]): Promise<void> {
+  const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { dir: { type: "string", default: "." } } });
+  const message = positionals.join(" ").trim();
+  if (!message) throw new Error("Usage: glimpse status <message>");
+  const server = await findServer(resolve(values.dir));
+  await fetch(`${server.url}/api/status`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+}
+
+function printHandoff(h: Handoff, json: boolean, dir: string): void {
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ status: "ready", handoff: h }, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write(
+    `${h.prompt}\n\n(Handoff #${h.seq}. Full JSON with source locations: ${join(dir, ".glimpse", "handoffs", `${h.seq}.json`)})\n`,
+  );
+}
+
+async function findServer(dir: string): Promise<ServerInfo> {
+  const file = join(dir, ".glimpse", "server.json");
+  if (!existsSync(file)) throw new Error(`Glimpse isn't open for ${dir}. Run \`glimpse open ${dir}\` first.`);
+  const info = JSON.parse(await readFile(file, "utf8")) as ServerInfo;
+  try {
+    await fetch(`${info.url}/api/session`);
+  } catch {
+    throw new Error(`Glimpse at ${info.url} isn't responding. Run \`glimpse open ${dir}\` again.`);
+  }
+  return info;
+}
+
+async function lastSeq(server: ServerInfo): Promise<number> {
+  const res = await fetch(`${server.url}/api/session`);
+  return ((await res.json()) as { lastSeq: number }).lastSeq;
+}
+
+function openBrowser(url: string): void {
+  const [cmd, args] =
+    process.platform === "darwin" ? ["open", [url]]
+    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+    : ["xdg-open", [url]];
+  try {
+    spawn(cmd, args as string[], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  } catch {
+    // No browser available (e.g. a server); the URL is printed above.
+  }
+}
+
+main().catch((err: unknown) => {
+  process.stderr.write(`glimpse: ${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = 1;
+});
