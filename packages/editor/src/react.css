@@ -1,0 +1,78 @@
+/* ── React projects ─────────────────────────────────── */
+
+/* Why the preview can't run, in place of the page (canvas) or under the composer (home). */
+.preview-error {
+  margin: auto;
+  max-width: 460px;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--muted);
+}
+.preview-error h3 {
+  margin: 16px 0 6px;
+  color: var(--text);
+  font-size: 18px;
+}
+.preview-error p {
+  margin: 0 0 16px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.preview-error .hint {
+  margin: 14px 0 0;
+}
+.preview-error-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--warn);
+}
+.preview-error.compact {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(720px, 100%);
+  max-width: none;
+  margin: 16px 0 0;
+  padding: 10px 10px 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  text-align: left;
+  font-size: 12.5px;
+}
+.preview-error.compact p {
+  flex: 1;
+  margin: 0;
+}
+.preview-error.compact strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.preview-error.compact .ghost {
+  flex: none;
+}
+.preview-error-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
+/* Edit source: an edit that goes to the AI because the page shows the element more than once. */
+.repeat-note {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}

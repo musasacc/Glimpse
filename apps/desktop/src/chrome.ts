@@ -1,11 +1,10 @@
 /**
  * How a project window tells the editor it runs inside the desktop app.
  *
- * The editor is loaded as `<server>/?desktop=<mac|win|linux>`, and once the DOM is ready the app sets
- * `<html data-glimpse-desktop="mac|win|linux">` (plus `data-glimpse-fullscreen` while fullscreen). On macOS the
- * window uses titleBarStyle "hiddenInset", so the traffic lights sit on top of the page: until the editor styles
- * this itself, the app injects MAC_CHROME_CSS, which reserves a 30px draggable strip at the top for them.
- * The selectors only depend on the editor's top-level `.shell` element and are a no-op if it's renamed.
+ * The editor is loaded as `<server>/?desktop=<mac|win|linux>` (it marks itself before the first paint), and once the
+ * DOM is ready the app sets `<html data-glimpse-desktop="mac|win|linux">` too, plus `data-glimpse-fullscreen` while
+ * in full screen. On macOS the window uses titleBarStyle "hiddenInset", so the traffic lights sit on top of the page
+ * at MAC_TRAFFIC_LIGHTS: the editor's styles.css leaves a strip for them and makes its top bars drag the window.
  */
 export type DesktopPlatform = "mac" | "win" | "linux";
 
@@ -13,33 +12,15 @@ export function desktopPlatform(platform: NodeJS.Platform = process.platform): D
   return platform === "darwin" ? "mac" : platform === "win32" ? "win" : "linux";
 }
 
-/** Height of the title strip that holds the traffic lights. */
-export const MAC_TITLE_STRIP = 30;
-
-/** Where the traffic lights go inside that strip. */
+/** Where the traffic lights go: inside the 30px strip the editor leaves at the top (packages/editor/src/styles.css). */
 export const MAC_TRAFFIC_LIGHTS = { x: 14, y: 9 };
 
-export const MAC_CHROME_CSS = `
-html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .shell { padding-top: ${MAC_TITLE_STRIP}px; }
-html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) #glimpse-desktop-drag {
-  position: fixed; top: 0; left: 0; right: 0; height: ${MAC_TITLE_STRIP}px; z-index: 2147483647;
-  -webkit-app-region: drag;
-}
-html[data-glimpse-desktop="mac"][data-glimpse-fullscreen] #glimpse-desktop-drag { display: none; }
-`;
-
-/** Script run in the editor page after dom-ready (main world; it only touches attributes and one empty div). */
+/** Script run in the editor page after dom-ready (main world; it only touches attributes). */
 export function chromeScript(platform: DesktopPlatform, fullscreen: boolean): string {
   return `(() => {
   const root = document.documentElement;
   root.setAttribute("data-glimpse-desktop", ${JSON.stringify(platform)});
   root.toggleAttribute("data-glimpse-fullscreen", ${fullscreen ? "true" : "false"});
-  if (${JSON.stringify(platform)} === "mac" && !document.getElementById("glimpse-desktop-drag")) {
-    const strip = document.createElement("div");
-    strip.id = "glimpse-desktop-drag";
-    strip.setAttribute("aria-hidden", "true");
-    document.body.appendChild(strip);
-  }
 })();`;
 }
 

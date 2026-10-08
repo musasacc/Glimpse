@@ -51,9 +51,11 @@ The app tells the editor where it runs in two ways:
 - the editor URL gets `?desktop=mac` (`win` / `linux` on the other systems), readable at first paint, and
 - after the DOM is ready, `<html data-glimpse-desktop="mac">` (plus `data-glimpse-fullscreen` while in full screen).
 
-Until the editor styles this itself, the app injects a small stylesheet (`apps/desktop/src/chrome.ts`) that adds a
-30px draggable strip for the traffic lights above the editor's `.shell`. When the editor takes it over, it can key
-the same rules off `html[data-glimpse-desktop="mac"]` and the app's injected CSS can go.
+The editor marks `<html>` from the URL before its first paint and styles the window itself
+(`packages/editor/src/styles.css`, under `html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen])`): a 30px
+strip above the panels holds the traffic lights (placed at x 14, y 9), and the window's dark frame, the sidebar's top
+row and the editor toolbar drag the window like a title bar, while the buttons in them stay clickable. In full
+screen the traffic lights are hidden and the strip goes away.
 
 ### Why Electron, and why outside the workspace
 

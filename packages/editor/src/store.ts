@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
+import { followMoves, followOps, isVitePage, repeatedSources, undoAll } from "./hmr";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -51,6 +52,8 @@ interface State {
   agentWaiting: boolean;
   /** The project's entry page exists yet (false until the agent builds it). */
   entryExists: boolean;
+  /** Why the React preview can't run (e.g. "… run npm install"); null when it's fine. */
+  previewError: string | null;
   handoffs: HandoffSummary[];
   /** Handoff shown in the History view. */
   openHandoff: number | null;
@@ -81,6 +84,7 @@ class Store {
     view: "home",
     agentWaiting: false,
     entryExists: true,
+    previewError: null,
     handoffs: [],
     openHandoff: null,
     sidebarOpen: true,
@@ -91,6 +95,12 @@ class Store {
   };
   bridge: DomBridge | null = null;
   log: OpLog | null = null;
+  /** React pages: unsent edits taken off the page while an HMR update runs (see beforeUpdate), and the page before it. */
+  private held: readonly { ops: Op[] }[] | null = null;
+  private heldBase: Scene | null = null;
+  private heldTimer: ReturnType<typeof setTimeout> | undefined;
+  /** React pages: edits already handed off. They stay on screen until React next updates the page. */
+  private sent: OpLog[] = [];
   private listeners = new Set<() => void>();
   private activitySeq = 0;
 
@@ -121,9 +131,12 @@ class Store {
    * reloaded because the AI saved a file), replay them on top of the new page.
    */
   attach(doc: Document): void {
-    const pending = this.log?.entries ?? [];
+    // React renders a reloaded page anew, reusing nothing; follow the elements as after an update.
+    const before = isVitePage(doc) ? (this.heldBase ?? this.log?.base ?? null) : null;
+    const pending = this.unsent();
+    this.sent = [];
     this.bridge = new DomBridge(doc);
-    this.rebase(pending);
+    this.rebase(pending, before);
   }
 
   /**
@@ -132,28 +145,91 @@ class Store {
    */
   pageChanged(): void {
     if (!this.bridge) return;
-    this.rebase(this.log?.entries ?? []);
+    // A React page only changes under us after beforeUpdate took the edits off; otherwise they are still on it.
+    const held = this.held;
+    if (!held && isVitePage(this.bridge.doc)) return;
+    const before = this.heldBase;
+    const pending = this.unsent();
+    // Edits made while React was updating went onto the page it was changing: take them off too, then replay all.
+    if (held && this.log) undoAll(this.log);
+    this.rebase(pending, before);
+  }
+
+  /**
+   * React pages: Vite is about to apply an HMR update. React diffs against its
+   * own record of the DOM, so our edits must be off the page first (otherwise it
+   * removes the wrong elements); pageChanged replays them once it has settled.
+   * Edits already handed off come off for good: the source has (or will have) them.
+   */
+  beforeUpdate(): void {
+    if (!this.bridge || this.held) return;
+    this.held = [...(this.log?.entries ?? [])];
+    this.heldBase = this.log?.base ?? null;
+    if (this.log) undoAll(this.log);
+    for (const log of this.sent.reverse()) undoAll(log);
+    this.sent = [];
+    // Normally "after-update" follows within ~2 s; never keep the edits off the page for good.
+    clearTimeout(this.heldTimer);
+    this.heldTimer = setTimeout(() => this.pageChanged(), 6000);
+  }
+
+  /** Unsent edits: those held during a React update, then any made since. Ends the hold. */
+  private unsent(): readonly { ops: Op[] }[] {
+    const entries = [...(this.held ?? []), ...(this.log?.entries ?? [])];
+    this.held = this.heldBase = null;
+    clearTimeout(this.heldTimer);
+    return entries;
   }
 
   /** After a handoff, the current page (with the human's edits) becomes the new base. */
   commitHandoff(): void {
     if (!this.bridge) return;
+    // React still renders the page without them: they come off before its next update (see beforeUpdate).
+    if (this.log?.canUndo && isVitePage(this.bridge.doc)) this.sent.push(this.log);
     this.log = this.newLog();
     this.set({ stale: false });
   }
 
-  private rebase(entries: readonly { ops: Op[] }[]): void {
+  /**
+   * React pages, Edit source: take the edits off the page before Glimpse writes
+   * them into the files, so the update Vite sends (maybe before the write's
+   * response) finds the DOM as React left it. They stay on the redo stack.
+   */
+  takeOffEdits(): void {
+    if (this.log) undoAll(this.log);
+    this.set({});
+  }
+
+  /** The write failed: put the edits taken off by takeOffEdits back. */
+  putBackEdits(): void {
+    while (this.log?.redo()) {}
+    this.set(this.existingSelection());
+  }
+
+  /** The page shows a React app (served by Vite), not a static HTML page. */
+  get isVitePage(): boolean {
+    return isVitePage(this.bridge?.doc);
+  }
+
+  /** Source locations the page renders more than once, with how often (see repeatedSources). */
+  get repeats(): Map<string, number> {
+    return repeatedSources([...this.sent, ...(this.log ? [this.log] : [])].map((l) => l.base));
+  }
+
+  /** `before`: the page React rendered before an update or reload, so edits follow the elements it moved (see followMoves). */
+  private rebase(entries: readonly { ops: Op[] }[], before: Scene | null = null): void {
     this.log = this.newLog();
+    const moved = before ? followMoves(before, this.log.base) : new Map<string, string>();
     let dropped = 0;
     for (const entry of entries) {
       try {
-        this.log.apply(...entry.ops);
+        this.log.apply(...followOps(entry.ops, moved, this.log.scene));
       } catch {
         dropped++;
       }
     }
     if (dropped) this.activity("warn", `${dropped} of your edits no longer match the page after the AI's change and were dropped`);
-    this.set({ ...this.existingSelection(), hovered: null, stale: dropped > 0 });
+    this.set({ ...this.existingSelection(moved), hovered: null, stale: dropped > 0 });
   }
 
   private newLog(): OpLog {
@@ -201,11 +277,13 @@ class Store {
     this.set({ selected: multi[0] ?? null, multi });
   }
 
-  /** Forget selected elements that are gone (e.g. undoing the step that created them). */
-  private existingSelection(): Pick<State, "selected" | "multi"> {
+  /** Forget selected elements that are gone (e.g. undoing the step that created them); follow those that `moved`. */
+  private existingSelection(moved?: Map<string, string>): Pick<State, "selected" | "multi"> {
     const nodes = this.scene?.nodes ?? {};
-    const multi = this.state.multi.filter((id) => nodes[id]);
-    const selected = this.state.selected && nodes[this.state.selected] ? this.state.selected : (multi[0] ?? null);
+    const follow = (id: string) => moved?.get(id) ?? id;
+    const multi = this.state.multi.map(follow).filter((id) => nodes[id]);
+    const current = this.state.selected && follow(this.state.selected);
+    const selected = current && nodes[current] ? current : (multi[0] ?? null);
     return { selected, multi };
   }
 
@@ -238,6 +316,7 @@ class Store {
    */
   discard(): void {
     this.log = null;
+    this.held = this.heldBase = null;
     this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
 
