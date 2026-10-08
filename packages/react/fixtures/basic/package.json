@@ -1,0 +1,6 @@
+{
+  "name": "glimpse-fixture-react-basic",
+  "private": true,
+  "type": "module",
+  "description": "Test fixture: resolves react, react-dom, vite and @vitejs/plugin-react from @glimpse/react's devDependencies."
+}
