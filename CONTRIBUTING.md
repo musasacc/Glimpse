@@ -27,6 +27,7 @@ Vite proxies the API, the preview and the live-mode websocket to the Glimpse ser
 |---|---|
 | `packages/core` | Scene model, ops, op log (undo/redo), change-list diffing, prompt rendering. Pure TS with no DOM. |
 | `packages/server` | HTTP + WebSocket server, preview instrumentation (`instrument.ts`), live-mode client (`inject.ts`), file watching, handoffs, Edit source patcher (`patch-html.ts`) |
+| `packages/react` | React/Vite engine: JSX source locations (`instrument-jsx.ts`), the Vite plugin and preview client, the preview dev server on the project's own Vite (`dev-server.ts`), Edit source for JSX (`patch-jsx.ts`). Example: `examples/react-donut` |
 | `packages/editor` | React editor UI: home, editor, history. `dom.ts` bridges the preview DOM and the scene |
 | `packages/mcp` | MCP server (`glimpse mcp`) |
 | `packages/cli` | The `glimpse` command (npm: `glimpse-ui`); bundles the built editor |
