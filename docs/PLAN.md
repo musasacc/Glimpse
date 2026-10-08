@@ -128,6 +128,37 @@ The CLI mirrors these commands (`glimpse open .`, `glimpse wait`, `glimpse chang
 5. **Scene targets**: the scene JSON schema, then the TUI grid renderer (plus xterm live view) and the native widget mock renderer.
 6. **Polish**: per-agent setup docs, `npx` publish, optional Tauri wrapper.
 
+## Phase 2 — detailed plan (next up)
+Phase 1 is done (commit `c05bc65`): core, server with live mode, black editor, CLI, logo, README. Phase 2 builds on it.
+
+**1. Source locations (HTML)**
+- `packages/server/src/instrument.ts` (new): when serving a preview `.html`, parse it with **parse5** (`sourceCodeLocationInfo: true`) and add `data-glimpse-src="file:line:col"` to every element in `<body>`. This runs alongside the existing `injectClient()` in `server.ts → servePreview`.
+- `packages/editor/src/dom.ts → snapshot()`: read `data-glimpse-src` into `node.source` and leave it out of `props`. The live morph keeps it, because the new document carries the same attribute.
+- Result: every change sent to the AI gets `src`. `withMeta()` in `core/changes.ts` already attaches it.
+
+**2. Edit source (Glimpse writes the files)**
+- `packages/server/src/patch-html.ts` (new): `planPatch(dir, changes) → { files: [{file, before, after, diff}], applied: Change[], needsAi: Change[] }`. It finds each element by its `src` start offset (parse5 locations) and edits the text with **magic-string**:
+  - `setText` replaces the element's own text range. `setStyle` creates or edits the inline `style=""` attribute. `setProp` sets or removes an attribute. `setHidden` toggles the `hidden` attribute. `delete` removes the element's range plus its leading whitespace line. `reorder` moves the range when the parent is unchanged. `add` serialises the new node and inserts it after the previous sibling (or inside the parent).
+  - Moves, resizes, type swaps, comments, behaviors and anything without `src` go to `needsAi`.
+- Diffs come from the `diff` (jsdiff) package as a unified diff.
+- API in `server.ts`: `POST /api/patch/preview` and `POST /api/patch/apply`. Apply first copies the files to `.glimpse/backups/<ts>/`, then writes them.
+- Editor: `Edit source` is enabled and opens a `DiffDialog` with per-file diffs, an Apply/Cancel button, and a "Needs AI (n)" list with **Send these to AI**, which posts a handoff with only `needsAi`. After apply, `store.commitHandoff()` runs, and the live watcher shows the result.
+
+**3. MCP server**
+- `packages/mcp` (new): `@modelcontextprotocol/sdk` over stdio, started with `glimpse mcp` (new CLI subcommand). The MCP process hosts the Glimpse server itself, reusing `startServer()`, so no extra process is needed.
+- Tools: `glimpse_open({dir, target?, entry?})` returns `{url}`. `glimpse_wait_for_done({timeoutSec=300})` returns `{status:"editing"}` or `{status:"ready", prompt, changeList}`, built on `nextHandoff()`. Also `glimpse_get_changes`, `glimpse_status({message})`, `glimpse_update` (broadcasts a reload) and `glimpse_close`.
+- README and docs/agents.md get one-line setup for each agent (`claude mcp add glimpse -- npx glimpse mcp`, plus Codex, Cursor and Gemini config snippets).
+
+**4. Add from palette**
+- A left-sidebar "Add" section above Layers with button, heading, text, link, input, image and card/box. It inserts after the selected element, or into it if it's a container, as an `add` op. It uses `tagFor()` and `DomBridge.create()` in `dom.ts` and selects the new element.
+
+**Verification (phase 2)**
+- Golden-file unit tests for `patch-html.ts`: input HTML plus changes gives the expected HTML, and `needsAi` is split out correctly.
+- Instrument test: the served preview carries the correct `data-glimpse-src` for nested elements.
+- MCP test: an SDK client over an in-memory or stdio transport calls `glimpse_open`, a handoff is posted through the HTTP API, and `glimpse_wait_for_done` returns it.
+- Playwright e2e on `examples/donut` (as in phase 1): change text and color and delete a button, then click Edit source, check the diff, apply, and confirm the file content and the live update. Also check that a move lands in "Needs AI".
+- `pnpm typecheck && pnpm test && pnpm build`, then commit and push to `claude/charming-faraday-sukumk`.
+
 ## Verification
 - `pnpm test`: unit tests for op compaction, undo/redo and the source patchers (golden files: input source + ops gives the expected output source).
 - Playwright e2e: open the fixture HTML and React apps, drag, delete and add elements, click Done, then assert the change-list JSON and the patched files.

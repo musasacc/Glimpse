@@ -45,7 +45,10 @@ export const CLIENT_SCRIPT = String.raw`(() => {
     const ownClass = (el) => (el.getAttribute("class") || "").replace(/\s*__glimpse-flash/g, "").trim();
     for (const { name, value } of [...to.attributes]) {
       const same = name === "class" ? ownClass(from) === value.trim() : from.getAttribute(name) === value;
-      if (!same) { from.setAttribute(name, value); changed.add(from); }
+      if (same) continue;
+      from.setAttribute(name, value);
+      // Source line numbers shift whenever the file is edited; that alone isn't a visible change.
+      if (name !== "data-glimpse-src") changed.add(from);
     }
     for (const { name } of [...from.attributes]) {
       if (to.hasAttribute(name)) continue;

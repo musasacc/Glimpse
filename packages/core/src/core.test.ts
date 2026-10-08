@@ -179,3 +179,17 @@ describe("move intent alignment", () => {
     expect(buildChangeList(log).changes[0]!.intent).toContain("horizontally centered in parent");
   });
 });
+
+describe("anchors", () => {
+  it("records the source of the neighbours an added or reordered element sits between", () => {
+    const log = new OpLog(fixture());
+    log.apply(duplicateOp(log.scene, "b1", (id) => `${id}-copy`));
+    log.apply({ op: "reorder", node: "b3", from: { parent: "nav", index: 3 }, to: { parent: "nav", index: 0 } });
+    const changes = buildChangeList(log).changes;
+    const add = changes.find((c) => c.op === "add")!;
+    expect(add.anchor).toEqual({ after: "index.html:10:5", before: "index.html:11:5" });
+    expect(add.src).toBe(undefined); // nav has no source in the fixture
+    const reorder = changes.find((c) => c.op === "reorder")!;
+    expect(reorder.anchor).toEqual({ before: "index.html:10:5" });
+  });
+});

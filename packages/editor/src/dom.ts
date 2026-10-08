@@ -1,4 +1,4 @@
-import { applyOp, createScene, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { applyOp, createScene, type SourceLocation, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 
 /**
  * Bridge between the live preview DOM (same-origin iframe) and the Glimpse scene.
@@ -31,6 +31,8 @@ export class DomBridge {
     const body = this.doc.body;
     const scene = createScene("html", { x: 0, y: 0, w: body.scrollWidth, h: body.scrollHeight });
     this.register(body, "root");
+    const bodySrc = parseSrc(body.getAttribute(SRC_ATTR));
+    if (bodySrc) scene.nodes.root!.source = bodySrc;
     const walk = (el: Element, parentId: string) => {
       for (const child of Array.from(el.children)) {
         if (!isEditable(child)) continue;
@@ -56,9 +58,12 @@ export class DomBridge {
       style[key] = html.style.getPropertyValue(key);
     }
     const props: Record<string, string> = {};
-    for (const attr of Array.from(el.attributes)) if (attr.name !== "style") props[attr.name] = attr.value;
+    for (const attr of Array.from(el.attributes)) {
+      if (attr.name !== "style" && attr.name !== SRC_ATTR) props[attr.name] = attr.value;
+    }
     const text = ownText(el);
     if (text) props.text = text;
+    const source = parseSrc(el.getAttribute(SRC_ATTR));
     return {
       id,
       type: nodeType(el),
@@ -68,6 +73,7 @@ export class DomBridge {
       layout: { x: Math.round(rect.left - prect.left), y: Math.round(rect.top - prect.top), w: Math.round(rect.width), h: Math.round(rect.height) },
       style,
       props,
+      ...(source ? { source } : {}),
     };
   }
 
@@ -174,7 +180,18 @@ export class DomBridge {
   private register(el: Element, id: string): void {
     this.ids.set(el, id);
     this.els.set(id, el);
+    // Never hand out an id that is already in use (e.g. replayed after a reload).
+    const n = /^g(\d+)$/.exec(id);
+    if (n && Number(n[1]) >= this.next) this.next = Number(n[1]) + 1;
   }
+}
+
+/** Added by the Glimpse server: where the element lives in source ("file:line:col"). */
+export const SRC_ATTR = "data-glimpse-src";
+
+function parseSrc(value: string | null): SourceLocation | undefined {
+  const m = value ? /^(.*):(\d+):(\d+)$/.exec(value) : null;
+  return m ? { file: m[1]!, line: Number(m[2]), col: Number(m[3]) } : undefined;
 }
 
 const SKIP = new Set(["SCRIPT", "STYLE", "LINK", "META", "NOSCRIPT", "TEMPLATE", "BR"]);

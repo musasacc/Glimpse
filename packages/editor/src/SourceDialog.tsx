@@ -1,0 +1,145 @@
+import { useEffect, useState } from "react";
+import { describeChange, type Change, type ChangeList } from "@glimpse/core";
+import * as I from "./icons";
+import { store } from "./store";
+
+interface Preview {
+  files: { file: string; diff: string }[];
+  applied: Change[];
+  needsAi: Change[];
+}
+
+/**
+ * "Edit source": Glimpse writes the edits straight into the files. Shows the
+ * diff first; whatever can't be written safely (layout moves, logic, notes)
+ * can be sent on to the AI in the same click.
+ */
+export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () => void }) {
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [sendRest, setSendRest] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/patch/preview", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ changeList: list }),
+    })
+      .then(async (r) => {
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.error ?? r.statusText);
+        setPreview(body as Preview);
+      })
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+  }, [list]);
+
+  const apply = async () => {
+    if (!preview) return;
+    setBusy(true);
+    setError(null);
+    try {
+      let written = 0;
+      if (preview.files.length > 0) {
+        const res = await fetch("/api/patch/apply", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ changeList: list }),
+        });
+        const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
+        if (!res.ok) throw new Error(body.error ?? res.statusText);
+        written = body.applied ?? 0;
+        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
+      }
+      if (sendRest && preview.needsAi.length > 0) {
+        const res = await fetch("/api/handoff", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi } }),
+        });
+        if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
+      }
+      store.commitHandoff();
+      void store.refreshHandoffs();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  const nothingToWrite = preview !== null && preview.files.length === 0;
+
+  return (
+    <div className="scrim" onMouseDown={onClose}>
+      <div className="dialog wide" onMouseDown={(e) => e.stopPropagation()}>
+        <header>
+          <h2>Edit source</h2>
+          <p>Glimpse writes your edits straight into the files. Review the changes first; a backup is kept in <code>.glimpse/backups</code>.</p>
+        </header>
+        <div className="body">
+          {!preview && !error && <p className="hint">Working out the changes…</p>}
+          {preview && preview.files.map((f) => <DiffView key={f.file} file={f.file} diff={f.diff} />)}
+          {nothingToWrite && <p className="hint">None of these edits can be written safely by Glimpse. They need your AI.</p>}
+          {preview && preview.needsAi.length > 0 && (
+            <div className="needs-ai">
+              <h3>Needs AI ({preview.needsAi.length})</h3>
+              <p className="hint">Moves, resizes, behaviors and notes need judgement about the code, so your agent does them.</p>
+              <ol className="changes">
+                {preview.needsAi.map((c, i) => (
+                  <li key={i}>
+                    <span className="op">{c.op}</span> {describeChange(c)}
+                  </li>
+                ))}
+              </ol>
+              <label className="check">
+                <input type="checkbox" checked={sendRest} onChange={(e) => setSendRest(e.target.checked)} />
+                Send these {preview.needsAi.length} to your AI
+              </label>
+            </div>
+          )}
+          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+        </div>
+        <footer>
+          <button className="btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="btn primary"
+            onClick={apply}
+            disabled={busy || !preview || (nothingToWrite && (!sendRest || preview.needsAi.length === 0))}
+          >
+            {nothingToWrite ? (
+              <>
+                <I.Send size={14} /> Send to AI
+              </>
+            ) : (
+              <>
+                <I.Code size={14} /> {busy ? "Writing…" : sendRest && preview && preview.needsAi.length > 0 ? "Apply & send the rest" : "Apply"}
+              </>
+            )}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function DiffView({ file, diff }: { file: string; diff: string }) {
+  // Skip the "Index/===/---/+++" header lines of the unified diff.
+  const lines = diff.split("\n").filter((l) => !/^(Index:|={3,}|--- |\+\+\+ |\\ No newline)/.test(l));
+  return (
+    <div className="diff">
+      <div className="diff-file">
+        <I.Code size={14} /> {file}
+      </div>
+      <pre>
+        {lines.map((l, i) => (
+          <div key={i} className={l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : l.startsWith("@@") ? "hunk" : ""}>
+            {l || " "}
+          </div>
+        ))}
+      </pre>
+    </div>
+  );
+}

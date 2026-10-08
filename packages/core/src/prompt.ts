@@ -21,16 +21,19 @@ export function describeChange(c: Change): string {
   const at = c.src ? ` (${c.src})` : "";
   const who = c.label ?? "element";
   const hint = c.intent ? ` — ${c.intent}` : "";
+  const place = c.anchor
+    ? ` In code: ${[c.anchor.after && `after the element at ${c.anchor.after}`, c.anchor.before && `before the element at ${c.anchor.before}`].filter(Boolean).join(", ")}.`
+    : "";
   switch (c.op) {
     case "delete":
       return `Delete ${who}${at}.`;
     case "add": {
       const top = c.nodes[0]!;
       const styles = Object.entries(top.style).map(([k, v]) => `${k}: ${v}`).join("; ");
-      return `Add ${who}${styles ? ` with style {${styles}}` : ""}${hint}.`;
+      return `Add ${who}${styles ? ` with style {${styles}}` : ""}${hint}.${place}`;
     }
     case "reorder":
-      return `Move ${who}${at} in the tree${hint}.`;
+      return `Move ${who}${at} in the tree${hint}.${place}`;
     case "move":
       return `Reposition ${who}${at}${hint}.`;
     case "resize":

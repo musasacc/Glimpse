@@ -10,6 +10,11 @@ export type Change = Op & {
   label?: string;
   /** Semantic hint so the AI can change layout idiomatically instead of hard-coding pixels. */
   intent?: string;
+  /**
+   * For `add` and `reorder`: source locations of the neighbours the element now
+   * sits between, so it can be placed exactly in the code.
+   */
+  anchor?: { after?: string; before?: string };
 };
 
 export interface ChangeList {
@@ -72,7 +77,7 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
         parent: n.parent!,
         index: parent.children.indexOf(id),
         nodes: subtreeIds(final, id).map((nid) => final.nodes[nid]!),
-      }, positionIntent(final, n)),
+      }, positionIntent(final, n), anchorOf(final, n)),
     );
   }
 
@@ -86,7 +91,7 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
         node: id,
         from: { parent: b.parent!, index: getNode(base, b.parent!).children.indexOf(id) },
         to: { parent: f.parent!, index: getNode(final, f.parent!).children.indexOf(id) },
-      }, positionIntent(final, f)),
+      }, positionIntent(final, f), anchorOf(final, f)),
     );
   }
 
@@ -144,14 +149,27 @@ export function describeNode(n: SceneNode): string {
   return `${name} ${n.id}`;
 }
 
-function withMeta<T extends Op>(scene: Scene, n: SceneNode, op: T, intent?: string): Change {
+function withMeta<T extends Op>(scene: Scene, n: SceneNode, op: T, intent?: string, anchor?: Change["anchor"]): Change {
+  // A new element has no source yet; point at its parent instead.
   const src = formatSource(n.source ?? (n.parent ? scene.nodes[n.parent]?.source : undefined));
   return {
     ...op,
     label: describeNode(n),
     ...(src ? { src } : {}),
     ...(intent ? { intent } : {}),
+    ...(anchor && (anchor.after || anchor.before) ? { anchor } : {}),
   };
+}
+
+/** Nearest siblings (that exist in source) before and after `n` in the final tree. */
+function anchorOf(scene: Scene, n: SceneNode): Change["anchor"] {
+  if (n.parent === null) return undefined;
+  const siblings = getNode(scene, n.parent).children;
+  const i = siblings.indexOf(n.id);
+  const withSource = (ids: string[]) => ids.map((id) => scene.nodes[id]?.source).find((s) => s !== undefined);
+  const after = formatSource(withSource(siblings.slice(0, i).reverse()));
+  const before = formatSource(withSource(siblings.slice(i + 1)));
+  return { ...(after ? { after } : {}), ...(before ? { before } : {}) };
 }
 
 function unionKeys(a: Record<string, string>, b: Record<string, string>): string[] {

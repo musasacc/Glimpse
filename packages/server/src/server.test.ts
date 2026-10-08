@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
@@ -28,7 +28,7 @@ describe("server", () => {
 
   it("serves the preview with the live client injected", async () => {
     const html = await (await fetch(`${srv.url}/preview/`)).text();
-    expect(html).toContain("<button>Hi</button>");
+    expect(html).toContain('<button data-glimpse-src="index.html:1:28">Hi</button>');
     expect(html).toContain('<script data-glimpse-internal src="/__glimpse/client.js"></script></body>');
     const css = await fetch(`${srv.url}/preview/style.css`);
     expect(css.headers.get("content-type")).toContain("text/css");
@@ -66,10 +66,72 @@ describe("server", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind: "ai", changeList }),
     });
-    expect(await post.json()).toEqual({ seq: 1 });
+    expect(await post.json()).toEqual({ seq: 1, delivered: true });
     const result = (await waiting) as { status: string; handoff: { prompt: string } };
     expect(result.status).toBe("ready");
     expect(result.handoff.prompt).toContain('Change the text of button "Hi" from "Hi" to "Hello".');
+  });
+
+  it("queues a home-screen request until an agent asks for it, and delivers it once", async () => {
+    const post = await fetch(`${srv.url}/api/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "a website with 5 buttons and a moving donut" }),
+    });
+    expect(await post.json()).toEqual({ seq: 1, delivered: false });
+    const first = (await (await fetch(`${srv.url}/api/handoff/next?timeout=1`)).json()) as {
+      status: string;
+      handoff: { kind: string; prompt: string };
+    };
+    expect(first.status).toBe("ready");
+    expect(first.handoff.kind).toBe("request");
+    expect(first.handoff.prompt).toContain("a website with 5 buttons and a moving donut");
+    expect(first.handoff.prompt).toContain("web page (HTML/CSS/JS)");
+    const again = (await (await fetch(`${srv.url}/api/handoff/next?timeout=1`)).json()) as { status: string };
+    expect(again.status).toBe("editing");
+    const list = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: { title: string; delivered: boolean }[] };
+    expect(list.handoffs[0]).toMatchObject({ title: "a website with 5 buttons and a moving donut", delivered: true });
+  });
+
+  it("keeps handoff history across restarts without replaying it", async () => {
+    await fetch(`${srv.url}/api/request`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "old request" }),
+    });
+    await srv.close();
+    srv = await startServer({ dir, port: 0 });
+    const list = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: unknown[] };
+    expect(list.handoffs).toHaveLength(1);
+    expect(await srv.nextHandoff(undefined, 50)).toBeNull();
+  });
+
+  it("writes edits into the source with a backup (Edit source)", async () => {
+    const changeList: ChangeList = {
+      version: 1,
+      target: "html",
+      createdAt: new Date().toISOString(),
+      changes: [
+        { op: "setText", node: "n1", src: "index.html:1:28", from: "Hi", to: "Hello" },
+        { op: "move", node: "n1", src: "index.html:1:28", from: { x: 0, y: 0 }, to: { x: 40, y: 0 } },
+      ],
+    };
+    const post = (path: string) =>
+      fetch(`${srv.url}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ changeList }) }).then(
+        (r) => r.json() as Promise<{ files: unknown[]; needsAi: { op: string }[]; backup?: string }>,
+      );
+    const preview = await post("/api/patch/preview");
+    expect(preview.files).toEqual([{ file: "index.html", diff: expect.stringContaining("+<!doctype html><html><body><button>Hello</button>") }]);
+    expect(preview.needsAi.map((c) => c.op)).toEqual(["move"]);
+    expect(await readFile(join(dir, "index.html"), "utf8")).toContain("<button>Hi</button>");
+
+    const applied = await post("/api/patch/apply");
+    expect(await readFile(join(dir, "index.html"), "utf8")).toContain("<button>Hello</button>");
+    expect(await readFile(join(dir, applied.backup!, "index.html"), "utf8")).toContain("<button>Hi</button>");
+    // Recorded in history, but an agent isn't woken for it.
+    const list = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: { kind: string }[] };
+    expect(list.handoffs[0]!.kind).toBe("source");
+    expect(await srv.nextHandoff(undefined, 50)).toBeNull();
   });
 
   it("reports 'editing' when nothing was sent before the timeout", async () => {

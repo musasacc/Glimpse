@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Target } from "@glimpse/core";
-import { startServer, type Handoff } from "@glimpse/server";
+import { openBrowser, startServer, type Handoff } from "@glimpse/server";
+import { runStdio } from "@glimpse/mcp";
 
 const HELP = `glimpse — see what your AI built, edit it visually, hand the changes back.
 
@@ -16,15 +16,19 @@ Usage
       --target <t>          html | react | tui | native (auto-detected)
       --entry <file>        Page or scene file to open (default index.html)
       --no-browser          Don't open a browser window
-  glimpse wait [dir]        Block until the human clicks "Send to AI", then print the instructions
-      --after <seq>         Only return handoffs newer than this number (default: latest seen)
+  glimpse wait [dir]        Block until the human sends something (a build request or edits), then print it
+      --after <seq>         Only return handoffs newer than this number (default: the next undelivered one)
       --timeout <sec>       Give up after this long and print {"status":"editing"} (default 300)
       --json                Print the full handoff as JSON
   glimpse changes [dir]     Print the latest handoff (add --json for JSON)
   glimpse status <message>  Show a status line in Glimpse's live activity feed
       --dir <dir>           Project directory (default: current directory)
+  glimpse mcp               Run as an MCP server (stdio) for Claude Code, Codex, Cursor, …
+      --no-browser          Don't open a browser window when a project is opened
+      --port <n>            Preferred port (default 4321)
 
-Agents: run \`glimpse open\` once, then loop on \`glimpse wait\` and apply what it prints.
+Agents: add the MCP server (\`claude mcp add glimpse -- npx glimpse mcp\`), or run
+\`glimpse open\` once and loop on \`glimpse wait\`, applying what it prints.
 `;
 
 interface ServerInfo {
@@ -43,6 +47,8 @@ async function main(): Promise<void> {
       return changes(rest);
     case "status":
       return status(rest);
+    case "mcp":
+      return mcp(rest);
     case "help":
     case "--help":
     case "-h":
@@ -112,6 +118,16 @@ async function open(args: string[]): Promise<void> {
   process.on("SIGTERM", shutdown);
 }
 
+async function mcp(args: string[]): Promise<void> {
+  const { values } = parseArgs({ args, options: { "no-browser": { type: "boolean", default: false }, port: { type: "string" } } });
+  const editorDir = join(dirname(fileURLToPath(import.meta.url)), "editor");
+  await runStdio({
+    editorDir: existsSync(editorDir) ? editorDir : undefined,
+    browser: !values["no-browser"],
+    port: values.port ? Number(values.port) : undefined,
+  });
+}
+
 async function wait(args: string[]): Promise<void> {
   const { values, positionals } = parseArgs({
     args,
@@ -124,14 +140,15 @@ async function wait(args: string[]): Promise<void> {
   });
   const dir = resolve(positionals[0] ?? ".");
   const server = await findServer(dir);
-  const after = values.after !== undefined ? Number(values.after) : await lastSeq(server);
+  // Without --after, the server hands out the oldest message no agent has received yet.
+  const afterParam = values.after !== undefined ? `&after=${Number(values.after)}` : "";
   const timeout = Number(values.timeout);
 
   // Long-poll in chunks so proxies and agent tool timeouts don't cut the request.
   const deadline = Date.now() + timeout * 1000;
   while (Date.now() < deadline) {
     const chunk = Math.max(1, Math.min(60, Math.ceil((deadline - Date.now()) / 1000)));
-    const res = await fetch(`${server.url}/api/handoff/next?after=${after}&timeout=${chunk}`);
+    const res = await fetch(`${server.url}/api/handoff/next?timeout=${chunk}${afterParam}`);
     const body = (await res.json()) as { status: string; handoff?: Handoff };
     if (body.status === "ready" && body.handoff) {
       printHandoff(body.handoff, values.json, dir);
@@ -184,23 +201,6 @@ async function findServer(dir: string): Promise<ServerInfo> {
     throw new Error(`Glimpse at ${info.url} isn't responding. Run \`glimpse open ${dir}\` again.`);
   }
   return info;
-}
-
-async function lastSeq(server: ServerInfo): Promise<number> {
-  const res = await fetch(`${server.url}/api/session`);
-  return ((await res.json()) as { lastSeq: number }).lastSeq;
-}
-
-function openBrowser(url: string): void {
-  const [cmd, args] =
-    process.platform === "darwin" ? ["open", [url]]
-    : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-    : ["xdg-open", [url]];
-  try {
-    spawn(cmd, args as string[], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
-  } catch {
-    // No browser available (e.g. a server); the URL is printed above.
-  }
 }
 
 main().catch((err: unknown) => {

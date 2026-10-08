@@ -1,7 +1,7 @@
 {
-  "name": "@glimpse/server",
+  "name": "@glimpse/mcp",
   "version": "0.1.0",
-  "description": "Glimpse local server: serves the editor and previews, watches files live, brokers AI handoffs.",
+  "description": "Glimpse MCP server: lets any MCP-capable AI agent open UIs in Glimpse and receive the human's edits.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
@@ -12,9 +12,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -22,13 +20,8 @@
   },
   "dependencies": {
     "@glimpse/core": "workspace:*",
-    "chokidar": "^5.0.0",
-    "diff": "^9.0.0",
-    "magic-string": "^1.4.3",
-    "parse5": "^8.0.1",
-    "ws": "^8.18.3"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.18.1"
+    "@glimpse/server": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.0.0"
   }
 }

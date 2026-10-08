@@ -2,12 +2,13 @@ import { useState } from "react";
 import type { NodeType, Op, SceneNode } from "@glimpse/core";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
+import { MOD } from "./platform";
 
 /** Layers: the element tree of the page. */
 export function Layers() {
   const state = useStore();
   const scene = store.scene;
-  if (!scene) return <div className="section empty">Loading page…</div>;
+  if (!scene) return <div className="side-empty">Loading page…</div>;
   const rows: { node: SceneNode; depth: number }[] = [];
   const walk = (id: string, depth: number) => {
     for (const c of scene.nodes[id]!.children) {
@@ -18,25 +19,22 @@ export function Layers() {
   };
   walk(scene.rootId, 0);
   return (
-    <aside className="panel left">
-      <div className="section">
-        <h3>Layers</h3>
-        {rows.length === 0 && <div className="empty">This page has no elements yet.</div>}
-        {rows.map(({ node, depth }) => (
-          <div
-            key={node.id}
-            className={`layer${state.selected === node.id ? " selected" : ""}`}
-            style={{ paddingLeft: 8 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
-            onClick={() => store.set({ selected: node.id })}
-            onMouseEnter={() => store.set({ hovered: node.id })}
-            onMouseLeave={() => store.set({ hovered: null })}
-          >
-            <span className="tag">{node.tag ?? node.type}</span>
-            <span className="txt">{node.props.text ?? (node.props.id ? `#${node.props.id}` : "")}</span>
-          </div>
-        ))}
-      </div>
-    </aside>
+    <>
+      {rows.length === 0 && <div className="side-empty">This page has no elements yet.</div>}
+      {rows.map(({ node, depth }) => (
+        <div
+          key={node.id}
+          className={`layer${state.selected === node.id ? " selected" : ""}`}
+          style={{ paddingLeft: 10 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
+          onClick={() => store.set({ selected: node.id })}
+          onMouseEnter={() => store.set({ hovered: node.id })}
+          onMouseLeave={() => store.set({ hovered: null })}
+        >
+          <span className="tag">{node.tag ?? node.type}</span>
+          <span className="txt">{node.props.text ?? (node.props.id ? `#${node.props.id}` : "")}</span>
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -66,7 +64,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
           Click an element to select it. Drag to move it, double-click to edit its text.
           <br />
           <span className="kbd">T</span> talk to the AI about it · <span className="kbd">Del</span> delete ·{" "}
-          <span className="kbd">⌘D</span> duplicate · <span className="kbd">⌘Z</span> undo · arrows nudge
+          <span className="kbd">{MOD}D</span> duplicate · <span className="kbd">{MOD}Z</span> undo · arrows nudge
         </div>
       </div>
     );

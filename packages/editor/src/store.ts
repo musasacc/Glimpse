@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { buildChangeList, deleteOp, duplicateOp, OpLog, type ChangeList, type Op, type Scene } from "@glimpse/core";
-import { DomBridge } from "./dom";
+import { buildChangeList, deleteOp, duplicateOp, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { DomBridge, tagFor } from "./dom";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -11,6 +11,17 @@ export interface ActivityItem {
   at: number;
   kind: "ai-file" | "ai-status" | "handoff" | "info" | "warn";
   text: string;
+}
+
+export type View = "home" | "editor" | "history";
+
+export interface HandoffSummary {
+  seq: number;
+  kind: "ai" | "source" | "request";
+  createdAt: string;
+  title: string;
+  count: number;
+  delivered: boolean;
 }
 
 export interface ProjectInfo {
@@ -26,6 +37,18 @@ interface State {
   hovered: string | null;
   device: Device;
   activity: ActivityItem[];
+  view: View;
+  /** An agent is currently waiting for something from Glimpse (glimpse wait / MCP). */
+  agentWaiting: boolean;
+  /** The project's entry page exists yet (false until the agent builds it). */
+  entryExists: boolean;
+  handoffs: HandoffSummary[];
+  /** Handoff shown in the History view. */
+  openHandoff: number | null;
+  sidebarOpen: boolean;
+  inspectorOpen: boolean;
+  /** Bumped to force the preview iframe to reload. */
+  reloadKey: number;
   /** The page changed under unsent edits (e.g. the AI saved a file). */
   stale: boolean;
   /** Bumped on every change so React re-renders. */
@@ -44,6 +67,14 @@ class Store {
     hovered: null,
     device: "desktop",
     activity: [],
+    view: "home",
+    agentWaiting: false,
+    entryExists: true,
+    handoffs: [],
+    openHandoff: null,
+    sidebarOpen: true,
+    inspectorOpen: true,
+    reloadKey: 0,
     stale: false,
     rev: 0,
   };
@@ -148,6 +179,55 @@ class Store {
     if (op.op === "add") this.set({ selected: op.nodes[0]!.id });
   }
 
+  /**
+   * Add a new element from the palette: inside the selected element when it is a
+   * container, otherwise right after it, or at the end of the page.
+   */
+  addElement(type: NodeType, tag: string = tagFor(type), defaults: Partial<SceneNode> = {}): void {
+    const scene = this.scene;
+    const bridge = this.bridge;
+    if (!scene || !bridge) return;
+    const sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
+    let parent = scene.rootId;
+    let index = scene.nodes[scene.rootId]!.children.length;
+    if (sel && isContainer(sel)) {
+      parent = sel.id;
+      index = sel.children.length;
+    } else if (sel?.parent) {
+      parent = sel.parent;
+      index = scene.nodes[sel.parent]!.children.indexOf(sel.id) + 1;
+    }
+    // Match the look of the selected element (or a sibling) of the same kind,
+    // so a new button next to the page's buttons looks like one of them.
+    const twin =
+      sel?.tag === tag ? sel
+      : scene.nodes[parent]!.children.map((c) => scene.nodes[c]!).find((c) => c.tag === tag);
+    if (twin?.props.class) defaults = { ...defaults, props: { ...defaults.props, class: twin.props.class } };
+    const node: SceneNode = {
+      id: bridge.newId(),
+      type,
+      tag,
+      parent,
+      children: [],
+      layout: { x: 0, y: 0, w: 0, h: 0 },
+      style: {},
+      props: {},
+      ...defaults,
+    };
+    this.edit({ op: "add", parent, index, nodes: [node] });
+    this.set({ selected: node.id });
+  }
+
+  async refreshHandoffs(): Promise<void> {
+    try {
+      const res = await fetch("/api/handoffs");
+      const body = (await res.json()) as { handoffs: HandoffSummary[] };
+      this.set({ handoffs: body.handoffs });
+    } catch {
+      // server not reachable yet; the live connection retries
+    }
+  }
+
   changeList(note?: string): ChangeList | null {
     return this.log ? buildChangeList(this.log, note) : null;
   }
@@ -156,6 +236,12 @@ class Store {
     const item = { id: ++this.activitySeq, at: Date.now(), kind, text };
     this.set({ activity: [item, ...this.state.activity].slice(0, 200) });
   }
+}
+
+const CONTAINER_TAGS = new Set(["div", "section", "main", "header", "footer", "nav", "article", "aside", "form", "ul", "ol"]);
+
+function isContainer(n: SceneNode): boolean {
+  return CONTAINER_TAGS.has(n.tag ?? "") || n.type === "root";
 }
 
 export const store = new Store();

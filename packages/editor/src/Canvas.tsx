@@ -60,8 +60,27 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const hovRect = state.hovered !== state.selected ? rectOf(state.hovered) : null;
   const pins = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
 
+  if (!state.entryExists) {
+    return (
+      <div className="canvas">
+        <div className="waiting">
+          <div className="waiting-eye">
+            <svg viewBox="0 0 64 64" aria-hidden="true">
+              <path d="M5 32C14 16 50 16 59 32C50 48 14 48 5 32Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+              <circle cx="35" cy="31" r="8" fill="currentColor" />
+            </svg>
+          </div>
+          <h3>{state.agentWaiting ? "Your agent is listening" : "Waiting for your agent to build something"}</h3>
+          <p>
+            As soon as it saves <code>{state.project?.entry ?? "index.html"}</code>, the page appears here live.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <main className="canvas">
+    <div className="canvas">
       {state.stale && (
         <div className="banner">
           Some edits could not be replayed after the AI changed the page.
@@ -71,7 +90,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
         </div>
       )}
       <div className="frame" style={{ width: width ? `${width}px` : "100%" }}>
-        <iframe ref={iframe} src="/preview/" title="Preview" onLoad={onLoad} />
+        <iframe key={state.reloadKey} ref={iframe} src="/preview/" title="Preview" onLoad={onLoad} />
         {mode === "edit" && (
           <div className="overlay">
             {hovRect && <div className="box hover" style={rectStyle(hovRect)} />}
@@ -95,7 +114,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
           </div>
         )}
       </div>
-    </main>
+    </div>
   );
 }
 
