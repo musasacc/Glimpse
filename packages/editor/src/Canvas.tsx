@@ -60,7 +60,8 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
-      if (ev.data?.glimpse === "morphed") {
+      // Only our own page: compare and variant frames run the live client too.
+      if (ev.data?.glimpse === "morphed" && ev.source === iframe.current?.contentWindow) {
         store.pageChanged();
         rerender();
       }

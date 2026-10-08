@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import * as I from "./icons";
+import * as L from "./loop-icons";
 import { ago } from "./Sidebar";
 import { store, useStore } from "./store";
+import "./loop.css";
 
 interface FullHandoff {
   seq: number;
@@ -9,9 +11,11 @@ interface FullHandoff {
   createdAt: string;
   prompt: string;
   delivered: boolean;
+  /** Project-relative path of the PNG the editor sent along (newer servers). */
+  screenshot?: string;
 }
 
-const KIND_LABEL: Record<string, string> = { ai: "Edits → AI", source: "Written to source", request: "Build request" };
+const KIND_LABEL: Record<string, string> = { ai: "Edits → AI", source: "Written to source", request: "Build request", variants: "Variants" };
 
 /** Everything sent to the agent: build requests and edit handoffs. */
 export function HistoryView() {
@@ -52,7 +56,14 @@ export function HistoryView() {
             {state.handoffs.map((h) => (
               <li key={h.seq}>
                 <button className={h.seq === selected ? "active" : ""} onClick={() => store.set({ openHandoff: h.seq })}>
-                  <span className={`kind kind-${h.kind}`}>{KIND_LABEL[h.kind] ?? h.kind}</span>
+                  <span className={`kind kind-${h.kind}`}>
+                    {KIND_LABEL[h.kind] ?? h.kind}
+                    {h.screenshot && (
+                      <span className="shot" title="Sent with a screenshot of your edited page">
+                        <L.Camera size={12} />
+                      </span>
+                    )}
+                  </span>
                   <span className="title ellipsis">{h.title}</span>
                   <span className="meta">
                     #{h.seq} · {ago(h.createdAt)} · {h.delivered ? "received" : "waiting for agent"}
@@ -66,8 +77,10 @@ export function HistoryView() {
               <>
                 <div className="meta">
                   #{open.seq} · {new Date(open.createdAt).toLocaleString()} · {open.delivered ? "received by agent" : "queued"}
+                  {open.screenshot && " · with screenshot"}
                 </div>
                 <pre>{open.prompt}</pre>
+                {open.screenshot && <Screenshot path={open.screenshot} />}
               </>
             ) : (
               <div className="side-empty">Select an entry</div>
@@ -77,4 +90,17 @@ export function HistoryView() {
       )}
     </section>
   );
+}
+
+/**
+ * The picture that went with a handoff. The server keeps it inside the
+ * project (`.glimpse/handoffs/<seq>.png`), so it's read through the preview;
+ * if that isn't served, the image just stays hidden.
+ */
+function Screenshot({ path }: { path: string }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [path]);
+  if (failed) return null;
+  const src = path.startsWith("data:image/") ? path : `/preview/${path.split("/").map(encodeURIComponent).join("/")}`;
+  return <img className="history-shot" src={src} alt="Screenshot of the edited page sent with this handoff" onError={() => setFailed(true)} />;
 }

@@ -20,11 +20,13 @@ export type View = "home" | "editor" | "history";
 
 export interface HandoffSummary {
   seq: number;
-  kind: "ai" | "source" | "request";
+  kind: "ai" | "source" | "request" | "variants";
   createdAt: string;
   title: string;
   count: number;
   delivered: boolean;
+  /** A screenshot of the edited page went with it (newer servers). */
+  screenshot?: boolean | string;
 }
 
 export interface ProjectInfo {

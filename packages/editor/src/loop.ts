@@ -1,0 +1,443 @@
+import { useSyncExternalStore } from "react";
+import { capturePreview, captureUrl, within } from "./capture";
+import { DEVICE_WIDTH, store } from "./store";
+
+/**
+ * The version loop: snapshots of the project files (the timeline), viewing and
+ * comparing them, and design variants the agent prepares for one element.
+ * Kept apart from the edit store; the server owns the data, this mirrors it.
+ */
+
+export type SnapshotKind = "initial" | "ai" | "handoff" | "source" | "restore" | "variant" | "manual";
+
+export interface PublicSnapshot {
+  id: string;
+  seq: number;
+  at: string;
+  kind: SnapshotKind;
+  label: string;
+  fileCount: number;
+  thumb: boolean;
+}
+
+export interface VariantJob {
+  id: string;
+  src?: string;
+  /** e.g. `button "Order now"` */
+  label: string;
+  count: number;
+  hint?: string;
+  createdAt: string;
+  /** Variants (1-based) the agent has written files for. */
+  ready: number[];
+}
+
+/** What the canvas area shows instead of the live page. */
+export type LoopView =
+  | { kind: "live" }
+  | { kind: "snapshot"; id: string }
+  /** `after: null` means the page as it is now. `back` is where Esc returns to. */
+  | { kind: "compare"; before: string; after: string | null; back: LoopView }
+  | { kind: "variants"; job: string };
+
+interface LoopState {
+  timelineOpen: boolean;
+  snapshots: PublicSnapshot[];
+  /** False when the server has no version history (an older Glimpse): the UI says so instead of failing. */
+  historyAvailable: boolean;
+  view: LoopView;
+  jobs: VariantJob[];
+  /** Element the "Variants…" dialog is open for. */
+  variantsFor: string | null;
+  /** Snapshot whose restore awaits confirmation. */
+  confirmRestore: string | null;
+  /** Bumped per snapshot id when its thumbnail arrives, to get past the image cache. */
+  thumbRev: Record<string, number>;
+  /** Bumped per variant cell ("job:k") when the agent saves a file of it. */
+  cellRev: Record<string, number>;
+}
+
+const TIMELINE_KEY = "glimpse.timeline";
+export const UNSUPPORTED = "This Glimpse server doesn't support that yet. Update glimpse-ui and restart it.";
+
+class Loop {
+  state: LoopState = {
+    timelineOpen: readFlag(TIMELINE_KEY, true),
+    snapshots: [],
+    historyAvailable: true,
+    view: { kind: "live" },
+    jobs: [],
+    variantsFor: null,
+    confirmRestore: null,
+    thumbRev: {},
+    cellRev: {},
+  };
+  private listeners = new Set<() => void>();
+  private capturing = new Set<string>();
+  /** Set while we restore: the backup snapshot shows the old page, not the reloading one. */
+  private restoring = false;
+
+  subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+
+  getSnapshot = () => this.state;
+
+  set(patch: Partial<LoopState>): void {
+    this.state = { ...this.state, ...patch };
+    for (const fn of this.listeners) fn();
+  }
+
+  snapshot(id: string): PublicSnapshot | undefined {
+    return this.state.snapshots.find((s) => s.id === id);
+  }
+
+  /** The canvas shows the live, editable page (not a version, comparison or variants). */
+  get live(): boolean {
+    return this.state.view.kind === "live";
+  }
+
+  /** Editor shortcuts (delete, nudge, undo…) would act on a page that isn't on screen, or under a dialog. */
+  get blocksEditorKeys(): boolean {
+    return !this.live || this.state.variantsFor !== null || this.state.confirmRestore !== null;
+  }
+
+  toggleTimeline(open = !this.state.timelineOpen): void {
+    writeFlag(TIMELINE_KEY, open);
+    this.set({ timelineOpen: open });
+  }
+
+  // ── Views ────────────────────────────────────────────
+
+  viewSnapshot(id: string): void {
+    // Selection belongs to the live page; don't leave its outline over another version.
+    if (store.state.selected || store.state.hovered) store.set({ selected: null, hovered: null });
+    this.set({ view: { kind: "snapshot", id } });
+  }
+
+  compare(before: string, after: string | null = null): void {
+    const cur = this.state.view;
+    this.set({ view: { kind: "compare", before, after, back: cur.kind === "compare" ? cur.back : cur } });
+  }
+
+  showVariants(job: string): void {
+    this.set({ view: { kind: "variants", job } });
+  }
+
+  backToLive(): void {
+    if (!this.live) this.set({ view: { kind: "live" } });
+  }
+
+  /** Leave the comparison for wherever it was opened from. */
+  exitCompare(): void {
+    const v = this.state.view;
+    if (v.kind !== "compare") return;
+    const back = v.back.kind === "snapshot" && !this.snapshot(v.back.id) ? { kind: "live" as const } : v.back;
+    this.set({ view: back });
+  }
+
+  /** Before/after of the AI's last round: the version before the newest "ai" one. */
+  lastRound(): { before: PublicSnapshot; after: PublicSnapshot } | null {
+    const list = this.state.snapshots;
+    for (let i = list.length - 1; i > 0; i--) if (list[i]!.kind === "ai") return { before: list[i - 1]!, after: list[i]! };
+    return null;
+  }
+
+  // ── History ──────────────────────────────────────────
+
+  async refreshHistory(): Promise<void> {
+    try {
+      const body = await api<{ snapshots?: PublicSnapshot[] }>("/api/history");
+      this.set({ historyAvailable: true, snapshots: bySeq(body.snapshots ?? []) });
+    } catch (e) {
+      // An older server has no history. Unreachable: keep what we have; the reconnect refreshes.
+      if (message(e) === UNSUPPORTED) this.set({ historyAvailable: false, snapshots: [] });
+    }
+    this.dropMissingView();
+  }
+
+  /** "Save version": snapshot the files as they are now. */
+  async saveVersion(label?: string): Promise<void> {
+    try {
+      this.onSnapshot(await api<PublicSnapshot>("/api/history/snapshot", label ? { label } : {}));
+    } catch (e) {
+      store.activity("warn", `Couldn't save a version: ${message(e)}`);
+    }
+  }
+
+  /** Put the project files back to snapshot `id`. The server backs up the current files first. */
+  async restore(id: string): Promise<void> {
+    const s = this.snapshot(id);
+    this.restoring = true;
+    try {
+      const res = await api<{ restored: string; backup?: PublicSnapshot }>(`/api/history/${enc(id)}/restore`, {});
+      if (res.backup) this.onSnapshot(res.backup);
+      store.activity("info", `Restored “${s?.label ?? id}”.${res.backup ? ` The files before it are saved as “${res.backup.label}”.` : ""}`);
+      this.set({ view: { kind: "live" }, confirmRestore: null });
+    } finally {
+      // The server reloads the preview right after; let that settle before capturing it again.
+      setTimeout(() => (this.restoring = false), 2500);
+    }
+  }
+
+  /** A snapshot was created (WebSocket or our own request): add it and give it a thumbnail. */
+  onSnapshot(s: PublicSnapshot): void {
+    if (!s?.id) return;
+    const merged = { ...s, thumb: s.thumb || !!this.snapshot(s.id)?.thumb };
+    this.set({ historyAvailable: true, snapshots: bySeq([...this.state.snapshots.filter((x) => x.id !== s.id), merged]) });
+    if (!merged.thumb) void this.captureThumb(merged);
+  }
+
+  /**
+   * Thumbnails are rendered here, in the browser. Normally that's the live
+   * preview a moment after the snapshot (once the AI's change has morphed in).
+   * When the live page isn't what the snapshot holds (a version is on screen,
+   * unsent edits, a just-sent handoff, a restore in progress) the snapshot is
+   * loaded off-screen and captured instead.
+   */
+  private async captureThumb(s: PublicSnapshot): Promise<void> {
+    if (this.capturing.has(s.id)) return;
+    this.capturing.add(s.id);
+    try {
+      const doc = store.bridge?.doc;
+      await sleep(600);
+      const liveMatches =
+        this.live &&
+        !this.restoring &&
+        store.state.view === "editor" &&
+        store.pendingCount === 0 &&
+        s.kind !== "handoff" &&
+        s.kind !== "restore" &&
+        !!doc?.defaultView &&
+        store.bridge?.doc === doc;
+      const width = DEVICE_WIDTH[store.state.device] ?? Math.max(800, doc?.documentElement.clientWidth ?? 1280);
+      const opts = { maxWidth: THUMB_WIDTH, maxHeight: Math.round(width * 0.75) };
+      const dataUrl =
+        (liveMatches ? await capturePreview(doc, opts) : null) ??
+        (await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts));
+      if (!dataUrl || !this.snapshot(s.id)) return;
+      const res = await fetch(`/api/history/${enc(s.id)}/thumb`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ dataUrl }),
+      });
+      if (!res.ok) return;
+      this.set({
+        snapshots: this.state.snapshots.map((x) => (x.id === s.id ? { ...x, thumb: true } : x)),
+        thumbRev: { ...this.state.thumbRev, [s.id]: (this.state.thumbRev[s.id] ?? 0) + 1 },
+      });
+    } catch {
+      // thumbnails are a nicety; the card shows a placeholder instead
+    } finally {
+      this.capturing.delete(s.id);
+    }
+  }
+
+  // ── Variants ─────────────────────────────────────────
+
+  async refreshVariants(): Promise<void> {
+    try {
+      const body = await api<{ jobs?: VariantJob[] }>("/api/variants");
+      this.set({ jobs: body.jobs ?? [] });
+    } catch (e) {
+      if (message(e) === UNSUPPORTED) this.set({ jobs: [] });
+    }
+    this.dropMissingView();
+  }
+
+  openVariants(nodeId: string): void {
+    this.set({ variantsFor: nodeId });
+  }
+
+  async requestVariants(input: { src?: string; label: string; count: number; hint?: string }): Promise<void> {
+    const res = await api<{ job: VariantJob; seq: number }>("/api/variants", input);
+    this.upsertJob(res.job);
+    store.activity("handoff", `Asked your agent for ${input.count} variants of ${input.label} (#${res.seq})`);
+    void store.refreshHandoffs();
+  }
+
+  /** Copy variant k into the project and go back to the (now updated) live page. */
+  async choose(id: string, k: number): Promise<void> {
+    const job = this.state.jobs.find((j) => j.id === id);
+    const res = await api<{ files?: string[] }>(`/api/variants/${enc(id)}/choose`, { k });
+    const files = res.files ?? [];
+    store.activity("info", `Used variant ${k} of ${job?.label ?? "the element"}${files.length ? `: wrote \`${files.join("`, `")}\`` : ""}`);
+    this.removeJob(id);
+    this.backToLive();
+  }
+
+  async discard(id: string): Promise<void> {
+    try {
+      await api(`/api/variants/${enc(id)}/discard`, {});
+    } catch (e) {
+      store.activity("warn", `Couldn't discard the variants: ${message(e)}`);
+      return;
+    }
+    this.removeJob(id);
+  }
+
+  private upsertJob(job: VariantJob): void {
+    if (!job?.id) return;
+    const i = this.state.jobs.findIndex((j) => j.id === job.id);
+    const jobs = i < 0 ? [...this.state.jobs, job] : this.state.jobs.map((j) => (j.id === job.id ? job : j));
+    this.set({ jobs });
+  }
+
+  private removeJob(id: string): void {
+    this.set({ jobs: this.state.jobs.filter((j) => j.id !== id) });
+    this.dropMissingView();
+  }
+
+  /** If what's on screen no longer exists (discarded, history reset), go back to the live page. */
+  private dropMissingView(): void {
+    const v = this.state.view;
+    const gone =
+      (v.kind === "snapshot" && !this.snapshot(v.id)) ||
+      (v.kind === "compare" && (!this.snapshot(v.before) || (v.after !== null && !this.snapshot(v.after)))) ||
+      (v.kind === "variants" && !this.state.jobs.some((j) => j.id === v.job));
+    if (gone) this.set({ view: { kind: "live" } });
+  }
+
+  // ── Live updates ─────────────────────────────────────
+
+  /** Messages from the Glimpse server's websocket (see live.ts). */
+  onMessage(msg: { type: string; [key: string]: unknown }): void {
+    switch (msg.type) {
+      case "snapshot":
+        this.onSnapshot(msg.snapshot as PublicSnapshot);
+        break;
+      case "variants":
+        this.upsertJob(msg.job as VariantJob);
+        break;
+      case "variant-updated": {
+        const key = `${String(msg.id)}:${Number(msg.k)}`;
+        this.set({ cellRev: { ...this.state.cellRev, [key]: (this.state.cellRev[key] ?? 0) + 1 } });
+        break;
+      }
+      case "variants-removed":
+        this.removeJob(String(msg.id));
+        break;
+    }
+  }
+}
+
+export const loop = new Loop();
+
+export function useLoop(): LoopState {
+  return useSyncExternalStore(loop.subscribe, loop.getSnapshot);
+}
+
+/** Just the timeline toggle, so the whole editor doesn't re-render on every loop update. */
+export function useTimelineOpen(): boolean {
+  return useSyncExternalStore(loop.subscribe, () => loop.state.timelineOpen);
+}
+
+/** Load history and variant jobs now and after every reconnect (the server may have restarted). */
+export function initLoop(): () => void {
+  let connected = store.state.connected;
+  const refresh = () => {
+    void loop.refreshHistory();
+    void loop.refreshVariants();
+  };
+  refresh();
+  return store.subscribe(() => {
+    if (store.state.connected && !connected) refresh();
+    connected = store.state.connected;
+  });
+}
+
+/** Screenshot of the page the human is editing, for a handoff. Never holds sending up for more than 3 s. */
+export function handoffScreenshot(): Promise<string | null> {
+  return within(capturePreview(store.bridge?.doc, { maxWidth: 1280, atScroll: true }), 3000, null);
+}
+
+/**
+ * Versions and variants are for looking, not using: keep links and forms in
+ * them from navigating away, and let Esc work while focus is inside the page.
+ * The pages are same-origin, so we can listen inside them.
+ */
+export function readOnly(doc: Document | null | undefined, onEscape?: () => void): void {
+  if (!doc) return;
+  for (const type of ["click", "submit", "auxclick"]) {
+    doc.addEventListener(
+      type,
+      (e) => {
+        const t = e.target as Element | null;
+        if (type === "submit" || t?.closest?.("a[href], button[type=submit], input[type=submit]")) e.preventDefault();
+      },
+      true,
+    );
+  }
+  if (onEscape) doc.addEventListener("keydown", (e) => e.key === "Escape" && onEscape());
+}
+
+/** "just now", "5m ago", "3h ago", "2d ago" (the sidebar's `ago`, phrased for a timeline). */
+export function since(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+export const THUMB_WIDTH = 320;
+
+export const KIND_TITLE: Record<SnapshotKind, string> = {
+  initial: "First version",
+  ai: "AI round",
+  handoff: "Sent to AI",
+  source: "Edit source",
+  restore: "Before restore",
+  variant: "Variant used",
+  manual: "Saved by you",
+};
+
+export function enc(id: string): string {
+  return encodeURIComponent(id);
+}
+
+/**
+ * JSON API call (POST when `body` is given). A Glimpse server that predates
+ * an endpoint answers with the editor's HTML instead of JSON; report that
+ * plainly rather than as a parse error.
+ */
+export async function api<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(
+    path,
+    body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+  );
+  if (!(res.headers.get("content-type") ?? "").includes("json")) throw new Error(res.ok || res.status === 404 ? UNSUPPORTED : res.statusText);
+  const data = (await res.json()) as T & { error?: string };
+  if (!res.ok) throw new Error(data.error ?? (res.status === 404 ? UNSUPPORTED : res.statusText));
+  return data;
+}
+
+function bySeq(list: PublicSnapshot[]): PublicSnapshot[] {
+  return [...list].sort((a, b) => a.seq - b.seq);
+}
+
+function message(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function readFlag(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeFlag(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // private mode or storage blocked: the toggle just isn't remembered
+  }
+}

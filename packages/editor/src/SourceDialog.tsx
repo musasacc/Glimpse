@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
+import { handoffScreenshot } from "./loop";
 import { store } from "./store";
 
 interface Preview {
@@ -39,6 +40,9 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
     setBusy(true);
     setError(null);
     try {
+      const toAi = sendRest && preview.needsAi.length > 0;
+      // Picture the edited page before the files change under it (best effort, ≤ 3 s).
+      const screenshot = toAi ? await handoffScreenshot() : null;
       let written = 0;
       if (preview.files.length > 0) {
         const res = await fetch("/api/patch/apply", {
@@ -51,11 +55,11 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
         written = body.applied ?? 0;
         store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
       }
-      if (sendRest && preview.needsAi.length > 0) {
+      if (toAi) {
         const res = await fetch("/api/handoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi } }),
+          body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}) }),
         });
         if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
       }

@@ -4,6 +4,7 @@ import { canUngroup, ungroupSelection } from "./arrange";
 import { SelectionInspector } from "./EditTools";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
+import { loop } from "./loop";
 import { MOD } from "./platform";
 
 /** Layers: the element tree of the page. */
@@ -185,6 +186,9 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
         ))}
         <button className="btn" onClick={openTalk}>
           🎤 Point &amp; talk <span className="kbd">T</span>
+        </button>
+        <button className="btn" style={{ marginLeft: 6 }} title="Ask your agent for a few alternative designs of this element" onClick={() => loop.openVariants(node.id)}>
+          Variants…
         </button>
       </div>
     </>
