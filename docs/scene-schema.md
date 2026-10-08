@@ -219,10 +219,15 @@ CSS-like string values. Unknown keys are kept and handed to the agent as they ar
 `meta.command` is the shell command that runs the real app from the project directory: `python app.py`, `npm start`,
 `cargo run`, `go run .`. It runs with `/bin/sh -c` on macOS and Linux and `cmd.exe /c` on Windows.
 
-For a TUI, Glimpse runs it in a terminal panel next to the mock (in a real pseudo-terminal when `node-pty` is
-available, otherwise with piped output), so the human can compare the mock with the real thing and see the agent's
-changes land. `glimpse open --run "<command>"` overrides it. For a native GUI, the app opens in its own window and its
-output shows in Glimpse's log.
+For a TUI, Glimpse runs it in a terminal panel next to the mock (in a real pseudo-terminal when the optional
+`node-pty` is installed, otherwise with piped output), so the human can compare the mock with the real thing and see
+the agent's changes land: a running TUI restarts about a second after its code is saved (the human can turn that off).
+For a native GUI, the app opens in its own window and its output shows in Glimpse's log.
+
+Glimpse never runs `meta.command` by itself, so opening a cloned project doesn't execute its code: the human starts it
+with **Run** in the editor. `glimpse open --run "<command>"`, or the `command` parameter of the MCP tool
+`glimpse_open`, starts the app right away and takes the place of `meta.command`. The browser can't send a command;
+for a Glimpse that is already running, `glimpse_open` uses the token in `.glimpse/server.json`.
 
 ## How edits flow back to the AI
 

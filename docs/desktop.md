@@ -21,8 +21,9 @@ Glimpse.app
 - **Projects.** Opening a folder starts a Glimpse server for it inside the app (`startGlimpse` from `glimpse-ui`) and
   loads the editor in a 1440×900 window titled with the folder name. Each folder gets one window and one server;
   opening it again focuses the window. Closing the window, or quitting, stops its server.
-- **Agents find it.** Like `glimpse open`, the app writes `<project>/.glimpse/server.json`, so `glimpse wait` and the
-  MCP server (`glimpse_open` with that folder) talk to the window you have open. **Help › Copy MCP Command** copies
+- **Agents find it.** Like `glimpse open`, the app writes `<project>/.glimpse/server.json` (URL, pid and the token
+  that lets local tools run the app in Glimpse's terminal), so `glimpse wait` and the MCP server (`glimpse_open` with
+  that folder) talk to the window you have open. **Help › Copy MCP Command** copies
   the setup lines for Claude Code, Codex, Cursor and the rest (they use `npx -y glimpse-ui mcp`, so the agent's
   machine needs Node.js 20+).
 - **Already running elsewhere?** If `glimpse open` already serves the folder, the app shows that server instead of

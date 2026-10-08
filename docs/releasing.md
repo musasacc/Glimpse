@@ -5,13 +5,12 @@ which publishes the `glimpse-ui` npm package and attaches the desktop installers
 
 ## 1. Bump the versions
 
-All three must say the same version (the workflow checks the first two against the tag):
+Both must say the same version (the workflow checks them against the tag):
 
 | File | How |
 |---|---|
-| `packages/cli/package.json` | `"version": "X.Y.Z"` |
+| `packages/cli/package.json` | `"version": "X.Y.Z"` (`glimpse --version` and the MCP server report it; the build checks that) |
 | `apps/desktop/package.json` (+ lockfile) | `cd apps/desktop && npm version X.Y.Z --no-git-tag-version` |
-| `packages/cli/src/index.ts` | the string `glimpse --version` prints (the build fails if it doesn't match package.json) |
 
 The root `package.json` and the `@glimpse/*` workspace packages are private and don't need to change.
 Use a pre-release version such as `0.3.0-beta.1` to publish under npm's `next` tag and mark the GitHub Release as a
@@ -82,8 +81,10 @@ by the CLI:
 
 1. add it to `packages/cli/package.json` **devDependencies** (`"@glimpse/react": "workspace:*"`), never
    dependencies;
-2. add its third-party runtime dependencies to `packages/cli/package.json` **dependencies**, with the same ranges;
-3. add the same to `apps/desktop/package.json` dependencies and run `npm install` there.
+2. add its third-party runtime dependencies to `packages/cli/package.json` **dependencies**, with the same ranges
+   (its **optionalDependencies**, such as `node-pty` of `@glimpse/server`, go into glimpse-ui's
+   `optionalDependencies`: the code loads them with a guarded dynamic import, so the bundle works without them);
+3. add the same to `apps/desktop/package.json` (`dependencies` / `optionalDependencies`) and run `npm install` there.
 
 `pnpm build` fails with the exact lines to add if step 2 is missed (it reads the bundled packages' `package.json`
 files, transitively, and the imports esbuild actually left in the bundle), and the desktop build fails if step 3
