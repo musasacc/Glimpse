@@ -167,3 +167,10 @@ Phase 1 is done (commit `c05bc65`): core, server with live mode, black editor, C
 - Edit source e2e: make edits, click Edit source, and assert the diff preview and the patched files.
 - Manual dogfood: Claude Code with the Glimpse MCP builds a page, the human moves and deletes elements, and the agent applies the changes; then repeat with a Textual TUI scene and a Tkinter scene.
 - Work happens on branch `claude/charming-faraday-sukumk`; commit and push after each phase.
+
+## Final quality pass (requested by the user, runs after phase 6)
+1. **Reader**: one agent reads the whole codebase and returns a structured report of buggy or weak code (file:line, what's wrong, why, severity).
+2. **Five writers**, each in its own git worktree, get the full report and fix issues in their own lane:
+   1. performance, 2. general issues, 3. GUI (Glimpse's own editor UI), 4. function (features not working as promised),
+   5. TUI/GUI/frontend rendering of the user's apps (web preview, React, TUI and native scene canvases).
+3. Merge the five branches, build, typecheck, test, browser e2e, push, then open the PR.
