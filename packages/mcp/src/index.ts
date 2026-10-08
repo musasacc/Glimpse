@@ -26,8 +26,11 @@ interface Project {
 const AGENT_GUIDE = `How to work with Glimpse:
 1. glimpse_open your project once. The human sees your UI in Glimpse and every file you save appears live.
 2. Call glimpse_wait_for_done. It returns when the human sends you something:
-   - a build request typed on Glimpse's home screen ("a website with 5 buttons"), or
-   - the edits they made visually, as numbered instructions with exact file:line:col locations.
+   - a build request typed on Glimpse's home screen ("a website with 5 buttons"),
+   - the edits they made visually, as numbered instructions with exact file:line:col locations
+     (often with a screenshot of their edited version), or
+   - a request for design variants of one element: write each variant into .glimpse/variants/<id>/<k>/
+     exactly as the message says, never into the real files; the human picks one in Glimpse.
    If it returns "still editing", just call it again.
 3. Do what it says in the real source code. Apply edits 1:1, preferring idiomatic layout
    (flex/grid order, gap, alignment) over hard-coded pixel offsets. Optionally report progress
@@ -89,6 +92,24 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
   };
 
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+
+  /** A handoff as tool output: the instructions, plus the human's screenshot as an image when they sent one. */
+  const handoffResult = async (p: Project, h: Handoff) => {
+    const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
+      { type: "text", text: formatHandoff(h) },
+    ];
+    // Only ever Glimpse's own screenshot file, whatever the handoff record says.
+    if (h.screenshot && /^\.glimpse\/handoffs\/\d+\.png$/.test(h.screenshot)) {
+      const png =
+        (await readFile(join(p.dir, ...h.screenshot.split("/"))).catch(() => null)) ??
+        (await fetch(`${p.url}/api/handoffs/${h.seq}/screenshot`)
+          .then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null))
+          .catch(() => null));
+      if (png) content.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
+    }
+    return { content };
+  };
+
   const dirParam = z.string().optional().describe("Project directory (default: the last opened project, or the current directory)");
 
   mcp.registerTool(
@@ -138,7 +159,7 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
         const body = project.own
           ? await project.own.nextHandoff(undefined, chunk * 1000).then((h) => (h ? { status: "ready", handoff: h } : { status: "editing" }))
           : await api<{ status: string; handoff?: Handoff }>(project, `/api/handoff/next?timeout=${chunk}`);
-        if (body.status === "ready" && body.handoff) return text(formatHandoff(body.handoff));
+        if (body.status === "ready" && body.handoff) return handoffResult(project, body.handoff);
       }
       return text("Still editing: the human hasn't sent anything yet. Call glimpse_wait_for_done again.");
     },
@@ -156,7 +177,7 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       const list = await api<{ handoffs: { seq: number }[] }>(project, "/api/handoffs");
       const latest = list.handoffs[0];
       if (!latest) return text("Nothing has been sent from Glimpse yet.");
-      return text(formatHandoff(await api<Handoff>(project, `/api/handoffs/${latest.seq}`)));
+      return handoffResult(project, await api<Handoff>(project, `/api/handoffs/${latest.seq}`));
     },
   );
 
@@ -228,7 +249,8 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
 }
 
 function formatHandoff(h: Handoff): string {
-  const json = JSON.stringify(h.changeList.changes.length ? h.changeList : { request: h.request }, null, 2);
+  const data = h.changeList.changes.length ? h.changeList : h.variants ? { variants: h.variants } : { request: h.request };
+  const json = JSON.stringify(data, null, 2);
   return `${h.prompt}\n\n(Glimpse handoff #${h.seq}, ${h.kind}.) Structured data:\n\n\`\`\`json\n${json}\n\`\`\``;
 }
 
