@@ -10,6 +10,8 @@ export class DomBridge {
   private els = new Map<string, Element>();
   /** Where each element was originally laid out, so moves can be shown as translates. */
   private origins = new Map<string, { x: number; y: number }>();
+  /** Each element's size as the page laid it out, and its own inline width/height, so undoing a resize hands sizing back to the page. */
+  private sizes = new Map<string, { w: number; h: number; width: string; height: string }>();
   /**
    * Where reorders and deletes took elements from, newest last, so undoing puts
    * them back exactly: between the same text and untracked nodes, which the
@@ -47,7 +49,10 @@ export class DomBridge {
         const id = this.ids.get(child) ?? this.newId();
         this.register(child, id);
         scene.nodes[id] = this.snapshot(child, id, parentId);
-        this.origins.set(id, { x: scene.nodes[id]!.layout.x, y: scene.nodes[id]!.layout.y });
+        const { x, y, w, h } = scene.nodes[id]!.layout;
+        this.origins.set(id, { x, y });
+        const own = (child as HTMLElement).style;
+        this.sizes.set(id, { w, h, width: own?.width ?? "", height: own?.height ?? "" });
         scene.nodes[parentId]!.children.push(id);
         walk(child, id);
       }
@@ -90,7 +95,10 @@ export class DomBridge {
     const el = this.els.get(id) as HTMLElement | undefined;
     const origin = this.origins.get(id);
     if (!el || !origin) return;
-    el.style.translate = `${to.x - origin.x}px ${to.y - origin.y}px`;
+    const dx = to.x - origin.x;
+    const dy = to.y - origin.y;
+    el.style.translate = dx || dy ? `${dx}px ${dy}px` : "";
+    tidyStyle(el);
   }
 
   /** Nearest registered element at or above `target` (what a click in the page selects). */
@@ -138,12 +146,17 @@ export class DomBridge {
         const dx = op.to.x - origin.x;
         const dy = op.to.y - origin.y;
         el.style.translate = dx || dy ? `${dx}px ${dy}px` : "";
+        tidyStyle(el);
         return;
       }
       case "resize": {
         const el = this.els.get(op.node) as HTMLElement;
-        el.style.width = `${op.to.w}px`;
-        el.style.height = `${op.to.h}px`;
+        const own = this.sizes.get(op.node);
+        // Back to the size the page gave it (an undo): fixed pixels would stop it following its content and the window.
+        const back = own && op.to.w === own.w && op.to.h === own.h;
+        el.style.width = back ? own.width : `${op.to.w}px`;
+        el.style.height = back ? own.height : `${op.to.h}px`;
+        tidyStyle(el);
         return;
       }
       case "setText":
@@ -153,6 +166,7 @@ export class DomBridge {
         const el = this.els.get(op.node) as HTMLElement;
         if (op.to === null) el.style.removeProperty(op.key);
         else el.style.setProperty(op.key, op.to);
+        tidyStyle(el);
         return;
       }
       case "setProp": {
@@ -161,9 +175,12 @@ export class DomBridge {
         else el.setAttribute(op.key, op.to);
         return;
       }
-      case "setHidden":
-        (this.els.get(op.node) as HTMLElement).style.visibility = op.to ? "hidden" : "";
+      case "setHidden": {
+        const el = this.els.get(op.node) as HTMLElement;
+        el.style.visibility = op.to ? "hidden" : "";
+        tidyStyle(el);
         return;
+      }
       case "reorder": {
         const el = this.els.get(op.node)!;
         if (undo && this.restoreSpot(el, scene, op.to.parent, op.to.index, op.node)) return;
@@ -309,6 +326,14 @@ export function tagFor(type: NodeType): string {
   return { button: "button", text: "p", input: "input", image: "img", link: "a", list: "ul", nav: "nav", card: "div", box: "div" }[
     type as string
   ] ?? "div";
+}
+
+/**
+ * Clearing the last inline style leaves an empty `style=""` behind. Drop it, so
+ * undoing an edit gives back the page's own markup.
+ */
+function tidyStyle(el: HTMLElement): void {
+  if (el.getAttribute("style")?.trim() === "") el.removeAttribute("style");
 }
 
 /** Text directly inside the element (not inside child elements). */
