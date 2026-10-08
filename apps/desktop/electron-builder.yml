@@ -1,0 +1,61 @@
+# electron-builder config for the Glimpse desktop app. See docs/desktop.md.
+# Builds are unsigned unless signing secrets are in the environment (CSC_LINK / CSC_KEY_PASSWORD on macOS,
+# WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD on Windows, APPLE_API_KEY / APPLE_API_KEY_ID / APPLE_API_ISSUER to notarize).
+appId: dev.glimpse.app
+productName: Glimpse
+copyright: Copyright © 2026 Glimpse contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - app/**/*
+  - assets/**/*
+  - "!**/*.map"
+  - "!**/*.d.ts"
+# glimpse-ui's runtime dependencies (package.json "dependencies") are packed automatically; none are native.
+npmRebuild: false
+asar: true
+icon: assets/icon.png
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+publish: null
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  icon: assets/icon.png
+  darkModeSupport: true
+dmg:
+  title: ${productName} ${version}
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  icon: assets/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  # One installer per architecture instead of one that carries both.
+  buildUniversalInstaller: false
+  artifactName: ${productName}-Setup-${version}-${arch}.${ext}
+  shortcutName: Glimpse
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Development
+  icon: assets/icon.png
+  executableName: glimpse-desktop
+  synopsis: Visual editing layer between you and your AI coding agent
+  maintainer: Glimpse contributors <https://github.com/musasacc/Glimpse>
+  # Name the .desktop file after package.json "desktopName", which Electron also uses as the window's app_id.
+  syncDesktopName: true
+deb:
+  packageName: glimpse-desktop

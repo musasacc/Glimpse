@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# esbuild (used to bundle glimpse-ui) checks its platform binary after install.
+onlyBuiltDependencies:
+  - esbuild

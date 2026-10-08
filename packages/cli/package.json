@@ -1,26 +1,70 @@
 {
   "name": "glimpse-ui",
   "version": "0.1.0",
-  "description": "Glimpse \u2014 see what your AI built, edit it visually, hand the changes back.",
+  "description": "Glimpse — see what your AI built, edit it visually, hand the changes back.",
+  "keywords": [
+    "ai",
+    "mcp",
+    "visual-editor",
+    "claude-code",
+    "codex",
+    "ui"
+  ],
+  "homepage": "https://github.com/musasacc/Glimpse#readme",
+  "bugs": {
+    "url": "https://github.com/musasacc/Glimpse/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/musasacc/Glimpse.git",
+    "directory": "packages/cli"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
     "glimpse": "dist/index.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/lib.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-editor.mjs",
+    "build": "node scripts/bundle.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "prepack": "node scripts/prepack.mjs",
+    "postpack": "node scripts/prepack.mjs --cleanup"
   },
   "dependencies": {
-    "@glimpse/core": "workspace:*",
-    "@glimpse/server": "workspace:*",
-    "@glimpse/mcp": "workspace:*"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "chokidar": "^5.0.0",
+    "diff": "^9.0.0",
+    "magic-string": "^1.4.3",
+    "parse5": "^8.0.1",
+    "ws": "^8.18.3",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@glimpse/editor": "workspace:*"
+    "@glimpse/core": "workspace:*",
+    "@glimpse/editor": "workspace:*",
+    "@glimpse/mcp": "workspace:*",
+    "@glimpse/server": "workspace:*",
+    "dts-bundle-generator": "^9.5.1",
+    "esbuild": "^0.28.2"
   }
 }

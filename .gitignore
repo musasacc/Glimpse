@@ -5,3 +5,6 @@ dist/
 .DS_Store
 coverage/
 .claude/worktrees/
+# Copied in by packages/cli/scripts/prepack.mjs while packing
+packages/cli/LICENSE
+*.tgz
