@@ -240,10 +240,12 @@ class Loop {
       const opts = { maxWidth: THUMB_WIDTH, maxHeight: Math.round(width * 0.75) };
       // A terminal UI or native GUI: the version's scene file, drawn the way the canvas draws it.
       const sceneThumb = store.sceneSurface?.thumbnail;
+      // A React app's snapshot is source that Vite has to build: served as static files it renders blank, so only the live page pictures it.
+      const staticPage = store.state.project?.target !== "react";
       const dataUrl = sceneThumb
         ? await sceneThumb(s.id, THUMB_WIDTH)
         : ((liveMatches ? await capturePreview(doc, opts) : null) ??
-          (await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts)));
+          (staticPage ? await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts) : null));
       if (!dataUrl || !this.snapshot(s.id)) return;
       const res = await fetch(`/api/history/${enc(s.id)}/thumb`, {
         method: "POST",
