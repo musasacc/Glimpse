@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { diffScenes, parseSceneFile, type ChangeList, type Op, type Scene } from "@glimpse/core";
+import { detectProject } from "./detect.js";
 import { applyScenePatch, describeSceneTarget, planScenePatch, readScene, sceneChangesPrompt, SceneConflictError } from "./scene.js";
 
 const examples = fileURLToPath(new URL("../../../examples/", import.meta.url));
@@ -177,6 +178,20 @@ describe("planScenePatch", () => {
     await expect(planScenePatch(dir, "glimpse.scene.json", read.scene, [], { expectedVersion: read.version })).rejects.toBeInstanceOf(SceneConflictError);
     await writeFile(join(dir, "glimpse.scene.json"), "{ \"target\": ");
     await expect(planScenePatch(dir, "glimpse.scene.json", read.scene, [])).rejects.toThrow(/isn't valid JSON right now/);
+  });
+});
+
+describe("detectProject for scene targets", () => {
+  it("opens the scene file, even before it exists or while it's half written", async () => {
+    const dir = await project();
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { react: "^19.0.0", ink: "^6.0.0" } }));
+    expect(detectProject(dir, { target: "tui" })).toEqual({ dir, target: "tui", entry: "glimpse.scene.json" });
+    expect(detectProject(dir, { target: "native" }).entry).toBe("glimpse.scene.json");
+
+    await writeFile(join(dir, "glimpse.scene.json"), '{ "target": "native", "root": {');
+    expect(detectProject(dir)).toEqual({ dir, target: "native", entry: "glimpse.scene.json" });
+    await writeFile(join(dir, "glimpse.scene.json"), JSON.stringify({ target: "tui", root: { type: "root" } }));
+    expect(detectProject(dir).target).toBe("tui");
   });
 });
 

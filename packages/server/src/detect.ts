@@ -27,6 +27,8 @@ export function detectProject(dir: string, override?: { target?: Target; entry?:
     }
     return { dir, target: override?.target ?? target ?? "tui", entry: override?.entry ?? SCENE_FILE };
   }
+  // A terminal UI or desktop GUI whose scene file the agent hasn't written yet.
+  if (override?.target === "tui" || override?.target === "native") return { dir, target: override.target, entry: SCENE_FILE };
 
   const pkgPath = join(dir, "package.json");
   if (existsSync(pkgPath)) {
