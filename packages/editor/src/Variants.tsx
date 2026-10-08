@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { describeNode, formatSource } from "@glimpse/core";
 import type { Mode } from "./Canvas";
 import * as L from "./loop-icons";
-import { enc, loop, readOnly, useLoop } from "./loop";
+import { enc, loop, readOnly, useLoop, variantPage } from "./loop";
 import { MOD } from "./platform";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import "./loop.css";
@@ -193,7 +193,7 @@ export function VariantsView({ jobId }: { jobId: string }) {
                 </button>
               </header>
               {ready ? (
-                <ScaledFrame src={`/variant/${enc(job.id)}/${k}/`} pageWidth={pageWidth} title={`Variant ${k} of ${job.label}`} rev={ls.cellRev[`${job.id}:${k}`] ?? 0} />
+                <ScaledFrame src={`/variant/${enc(job.id)}/${k}/${variantPage(job)}`} pageWidth={pageWidth} title={`Variant ${k} of ${job.label}`} rev={ls.cellRev[`${job.id}:${k}`] ?? 0} />
               ) : (
                 <div className="vr-wait">
                   <svg viewBox="0 0 64 64" aria-hidden="true">
@@ -272,7 +272,9 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
       e.preventDefault();
       // The page's coordinates are relative to the iframe; the menu lives in the editor.
       const frame = doc.defaultView?.frameElement?.getBoundingClientRect();
-      store.set({ selected: id });
+      // Right-clicking one of several selected elements keeps them all (Duplicate/Delete act on all).
+      const keep = store.state.multi.includes(id) && store.selection.length > 1;
+      store.set(keep ? { selected: id, multi: store.state.multi } : { selected: id });
       setMenu({ id, x: (frame?.left ?? 0) + e.clientX, y: (frame?.top ?? 0) + e.clientY });
     };
     const close = () => setMenu(null);
@@ -305,6 +307,7 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
 
   const node = menu ? store.scene?.nodes[menu.id] : undefined;
   if (!menu || !node) return null;
+  const count = store.selection.length;
   const run = (fn: () => void) => () => {
     setMenu(null);
     fn();
@@ -314,7 +317,7 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
   const top = Math.max(4, Math.min(menu.y, window.innerHeight - 200));
   return (
     <div className="menu ctx-menu" role="menu" style={{ left, top }} onMouseDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
-      <div className="ctx-title ellipsis">{describeNode(node)}</div>
+      <div className="ctx-title ellipsis">{count > 1 ? `${describeNode(node)} + ${count - 1} more` : describeNode(node)}</div>
       <button role="menuitem" onClick={run(openTalk)}>
         <L.Message size={14} /> Talk to AI <span className="kbd">T</span>
       </button>

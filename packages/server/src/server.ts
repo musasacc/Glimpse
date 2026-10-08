@@ -43,6 +43,8 @@ export interface HandoffSummary {
   title: string;
   count: number;
   delivered: boolean;
+  /** A screenshot of the human's edited version went with it (`GET /api/handoffs/<seq>/screenshot`). */
+  screenshot?: boolean;
 }
 
 export interface ServerOptions {
@@ -758,7 +760,7 @@ function summarize(h: Handoff): HandoffSummary {
     : h.kind === "variants" ? `${h.variants?.count ?? "Some"} variants of ${h.variants?.label ?? "an element"}`
     : h.changeList.note ? h.changeList.note
     : `${n} change${n === 1 ? "" : "s"}${h.kind === "source" ? " written to source" : ""}`;
-  return { seq: h.seq, kind: h.kind, createdAt: h.createdAt, title, count: n, delivered: h.delivered };
+  return { seq: h.seq, kind: h.kind, createdAt: h.createdAt, title, count: n, delivered: h.delivered, ...(h.screenshot && { screenshot: true }) };
 }
 
 function sourcePrompt(list: ChangeList, files: string[]): string {

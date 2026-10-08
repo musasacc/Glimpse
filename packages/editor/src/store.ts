@@ -26,7 +26,7 @@ export interface HandoffSummary {
   count: number;
   delivered: boolean;
   /** A screenshot of the edited page went with it (newer servers). */
-  screenshot?: boolean | string;
+  screenshot?: boolean;
 }
 
 export interface ProjectInfo {

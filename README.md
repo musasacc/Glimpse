@@ -157,7 +157,7 @@ examples/
 
 - [x] **Phase 1: foundation.** Core model, server, editor, CLI, live mode, Send to AI, point & talk, behavior.
 - [x] **Phase 2: HTML end to end.** Home screen with requests to the agent, source locations, **Edit source** with diff preview, MCP server, element palette, history, cross-platform CI.
-- [ ] **Phase 3: loop features.** **Timeline of versions** (scrub and restore), **before/after slider**, **variants** ("show me 3 versions of this header"), draw-a-box prompts, group/align, screenshots in handoffs.
+- [x] **Phase 3: loop features.** **Timeline of versions** (scrub and restore), **before/after slider**, **variants** ("show me 3 versions of this header"), draw-a-box prompts, group/align, screenshots in handoffs.
 - [ ] **Phase 4: React/Vite.** Vite plugin, JSX source mapping, JSX patcher.
 - [ ] **Phase 5: TUI + native GUI.** Scene schema, cell-grid renderer with a live terminal view, widget-mock renderer.
 - [ ] **Phase 6: polish.** Publish `glimpse-ui` on npm, desktop app (Tauri: `.dmg`, `.msi`, `.AppImage`), per-agent guides.

@@ -83,6 +83,79 @@ export function captureUrl(url: string, size: { width: number; height: number },
   });
 }
 
+/** A box to draw over a capture, in the captured viewport's CSS pixels. */
+export interface MarkBox {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+  num: number;
+  text: string;
+}
+
+/**
+ * Draw box prompts over a viewport capture the way the editor shows them
+ * (dashed cyan, numbered, with their text). They live in the editor's overlay,
+ * not in the page, so the capture alone would leave them out. Best effort:
+ * on any failure the plain picture is returned.
+ */
+export async function drawBoxes(dataUrl: string, boxes: MarkBox[], viewportWidth: number): Promise<string> {
+  if (boxes.length === 0 || !viewportWidth) return dataUrl;
+  try {
+    const img = new Image();
+    img.src = dataUrl;
+    await img.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return dataUrl;
+    ctx.drawImage(img, 0, 0);
+    const k = img.naturalWidth / viewportWidth;
+    ctx.scale(k, k);
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#5ce1ff";
+    for (const b of boxes) {
+      ctx.fillStyle = "rgba(92, 225, 255, 0.1)";
+      ctx.fillRect(b.left, b.top, b.width, b.height);
+      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = accent;
+      ctx.strokeRect(b.left, b.top, b.width, b.height);
+      ctx.setLineDash([]);
+      ctx.font = "500 12px system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      const text = fit(ctx, b.text, Math.max(0, b.width - 28));
+      if (text) {
+        const w = ctx.measureText(text).width + 12;
+        ctx.fillStyle = "rgba(0, 0, 0, 0.78)";
+        ctx.fillRect(b.left + 16, b.top + 6, w, 18);
+        ctx.fillStyle = accent;
+        ctx.fillText(text, b.left + 22, b.top + 15);
+      }
+      ctx.beginPath();
+      ctx.arc(b.left, b.top, 10, 0, Math.PI * 2);
+      ctx.fillStyle = accent;
+      ctx.fill();
+      ctx.fillStyle = "#000";
+      ctx.font = "700 11px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(String(b.num), b.left, b.top + 0.5);
+      ctx.textAlign = "start";
+    }
+    return canvas.toDataURL("image/png");
+  } catch {
+    return dataUrl;
+  }
+}
+
+/** `text` cut to `max` pixels with an ellipsis. */
+function fit(ctx: CanvasRenderingContext2D, text: string, max: number): string {
+  if (ctx.measureText(text).width <= max) return text;
+  let s = text;
+  while (s && ctx.measureText(`${s}…`).width > max) s = s.slice(0, -1);
+  return s ? `${s}…` : "";
+}
+
 /** Resolve with `fallback` if `promise` takes longer than `ms`. */
 export function within<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {

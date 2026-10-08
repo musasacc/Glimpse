@@ -3,6 +3,7 @@ import { describeNode, topLevel, type Layout, type Op } from "@glimpse/core";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import { TalkPopover } from "./Talk";
 import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
+import { loop } from "./loop";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -397,7 +398,8 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
     if (id) editText(id);
   });
 
-  doc.addEventListener("keydown", (e) => handleKey(e, h.openTalk), true);
+  // Focus can stay in the page while a past version or a dialog covers it; shortcuts would act unseen.
+  doc.addEventListener("keydown", (e) => !loop.blocksEditorKeys && handleKey(e, h.openTalk), true);
   // Keep the overlay on its elements: page and inner scrolling, resizes, layout changes.
   doc.addEventListener("scroll", h.rerender, { capture: true, passive: true });
   win.addEventListener("resize", h.rerender);

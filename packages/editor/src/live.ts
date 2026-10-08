@@ -57,6 +57,7 @@ export function connectLive(): () => void {
           break;
         // Version history and variants (see loop.ts).
         case "snapshot":
+        case "snapshot-updated":
         case "variants":
         case "variant-updated":
         case "variants-removed":

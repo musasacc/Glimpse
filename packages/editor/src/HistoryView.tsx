@@ -80,7 +80,7 @@ export function HistoryView() {
                   {open.screenshot && " · with screenshot"}
                 </div>
                 <pre>{open.prompt}</pre>
-                {open.screenshot && <Screenshot path={open.screenshot} />}
+                {open.screenshot && <Screenshot seq={open.seq} />}
               </>
             ) : (
               <div className="side-empty">Select an entry</div>
@@ -92,15 +92,17 @@ export function HistoryView() {
   );
 }
 
-/**
- * The picture that went with a handoff. The server keeps it inside the
- * project (`.glimpse/handoffs/<seq>.png`), so it's read through the preview;
- * if that isn't served, the image just stays hidden.
- */
-function Screenshot({ path }: { path: string }) {
+/** The picture that went with a handoff; if the server can't serve it, it just stays hidden. */
+function Screenshot({ seq }: { seq: number }) {
   const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [path]);
+  useEffect(() => setFailed(false), [seq]);
   if (failed) return null;
-  const src = path.startsWith("data:image/") ? path : `/preview/${path.split("/").map(encodeURIComponent).join("/")}`;
-  return <img className="history-shot" src={src} alt="Screenshot of the edited page sent with this handoff" onError={() => setFailed(true)} />;
+  return (
+    <img
+      className="history-shot"
+      src={`/api/handoffs/${seq}/screenshot`}
+      alt="Screenshot of the edited page sent with this handoff"
+      onError={() => setFailed(true)}
+    />
+  );
 }

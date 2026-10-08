@@ -197,5 +197,9 @@ describe("version history", () => {
       ["source", "Wrote 1 change to source"],
     ]);
     expect((await fetch(`${srv.url}/api/handoffs/2/screenshot`)).status).toBe(404);
+    // The list flags handoffs that carry a screenshot, so the editor can mark them.
+    const { handoffs } = await get<{ handoffs: { seq: number; screenshot?: boolean }[] }>("/api/handoffs");
+    expect(handoffs.find((x) => x.seq === 1)?.screenshot).toBe(true);
+    expect(handoffs.find((x) => x.seq === 2)?.screenshot).toBeUndefined();
   });
 });

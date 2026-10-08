@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
-import { capturePreview, captureUrl, within } from "./capture";
+import type { Op } from "@glimpse/core";
+import { regionRect } from "./arrange";
+import { capturePreview, captureUrl, drawBoxes, within, type MarkBox } from "./capture";
 import { DEVICE_WIDTH, store } from "./store";
 
 /**
@@ -30,6 +32,12 @@ export interface VariantJob {
   createdAt: string;
   /** Variants (1-based) the agent has written files for. */
   ready: number[];
+}
+
+/** The project file a variants job is about (`src` is "file:line:col"); the entry page when unknown. */
+export function variantPage(job: VariantJob): string {
+  const file = job.src?.match(/^(.+):\d+:\d+$/)?.[1] ?? "";
+  return file.split("/").map(encodeURIComponent).join("/");
 }
 
 /** What the canvas area shows instead of the live page. */
@@ -150,6 +158,7 @@ class Loop {
     try {
       const body = await api<{ snapshots?: PublicSnapshot[] }>("/api/history");
       this.set({ historyAvailable: true, snapshots: bySeq(body.snapshots ?? []) });
+      void this.backfillThumbs();
     } catch (e) {
       // An older server has no history. Unreachable: keep what we have; the reconnect refreshes.
       if (message(e) === UNSUPPORTED) this.set({ historyAvailable: false, snapshots: [] });
@@ -157,10 +166,12 @@ class Loop {
     this.dropMissingView();
   }
 
-  /** "Save version": snapshot the files as they are now. */
+  /** "Save version": snapshot the files as they are now. Unchanged files give back the latest version instead of a new one. */
   async saveVersion(label?: string): Promise<void> {
     try {
-      this.onSnapshot(await api<PublicSnapshot>("/api/history/snapshot", label ? { label } : {}));
+      const res = await api<{ snapshot: PublicSnapshot; created: boolean }>("/api/history/snapshot", label ? { label } : {});
+      this.onSnapshot(res.snapshot);
+      if (!res.created) store.activity("info", `Nothing changed since “${res.snapshot.label}”, so no new version was saved.`);
     } catch (e) {
       store.activity("warn", `Couldn't save a version: ${message(e)}`);
     }
@@ -171,7 +182,8 @@ class Loop {
     const s = this.snapshot(id);
     this.restoring = true;
     try {
-      const res = await api<{ restored: string; backup?: PublicSnapshot }>(`/api/history/${enc(id)}/restore`, {});
+      // `backup` may be an older snapshot when nothing changed since it (then no new one is made).
+      const res = await api<{ restored: PublicSnapshot; backup?: PublicSnapshot }>(`/api/history/${enc(id)}/restore`, {});
       if (res.backup) this.onSnapshot(res.backup);
       store.activity("info", `Restored “${s?.label ?? id}”.${res.backup ? ` The files before it are saved as “${res.backup.label}”.` : ""}`);
       this.set({ view: { kind: "live" }, confirmRestore: null });
@@ -190,25 +202,38 @@ class Loop {
   }
 
   /**
+   * Versions made while no editor was listening (always the "Opened in
+   * Glimpse" one, taken when the server starts) get their thumbnails now,
+   * newest first and one at a time, each from its own snapshot page.
+   */
+  private async backfillThumbs(): Promise<void> {
+    const missing = this.state.snapshots.filter((s) => !s.thumb).slice(-BACKFILL_MAX).reverse();
+    for (const s of missing) await this.captureThumb(s, false);
+  }
+
+  /**
    * Thumbnails are rendered here, in the browser. Normally that's the live
    * preview a moment after the snapshot (once the AI's change has morphed in).
    * When the live page isn't what the snapshot holds (a version is on screen,
-   * unsent edits, a just-sent handoff, a restore in progress) the snapshot is
-   * loaded off-screen and captured instead.
+   * unsent edits, a just-sent handoff, a backup taken before a restore or a
+   * chosen variant) the snapshot is loaded off-screen and captured instead.
    */
-  private async captureThumb(s: PublicSnapshot): Promise<void> {
-    if (this.capturing.has(s.id)) return;
+  private async captureThumb(s: PublicSnapshot, fromLive = true): Promise<void> {
+    if (this.capturing.has(s.id) || this.snapshot(s.id)?.thumb) return;
     this.capturing.add(s.id);
     try {
       const doc = store.bridge?.doc;
       await sleep(600);
       const liveMatches =
+        fromLive &&
         this.live &&
         !this.restoring &&
         store.state.view === "editor" &&
         store.pendingCount === 0 &&
+        // Backups taken right before Glimpse writes files: the live page moves on at once.
         s.kind !== "handoff" &&
         s.kind !== "restore" &&
+        s.kind !== "variant" &&
         !!doc?.defaultView &&
         store.bridge?.doc === doc;
       const width = DEVICE_WIDTH[store.state.device] ?? Math.max(800, doc?.documentElement.clientWidth ?? 1280);
@@ -260,7 +285,8 @@ class Loop {
   /** Copy variant k into the project and go back to the (now updated) live page. */
   async choose(id: string, k: number): Promise<void> {
     const job = this.state.jobs.find((j) => j.id === id);
-    const res = await api<{ files?: string[] }>(`/api/variants/${enc(id)}/choose`, { k });
+    const res = await api<{ files?: string[]; backup?: PublicSnapshot }>(`/api/variants/${enc(id)}/choose`, { k });
+    if (res.backup) this.onSnapshot(res.backup);
     const files = res.files ?? [];
     store.activity("info", `Used variant ${k} of ${job?.label ?? "the element"}${files.length ? `: wrote \`${files.join("`, `")}\`` : ""}`);
     this.removeJob(id);
@@ -307,6 +333,16 @@ class Loop {
       case "snapshot":
         this.onSnapshot(msg.snapshot as PublicSnapshot);
         break;
+      case "snapshot-updated": {
+        // A thumbnail arrived (maybe from another editor tab): show it, past the image cache.
+        const s = msg.snapshot as PublicSnapshot;
+        if (!s?.id || !this.snapshot(s.id)) break;
+        this.set({
+          snapshots: this.state.snapshots.map((x) => (x.id === s.id ? { ...x, ...s } : x)),
+          thumbRev: { ...this.state.thumbRev, [s.id]: (this.state.thumbRev[s.id] ?? 0) + 1 },
+        });
+        break;
+      }
       case "variants":
         this.upsertJob(msg.job as VariantJob);
         break;
@@ -347,9 +383,22 @@ export function initLoop(): () => void {
   });
 }
 
-/** Screenshot of the page the human is editing, for a handoff. Never holds sending up for more than 3 s. */
+/**
+ * Screenshot of the page the human is editing, for a handoff, with their box
+ * prompts drawn in (numbered as on the canvas). Never holds sending up for more than 3 s.
+ */
 export function handoffScreenshot(): Promise<string | null> {
-  return within(capturePreview(store.bridge?.doc, { maxWidth: 1280, atScroll: true }), 3000, null);
+  const doc = store.bridge?.doc;
+  const shot = capturePreview(doc, { maxWidth: 1280, atScroll: true }).then((png) => {
+    if (!png) return null;
+    const regions = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+    const boxes = regions.flatMap((r, i): MarkBox[] => {
+      const rect = regionRect(r);
+      return rect ? [{ ...rect, num: i + 1, text: r.text }] : [];
+    });
+    return drawBoxes(png, boxes, doc?.documentElement.clientWidth ?? 0);
+  });
+  return within(shot, 3000, null);
 }
 
 /**
@@ -382,6 +431,8 @@ export function since(iso: string): string {
 }
 
 export const THUMB_WIDTH = 320;
+/** At most this many missing thumbnails are filled in when the history loads. */
+const BACKFILL_MAX = 12;
 
 export const KIND_TITLE: Record<SnapshotKind, string> = {
   initial: "First version",
@@ -389,7 +440,7 @@ export const KIND_TITLE: Record<SnapshotKind, string> = {
   handoff: "Sent to AI",
   source: "Edit source",
   restore: "Before restore",
-  variant: "Variant used",
+  variant: "Before variant",
   manual: "Saved by you",
 };
 

@@ -142,7 +142,7 @@ The editor talks to the server over these routes; agents normally only need `gli
 | `reorder` | Moved to another position in the tree |
 | `comment` | Point & talk: a free-text instruction pinned to an element |
 | `behavior` | Logic: on `event` do `action` (`detail`) |
-| `region` | Draw a box + prompt (coming in phase 3) |
+| `region` | Box prompt: the human drew an area and said what goes there (`text`). `rect` is relative to the element it was drawn in (`parent`, `label`, `src`) |
 
 Every change carries `src: "file:line:col"` (where the element starts in the source) for HTML projects. `add` and
 `reorder` changes also carry `anchor: { after, before }`, the source locations of the neighbours the element now sits
