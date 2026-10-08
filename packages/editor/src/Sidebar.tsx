@@ -3,6 +3,7 @@ import type { NodeType, SceneNode } from "@glimpse/core";
 import * as I from "./icons";
 import * as L from "./loop-icons";
 import { Layers } from "./Panels";
+import { ScenePalette } from "./ScenePalette";
 import { store, useStore, type View } from "./store";
 
 
@@ -59,7 +60,8 @@ export function Sidebar() {
         {state.view === "editor" && state.entryExists ? (
           <>
             <div className="side-label">Add</div>
-            <div className="palette">
+            {store.sceneSurface && <ScenePalette />}
+            <div className="palette" hidden={!!store.sceneSurface}>
               {PALETTE.map((p) => (
                 <button key={p.label} className="pal" title={`Add ${p.label.toLowerCase()}`} onClick={() => store.addElement(p.type, p.tag, structuredClone(p.defaults))}>
                   {p.icon}

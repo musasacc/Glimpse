@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
 import { handoffScreenshot } from "./loop";
+import { sceneMode } from "./scene-mode";
 import { store } from "./store";
 import "./react.css";
 
@@ -26,11 +27,15 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const repeated = [...repeats.keys()];
 
   useEffect(() => {
-    fetch("/api/patch/preview", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ changeList: list, repeated }),
-    })
+    // A scene mock sends the edited scene along: Glimpse writes it into the scene file.
+    sceneMode
+      .writes(
+        fetch("/api/patch/preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ changeList: list, repeated, ...sceneMode.body() }),
+        }),
+      )
       .then(async (r) => {
         const body = await r.json();
         if (!r.ok) throw new Error(body.error ?? r.statusText);
@@ -55,11 +60,13 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
         if (react) store.takeOffEdits();
         let body: { files?: string[]; applied?: number; backup?: string; error?: string };
         try {
-          const res = await fetch("/api/patch/apply", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ changeList: list, repeated }),
-          });
+          const res = await sceneMode.writes(
+            fetch("/api/patch/apply", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ changeList: list, repeated, ...sceneMode.body() }),
+            }),
+          );
           body = (await res.json()) as typeof body;
           if (!res.ok) throw new Error(body.error ?? res.statusText);
         } catch (e) {
@@ -67,14 +74,16 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
           throw e;
         }
         written = body.applied ?? 0;
-        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\` (backup in \`${body.backup}\`)`);
+        store.activity("handoff", `Wrote ${written} change${written === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\`${body.backup ? ` (backup in \`${body.backup}\`)` : ""}`);
       }
       if (toAi) {
-        const res = await fetch("/api/handoff", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}) }),
-        });
+        const res = await sceneMode.writes(
+          fetch("/api/handoff", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}), ...sceneMode.body() }),
+          }),
+        );
         if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);
       }
       store.commitHandoff();
@@ -102,7 +111,11 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
           {preview && preview.needsAi.length > 0 && (
             <div className="needs-ai">
               <h3>Needs AI ({preview.needsAi.length})</h3>
-              <p className="hint">Moves, resizes, behaviors and notes need judgement about the code, so your agent does them.</p>
+              <p className="hint">
+                {sceneMode.state.active
+                  ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: your agent does that.`
+                  : "Moves, resizes, behaviors and notes need judgement about the code, so your agent does them."}
+              </p>
               {preview.needsAi.some((c) => c.src && repeats.has(c.src)) && (
                 <p className="hint">
                   So do edits of elements the page shows more than once (list items, shared components): writing them into the source would change every copy.

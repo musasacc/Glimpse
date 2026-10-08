@@ -6,6 +6,7 @@ import * as L from "./loop-icons";
 import { enc, KIND_TITLE, loop, readOnly, since, useLoop, type PublicSnapshot, type SnapshotKind } from "./loop";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import { CanvasContextMenu, VariantBanners, VariantsDialog, VariantsView } from "./Variants";
+import { SceneVersion } from "./SceneVersions";
 import "./loop.css";
 
 const KIND_ICON: Record<SnapshotKind, (p: { size?: number }) => ReactNode> = {
@@ -233,12 +234,17 @@ function SnapshotView({ id }: { id: string }) {
         </button>
       </div>
       <div className="frame" style={{ width: width ? `${width}px` : "100%" }}>
-        <iframe
-          key={id}
-          src={`/snapshot/${enc(id)}/`}
-          title={`Version: ${s.label}`}
-          onLoad={(e) => readOnly(e.currentTarget.contentDocument, () => loop.backToLive())}
-        />
+        {/* A terminal UI or native GUI has no page: draw the version's scene file instead. */}
+        {store.sceneSurface ? (
+          <SceneVersion key={id} id={id} />
+        ) : (
+          <iframe
+            key={id}
+            src={`/snapshot/${enc(id)}/`}
+            title={`Version: ${s.label}`}
+            onLoad={(e) => readOnly(e.currentTarget.contentDocument, () => loop.backToLive())}
+          />
+        )}
       </div>
     </div>
   );

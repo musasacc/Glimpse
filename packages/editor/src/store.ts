@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
 import { followMoves, followOps, isVitePage, repeatedSources, undoAll } from "./hmr";
+import { domSurface, type Surface } from "./surface";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -94,6 +95,8 @@ class Store {
     rev: 0,
   };
   bridge: DomBridge | null = null;
+  /** Set while a terminal UI or native GUI mock is edited instead of a live page (see scene-mode.ts). */
+  sceneSurface: Surface | null = null;
   log: OpLog | null = null;
   /** React pages: unsent edits taken off the page while an HMR update runs (see beforeUpdate), and the page before it. */
   private held: readonly { ops: Op[] }[] | null = null;
@@ -120,6 +123,11 @@ class Store {
 
   get scene(): Scene | null {
     return this.log?.scene ?? null;
+  }
+
+  /** What edits land on: the scene mock, or the live page. */
+  get surface(): Surface | null {
+    return this.sceneSurface ?? (this.bridge ? domSurface(this.bridge) : null);
   }
 
   get pendingCount(): number {
@@ -183,9 +191,9 @@ class Store {
 
   /** After a handoff, the current page (with the human's edits) becomes the new base. */
   commitHandoff(): void {
-    if (!this.bridge) return;
+    if (!this.surface) return;
     // React still renders the page without them: they come off before its next update (see beforeUpdate).
-    if (this.log?.canUndo && isVitePage(this.bridge.doc)) this.sent.push(this.log);
+    if (this.log?.canUndo && this.isVitePage) this.sent.push(this.log);
     this.log = this.newLog();
     this.set({ stale: false });
   }
@@ -208,11 +216,12 @@ class Store {
 
   /** The page shows a React app (served by Vite), not a static HTML page. */
   get isVitePage(): boolean {
-    return isVitePage(this.bridge?.doc);
+    return !this.sceneSurface && isVitePage(this.bridge?.doc);
   }
 
   /** Source locations the page renders more than once, with how often (see repeatedSources). */
   get repeats(): Map<string, number> {
+    if (this.sceneSurface) return new Map();
     return repeatedSources([...this.sent, ...(this.log ? [this.log] : [])].map((l) => l.base));
   }
 
@@ -233,8 +242,8 @@ class Store {
   }
 
   private newLog(): OpLog {
-    const bridge = this.bridge!;
-    return new OpLog(bridge.buildScene(), (scene, op) => bridge.apply(scene, op));
+    const surface = this.surface!;
+    return new OpLog(surface.buildScene(), (scene, op) => surface.apply(scene, op));
   }
 
   edit(...ops: Op[]): void {
@@ -302,9 +311,9 @@ class Store {
 
   /** Duplicate every selected element (each copy right after its original) and select the copies. */
   duplicateSelected(): void {
-    if (!this.log || !this.bridge) return;
-    const bridge = this.bridge;
-    const ops = duplicateManyOps(this.log.scene, this.selection, () => bridge.newId());
+    const surface = this.surface;
+    if (!this.log || !surface) return;
+    const ops = duplicateManyOps(this.log.scene, this.selection, () => surface.newId());
     if (ops.length === 0) return;
     this.edit(...ops);
     this.selectMany(ops.flatMap((op) => (op.op === "add" ? [op.nodes[0]!.id] : [])));
@@ -326,12 +335,12 @@ class Store {
    */
   addElement(type: NodeType, tag: string = tagFor(type), defaults: Partial<SceneNode> = {}): void {
     const scene = this.scene;
-    const bridge = this.bridge;
-    if (!scene || !bridge) return;
+    const surface = this.surface;
+    if (!scene || !surface) return;
     const sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
     let parent = scene.rootId;
     let index = scene.nodes[scene.rootId]!.children.length;
-    if (sel && isContainer(sel)) {
+    if (sel && surface.isContainer(sel)) {
       parent = sel.id;
       index = sel.children.length;
     } else if (sel?.parent) {
@@ -345,7 +354,7 @@ class Store {
       : scene.nodes[parent]!.children.map((c) => scene.nodes[c]!).find((c) => c.tag === tag);
     if (twin?.props.class) defaults = { ...defaults, props: { ...defaults.props, class: twin.props.class } };
     const node: SceneNode = {
-      id: bridge.newId(),
+      id: surface.newId(),
       type,
       tag,
       parent,
@@ -355,6 +364,7 @@ class Store {
       props: {},
       ...defaults,
     };
+    surface.place?.(node, parent, sel && sel.id !== parent ? sel.id : undefined);
     this.edit({ op: "add", parent, index, nodes: [node] });
     this.set({ selected: node.id });
   }
@@ -377,12 +387,6 @@ class Store {
     const item = { id: ++this.activitySeq, at: Date.now(), kind, text };
     this.set({ activity: [item, ...this.state.activity].slice(0, 200) });
   }
-}
-
-const CONTAINER_TAGS = new Set(["div", "section", "main", "header", "footer", "nav", "article", "aside", "form", "ul", "ol"]);
-
-function isContainer(n: SceneNode): boolean {
-  return CONTAINER_TAGS.has(n.tag ?? "") || n.type === "root";
 }
 
 export const store = new Store();

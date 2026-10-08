@@ -6,6 +6,7 @@ import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { loop } from "./loop";
 import { MOD } from "./platform";
+import { SceneInspector } from "./SceneInspector";
 
 /** Layers: the element tree of the page. */
 export function Layers() {
@@ -61,6 +62,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
   const state = useStore();
   const node = state.selected ? store.scene?.nodes[state.selected] : undefined;
   if (store.selection.length > 1) return <SelectionInspector />;
+  if (store.sceneSurface) return <SceneInspector openTalk={openTalk} />;
   if (!node) {
     return (
       <div className="section">
@@ -200,7 +202,7 @@ const EVENTS = ["click", "submit", "hover", "change"];
 const ACTIONS = ["open modal", "go to page", "call API", "toggle element", "custom"];
 
 /** Edit behavior: logic instructions that always go to the AI. */
-function BehaviorSection({ node }: { node: SceneNode }) {
+export function BehaviorSection({ node }: { node: SceneNode }) {
   const [event, setEvent] = useState("click");
   const [action, setAction] = useState("open modal");
   const [detail, setDetail] = useState("");
