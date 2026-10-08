@@ -17,6 +17,11 @@ export function changeListToPrompt(list: ChangeList): string {
   return lines.join("\n");
 }
 
+function asList(value: string): (string | string[])[] {
+  if (value === "") return [];
+  return value.split("\n").map((line) => (line.includes("\t") ? line.split("\t") : line));
+}
+
 export function describeChange(c: Change): string {
   const at = c.src ? ` (${c.src})` : "";
   const who = c.label ?? "element";
@@ -45,9 +50,12 @@ export function describeChange(c: Change): string {
         ? `Remove style \`${c.key}\` from ${who}${at}.`
         : `Set style \`${c.key}: ${c.to}\` on ${who}${at}${c.from !== null ? ` (was \`${c.from}\`)` : ""}.`;
     case "setProp":
-      return c.to === null
-        ? `Remove attribute \`${c.key}\` from ${who}${at}.`
-        : `Set attribute \`${c.key}="${c.to}"\` on ${who}${at}.`;
+      if (c.to === null) return `Remove attribute \`${c.key}\` from ${who}${at}.`;
+      // Multi-line props are lists (rows of a list, options of a select, table rows with tab-separated cells).
+      if (c.to.includes("\n") || c.from?.includes("\n")) {
+        return `Set \`${c.key}\` of ${who}${at} to ${JSON.stringify(asList(c.to))}${c.from !== null ? ` (was ${JSON.stringify(asList(c.from))})` : ""}.`;
+      }
+      return `Set attribute \`${c.key}="${c.to}"\` on ${who}${at}.`;
     case "swapType":
       return `Turn ${who}${at} from a ${c.from} into a ${c.to}.`;
     case "setHidden":

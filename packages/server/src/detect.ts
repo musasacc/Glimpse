@@ -17,8 +17,15 @@ export function detectProject(dir: string, override?: { target?: Target; entry?:
 
   const scenePath = join(dir, override?.entry ?? SCENE_FILE);
   if (existsSync(scenePath) && scenePath.endsWith(".json")) {
-    const scene = JSON.parse(readFileSync(scenePath, "utf8")) as { target?: Target };
-    return { dir, target: override?.target ?? scene.target ?? "tui", entry: override?.entry ?? SCENE_FILE };
+    const text = readFileSync(scenePath, "utf8");
+    let target: Target | undefined;
+    try {
+      target = (JSON.parse(text) as { target?: Target }).target;
+    } catch {
+      // The agent may be halfway through writing it; the editor shows the error once it loads.
+      target = /"target"\s*:\s*"native"/.test(text) ? "native" : undefined;
+    }
+    return { dir, target: override?.target ?? target ?? "tui", entry: override?.entry ?? SCENE_FILE };
   }
 
   const pkgPath = join(dir, "package.json");

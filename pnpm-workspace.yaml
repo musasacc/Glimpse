@@ -1,2 +1,6 @@
 packages:
   - "packages/*"
+
+# node-pty (optional, for the real TUI view) has a native build step; pnpm 10 skips build scripts unless allowed.
+onlyBuiltDependencies:
+  - node-pty
