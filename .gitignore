@@ -7,3 +7,6 @@ coverage/
 .claude/worktrees/
 __pycache__/
 *.pyc
+# Copied in by packages/cli/scripts/prepack.mjs while packing
+packages/cli/LICENSE
+*.tgz

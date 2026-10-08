@@ -39,7 +39,31 @@ element and say what you want. Finally, either let **Glimpse write the changes i
 
 ## Install
 
-Requires [Node.js](https://nodejs.org) 20+ and [pnpm](https://pnpm.io). Works on macOS, Windows and Linux.
+Works on macOS, Windows and Linux. Pick one:
+
+**npm** (requires [Node.js](https://nodejs.org) 20+)
+
+```bash
+npm i -g glimpse-ui     # puts the `glimpse` command on your PATH
+glimpse open .
+
+npx glimpse-ui open .   # or run it without installing
+```
+
+> The name `glimpse` is taken on npm, so the package is `glimpse-ui` and the command stays `glimpse`.
+> Without a global install, agents use `npx -y glimpse-ui mcp` wherever this README says `glimpse mcp`.
+> Until the first release lands on npm, install from source (below).
+
+**Desktop app**
+
+Download the installer for your system from [GitHub Releases](https://github.com/musasacc/Glimpse/releases):
+`.dmg` for macOS (Apple Silicon and Intel), `.exe` for Windows (x64 and Arm), `.AppImage` or `.deb` for Linux.
+Open a folder (or start a new project) and Glimpse opens it in its own window, with your recent projects one click
+away. Agents connect the same way as below (**Help › Copy MCP Command**) and find the project you have open. The
+builds aren't code-signed yet; see [docs/desktop.md](docs/desktop.md#unsigned-builds) for the one-time first-launch
+step, and for building the app yourself. Releases are cut as described in [docs/releasing.md](docs/releasing.md).
+
+**From source** (requires Node.js 20+ and [pnpm](https://pnpm.io))
 
 ```bash
 git clone https://github.com/musasacc/Glimpse.git
@@ -48,8 +72,6 @@ pnpm install
 pnpm build
 cd packages/cli && npm link     # puts the `glimpse` command on your PATH
 ```
-
-> Once published to npm, this becomes `npx glimpse-ui …` (the name `glimpse` is taken on npm, so the package is `glimpse-ui` and the command stays `glimpse`).
 
 Try it:
 

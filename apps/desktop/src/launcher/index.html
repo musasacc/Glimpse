@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Glimpse</title>
+    <link rel="stylesheet" href="launcher.css" />
+  </head>
+  <body>
+    <div class="drag" aria-hidden="true"></div>
+    <main class="launcher">
+      <section class="hero">
+        <img class="mark" src="mark.svg" width="72" height="72" alt="" />
+        <h1>Glimpse</h1>
+        <p class="tagline">See what your AI built. Change it with your hands. Hand it back.</p>
+        <div class="actions">
+          <button id="open-folder" class="btn primary" type="button">
+            <span>Open folder…</span><kbd data-shortcut="O"></kbd>
+          </button>
+          <button id="new-project" class="btn" type="button">
+            <span>New project…</span><kbd data-shortcut="Shift+N"></kbd>
+          </button>
+        </div>
+        <p class="hint">
+          Open the folder your agent builds in, or start an empty project and describe the UI on Glimpse's home screen.
+        </p>
+      </section>
+
+      <section class="recent" aria-labelledby="recent-title">
+        <h2 id="recent-title">Recent projects</h2>
+        <ul id="recent-list" class="recent-list"></ul>
+        <p id="recent-empty" class="empty" hidden>No recent projects yet.</p>
+      </section>
+    </main>
+    <footer class="footer">
+      <span id="version"></span>
+      <nav>
+        <a href="https://github.com/musasacc/Glimpse/blob/main/docs/agents.md" target="_blank" rel="noreferrer">Connect an agent</a>
+        <a href="https://github.com/musasacc/Glimpse#readme" target="_blank" rel="noreferrer">Documentation</a>
+      </nav>
+    </footer>
+    <script src="launcher.js"></script>
+  </body>
+</html>

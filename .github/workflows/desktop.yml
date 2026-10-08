@@ -1,0 +1,98 @@
+name: Desktop
+
+# Builds the Electron app (apps/desktop) unpacked on all three OSes, smoke-tests it, and keeps the result for a
+# week. No installers, no signing, no publishing: see release.yml for that.
+on:
+  push:
+    paths:
+      - "apps/desktop/**"
+      - "packages/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Cache npm, Electron and electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/AppData/Local/npm-cache
+            ~/.cache/electron
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron/Cache
+            ~/AppData/Local/electron-builder/Cache
+          key: desktop-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json') }}
+          restore-keys: desktop-${{ runner.os }}-
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/desktop
+        run: npm run typecheck
+      - name: Unit tests
+        working-directory: apps/desktop
+        run: npm test
+      - name: Build the unpacked app
+        working-directory: apps/desktop
+        run: npm run dist -- --dir --publish never
+
+      - name: Smoke test (headless)
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        run: |
+          command -v xvfb-run >/dev/null || (sudo apt-get update && sudo apt-get install -y xvfb)
+          xvfb-run -a node scripts/smoke.mjs --packaged --screenshots release/screenshots
+      - name: Smoke test
+        if: runner.os != 'Linux'
+        # GUI sessions on hosted macOS/Windows runners are less predictable; Linux is the gate.
+        continue-on-error: true
+        working-directory: apps/desktop
+        run: node scripts/smoke.mjs --packaged --screenshots release/screenshots
+
+      - name: Zip the macOS app (keeps the framework symlinks intact)
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop/release
+        run: |
+          app="$(find . -maxdepth 2 -name Glimpse.app -print -quit)"
+          ditto -c -k --keepParent "$app" Glimpse-mac-unpacked.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glimpse-desktop-${{ runner.os }}
+          path: |
+            apps/desktop/release/*-unpacked/
+            apps/desktop/release/Glimpse-mac-unpacked.zip
+            apps/desktop/release/screenshots/
+          retention-days: 7
+          if-no-files-found: error

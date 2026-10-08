@@ -14,7 +14,10 @@
     "dev": "pnpm --filter @glimpse/editor dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "start": "node packages/cli/dist/index.js open examples/donut"
+    "start": "node packages/cli/dist/index.js open examples/donut",
+    "smoke:pack": "node packages/cli/scripts/smoke-pack.mjs",
+    "desktop": "npm --prefix apps/desktop start",
+    "desktop:dist": "npm --prefix apps/desktop run dist"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
