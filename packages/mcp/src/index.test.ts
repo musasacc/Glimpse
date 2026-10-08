@@ -66,4 +66,43 @@ describe("glimpse MCP", () => {
     expect(await call("glimpse_status", { message: "Building…" })).toBe("Posted.");
     expect(await call("glimpse_close")).toBe("Closed.");
   }, 30_000);
+
+  it("returns the human's screenshot as an image next to the edits", async () => {
+    const { dir, client, call } = await setup();
+    const url = /open at (\S+) /.exec(await call("glimpse_open", { dir }))![1]!;
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    type Content = { type: string; text?: string; data?: string; mimeType?: string }[];
+
+    const waiting = client.callTool({ name: "glimpse_wait_for_done", arguments: { timeout_sec: 30 } });
+    await fetch(`${url}/api/handoff`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "ai",
+        screenshot: `data:image/png;base64,${png}`,
+        changeList: {
+          version: 1,
+          target: "html",
+          createdAt: new Date().toISOString(),
+          changes: [{ op: "setText", node: "n1", src: "index.html:1:28", from: "Hi", to: "Hello" }],
+        },
+      }),
+    });
+    for (const result of [await waiting, await client.callTool({ name: "glimpse_get_changes", arguments: {} })]) {
+      const [text, image] = result.content as Content;
+      expect(text!.text).toContain("Screenshot of the human's edited version:");
+      expect(image).toEqual({ type: "image", data: png, mimeType: "image/png" });
+    }
+
+    // Variants requests carry the job as structured data.
+    const waitingVariants = call("glimpse_wait_for_done", { timeout_sec: 30 });
+    await fetch(`${url}/api/variants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label: 'button "Hi"', src: "index.html:1:28", count: 2 }),
+    });
+    const got = await waitingVariants;
+    expect(got).toContain("Create 2 different design variants");
+    expect(got).toContain('"variants"');
+  }, 30_000);
 });
