@@ -437,7 +437,7 @@ export function handoffScreenshot(): Promise<string | null> {
   // One screen of a tall window is plenty, and keeps the PNG well under the server's 5 MB.
   const shot = capturePreview(doc, { maxWidth: 1280, maxHeight: 1600, atScroll: true }).then((png) => {
     if (!png) return null;
-    const regions = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+    const regions = store.regions;
     const boxes = regions.flatMap((r, i): MarkBox[] => {
       const rect = regionRect(r);
       return rect ? [{ ...rect, num: i + 1, text: r.text }] : [];

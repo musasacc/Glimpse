@@ -1,5 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" shape-rendering="geometricPrecision">
   <rect width="64" height="64" rx="15" fill="#000"/>
-  <rect x="13" y="13" width="30" height="30" rx="7" fill="none" stroke="#fff" stroke-width="4.5"/>
-  <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="#fff" stroke="#000" stroke-width="3.5" stroke-linejoin="round" paint-order="stroke"/>
+  <!-- The frame's edges fall on whole pixels at 16, 32 and 64 px (14…42, 4 wide). The cursor's own black outline cuts
+       the gap into the frame on the tile, so nothing thinner than a pixel is left between them. -->
+  <rect x="14" y="14" width="28" height="28" rx="7" fill="none" stroke="#fff" stroke-width="4"/>
+  <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="#fff" stroke="#000" stroke-width="4" stroke-linejoin="round" paint-order="stroke"/>
 </svg>

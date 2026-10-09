@@ -20,8 +20,28 @@ export type Op =
   | { op: "comment"; node: string; id: string; text: string }
   /** Edit behavior: a logic instruction, always handed to the AI. */
   | { op: "behavior"; node: string; id: string; event: string; action: string; detail?: string }
-  /** Draw a box + prompt: "AI, put X here". */
-  | { op: "region"; id: string; parent: string; rect: Layout; text: string };
+  /**
+   * Draw a box + prompt: "AI, put X here". A later region op with the same `id` replaces the earlier one, and one
+   * with `removed` takes the box away (see `liveRegions`); undoing that step brings it back.
+   */
+  | { op: "region"; id: string; parent: string; rect: Layout; text: string; removed?: true };
+
+export type RegionOp = Extract<Op, { op: "region" }>;
+
+/**
+ * The box prompts still standing after `ops`: the latest version of each box, in the order they were first drawn
+ * (their numbers on screen), without the removed ones.
+ */
+export function liveRegions(ops: readonly Op[]): RegionOp[] {
+  const latest = new Map<string, RegionOp>();
+  for (const op of ops) if (op.op === "region") latest.set(op.id, op);
+  return [...latest.values()].filter((op) => !op.removed);
+}
+
+/** The op that takes a box prompt away (one undo step brings it back). */
+export function removeRegionOp(region: RegionOp): RegionOp {
+  return { ...region, removed: true };
+}
 
 export type OpKind = Op["op"];
 

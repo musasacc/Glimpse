@@ -490,6 +490,8 @@ async function init(): Promise<void> {
   api.onRecentChanged(() => void renderRecent());
   prompt.focus();
   await Promise.all([renderRecent(), renderFolder(), api.aiInfo().then(renderAi, () => undefined)]);
+  // The recent list slides in on opening only, not each time it is redrawn (launcher.css).
+  setTimeout(() => document.documentElement.classList.add("settled"), 600);
 }
 
 void init();

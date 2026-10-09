@@ -18,6 +18,13 @@
   --radius: 10px;
   --font: Inter, "SF Pro Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", sans-serif;
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  /* Motion: short and settling (fast out, gentle stop). Every animation and transition uses these. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-med: 180ms;
+  --dur-slow: 240ms;
   color-scheme: dark;
 }
 
@@ -33,7 +40,22 @@ body,
   background: var(--bg);
   color: var(--text);
   font: 13px/1.45 var(--font);
+  /* Light text on black: grayscale antialiasing (subpixel smoothing makes it heavy and fringed on macOS), real
+     kerning, and no faux bold/italic smeared out of the regular face. */
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+}
+
+/* Stroke icons: drawn as exact geometry, never stretched or shrunk by flex (a squeezed 16 px icon blurs). */
+svg {
+  shape-rendering: geometricPrecision;
+}
+button svg,
+.icon-btn svg,
+.btn svg {
+  flex: none;
 }
 
 button,
@@ -101,9 +123,11 @@ select {
 .brand-mark {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
+  flex: none;
+  /* 26 px inside the border: the size at which Mark draws its frame on whole pixels. */
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
   background: var(--bg);
   border: 1px solid var(--border-strong);
   color: var(--text);
@@ -174,6 +198,7 @@ select {
 .side-label {
   margin: 14px 10px 6px;
   font-size: 13px;
+  line-height: 18px;
   color: var(--faint);
 }
 .side-label:first-child {
@@ -232,10 +257,12 @@ select {
 }
 .agent-name {
   font-size: 13.5px;
+  line-height: 20px;
   font-weight: 500;
 }
 .agent-sub {
   font-size: 11.5px;
+  line-height: 16px;
   color: var(--faint);
 }
 .icon-btn {
@@ -269,7 +296,7 @@ select {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 9vh 24px 40px;
+  padding: round(9vh, 1px) 24px 40px;
   position: relative;
 }
 .watermark {
@@ -281,7 +308,8 @@ select {
 .greeting {
   position: relative;
   margin: 0 0 32px;
-  font-size: clamp(26px, 3.2vw, 36px);
+  font-size: round(clamp(26px, 3.2vw, 36px), 1px);
+  line-height: 1.25;
   font-weight: 600;
   letter-spacing: -0.8px;
   text-align: center;
@@ -324,7 +352,7 @@ select {
   resize: none;
   background: transparent;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 22px; /* whole pixels: three 22.5 px rows put everything under the box on half pixels */
 }
 .composer-box textarea::placeholder {
   color: var(--faint);
@@ -599,7 +627,9 @@ code {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  border-bottom: 1px solid var(--border);
+  /* An inset line, not a border: the 48 px row keeps 48 px for its controls, so they centre on whole pixels
+     (a 47 px box put every icon at .5 px and blurred it). */
+  box-shadow: inset 0 -1px 0 var(--border);
   min-width: 0;
 }
 .no-sidebar .toolbar {
@@ -618,6 +648,16 @@ code {
 }
 .toolbar > * {
   flex-shrink: 0;
+}
+/* Labelled controls round their width up to whole pixels (where the browser can), so the icons after them don't
+   land on fractions of a pixel and blur. */
+.toolbar :is(.btn:not(.icon), .seg button, .live),
+.ghost {
+  width: calc-size(fit-content, round(up, size, 1px));
+}
+/* Even widths: a centred row of them starts on a whole pixel. */
+.idea {
+  width: calc-size(fit-content, round(up, size, 2px));
 }
 .toolbar > .spacer {
   flex: 1 1 0;
@@ -904,9 +944,13 @@ textarea.input {
   grid-area: canvas;
   position: relative;
   overflow: auto;
-  background:
-    radial-gradient(circle at 1px 1px, #141414 1px, transparent 0) 0 0 / 22px 22px,
-    var(--bg);
+  /* One whole-pixel dot every 22 px: a 1 px column of colour, masked down to its first row. (A 1px-radius
+     radial-gradient antialiased into grey specks that shimmered as the canvas scrolled or scaled.) */
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(transparent 1px, var(--bg) 1px),
+    linear-gradient(90deg, #1c1c1c 1px, transparent 1px);
+  background-size: 22px 22px;
   display: flex;
   /* safe: a device frame wider than the canvas starts at its left edge and scrolls, instead of overflowing both
      sides where the left part can't be reached. */
@@ -922,7 +966,7 @@ textarea.input {
   border: 1px solid var(--border-strong);
   box-shadow: 0 0 0 1px #000, 0 30px 80px rgba(0, 0, 0, 0.8);
   background: #fff;
-  transition: width 0.25s ease;
+  transition: width var(--dur-slow) var(--ease-out);
 }
 .frame iframe {
   display: block;
@@ -1017,8 +1061,9 @@ textarea.input {
 .scrim {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
+  /* A solid veil: backdrop-filter blur smeared the dotted canvas and text behind it into noisy, banded grey (and
+     re-blurred the whole window on every frame). */
+  background: rgba(0, 0, 0, 0.74);
   display: grid;
   place-items: center;
   z-index: 50;
@@ -1166,16 +1211,34 @@ textarea.input {
   border-radius: var(--radius);
 }
 .ai-radio {
+  position: relative;
   flex: none;
   width: 14px;
   height: 14px;
   margin-top: 2px;
   border-radius: 50%;
   border: 1.5px solid var(--faint);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+/* The dot is its own circle (inset box-shadows on a round box rendered a jagged, dirty ring). */
+.ai-radio::after {
+  content: "";
+  position: absolute;
+  inset: 2.5px;
+  border-radius: 50%;
+  background: var(--text);
+  opacity: 0;
+  transform: scale(0.4);
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-med) var(--ease-out);
 }
 .ai-option.on .ai-radio {
   border-color: var(--text);
-  box-shadow: inset 0 0 0 3px var(--panel-2), inset 0 0 0 7px var(--text);
+}
+.ai-option.on .ai-radio::after {
+  opacity: 1;
+  transform: none;
 }
 .ai-text {
   display: flex;
@@ -1245,7 +1308,7 @@ textarea.input {
 }
 .ai-external summary svg {
   transform: rotate(-90deg);
-  transition: transform 0.15s;
+  transition: transform var(--dur-med) var(--ease-out);
 }
 .ai-external[open] summary svg {
   transform: none;
@@ -1384,5 +1447,238 @@ html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .scrim {
   .scene-num .input {
     padding-left: 18px;
     padding-right: 2px;
+  }
+}
+
+/* ── Motion ─────────────────────────────────────────── */
+/* Short, settling motion (tokens in :root): views fade up, dialogs and menus scale in, controls answer hover and
+   press. Only opacity and transform animate (and never an overlay's position or size, so selection boxes stay on
+   what they follow while dragging). prefers-reduced-motion turns all of it off, at the end of this section. */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+@keyframes soft-pulse {
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}
+@keyframes shimmer {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+@keyframes banner-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+}
+@keyframes side-close {
+  to {
+    grid-template-columns: 0px minmax(0, 1fr);
+    padding-left: 8px;
+  }
+}
+@keyframes side-open {
+  from {
+    grid-template-columns: 0px minmax(0, 1fr);
+    padding-left: 8px;
+  }
+}
+
+/* Views: Home and History fade up as they open (their parts one after another); the editor fades back in (opacity
+   only: it holds fixed-position menus, which a transform would displace). */
+.home > *,
+.history {
+  animation: fade-up var(--dur-slow) var(--ease-out) backwards;
+}
+.home > .watermark {
+  animation-name: fade-in;
+}
+.home > .greeting {
+  animation-delay: 30ms;
+}
+.home > .composer {
+  animation-delay: 70ms;
+}
+.home > .ideas,
+.home > .home-notice {
+  animation-delay: 120ms;
+}
+.editor:not([hidden]) {
+  animation: fade-in var(--dur-med) var(--ease-out) backwards;
+}
+
+/* Sidebar: slides its column open and shut (see Sidebar.tsx). */
+.shell.side-closing {
+  animation: side-close var(--dur-med) var(--ease-in-out) forwards;
+}
+.shell.side-opening {
+  animation: side-open var(--dur-med) var(--ease-out);
+}
+.shell:is(.side-closing, .side-opening) .sidebar {
+  min-width: 0;
+  overflow: hidden;
+}
+.shell.side-closing .sidebar {
+  animation: fade-out var(--dur-fast) var(--ease-in) forwards;
+}
+.shell.side-opening .sidebar {
+  animation: fade-in var(--dur-med) var(--ease-out) backwards;
+}
+
+/* Dialogs scale in over a fading veil, and out the same way when closed with Esc or the veil (Modal.tsx). */
+.scrim {
+  animation: fade-in var(--dur-med) var(--ease-out);
+}
+.dialog {
+  animation: pop-in var(--dur-med) var(--ease-out);
+}
+.scrim.leaving {
+  pointer-events: none;
+  animation: fade-out 140ms var(--ease-in) forwards;
+}
+.scrim.leaving .dialog {
+  animation: pop-out 140ms var(--ease-in) forwards;
+}
+
+/* Menus and popovers grow from where they open. */
+.menu {
+  transform-origin: bottom right;
+  animation: pop-in var(--dur-fast) var(--ease-out);
+}
+.menu.ctx-menu {
+  transform-origin: top left;
+}
+.talk {
+  transform-origin: top left;
+  animation: pop-in var(--dur-med) var(--ease-out);
+}
+.banner {
+  animation: banner-in var(--dur-med) var(--ease-out);
+}
+
+/* Controls: colour and border ease on hover, a slight press. */
+:is(.btn, .icon-btn, .ghost, .nav-item, .side-item, .pal, .idea, .send-btn, .seg button, .layer, .sel-chip,
+    .history-list button, .ai-option, .menu button, .agent-chip, .tl-thumb, .input, .count) {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-med) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+:is(.btn, .icon-btn, .ghost, .pal, .idea, .send-btn, .sel-chip, .side-item, .nav-item):active:not(:disabled) {
+  transform: scale(0.97);
+  transition-duration: 60ms;
+}
+.idea:hover {
+  transform: translateY(-1px);
+}
+.send-btn:hover:not(:disabled) {
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.18);
+}
+
+/* The composer glows softly while typed in. */
+.composer-box {
+  transition:
+    border-color var(--dur-med) var(--ease-out),
+    box-shadow var(--dur-slow) var(--ease-out);
+}
+.composer-box:focus-within {
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.035),
+    0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* The AI is building: a light sweeps over the label, the dot breathes. */
+.agent-chip.building {
+  background-image: linear-gradient(100deg, var(--text) 35%, #fff 50%, var(--text) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 2.2s var(--ease-in-out) infinite;
+}
+.agent-chip.building .agent-dot,
+.agent-dot.busy {
+  animation: soft-pulse 1.6s var(--ease-in-out) infinite;
+}
+
+/* Activity and selection come in, they don't pop. */
+.act {
+  animation: slide-in var(--dur-med) var(--ease-out) backwards;
+}
+.box.selected,
+.badge,
+.box .label {
+  animation: fade-in var(--dur-fast) var(--ease-out) backwards;
+}
+.box .handle {
+  animation: pop-in var(--dur-med) var(--ease-out) backwards;
+}
+
+/* Timeline thumbnails lift a little on hover; pictures fade in when they arrive. */
+.tl-card {
+  animation: fade-in var(--dur-med) var(--ease-out) backwards;
+}
+.tl-card:hover .tl-thumb {
+  transform: translateY(-1px);
+}
+.tl-thumb img {
+  animation: fade-in var(--dur-slow) var(--ease-out) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* No light sweeping over the building label (one frame of it would leave the text see-through). */
+  .agent-chip.building {
+    background: none;
+    color: var(--text);
   }
 }

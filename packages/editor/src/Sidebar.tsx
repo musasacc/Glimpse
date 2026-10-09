@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
+import { animateOut, reducedMotion } from "./motion";
 import type { NodeType, SceneNode } from "@glimpse/core";
 import * as I from "./icons";
 import * as L from "./loop-icons";
@@ -36,22 +37,47 @@ const PALETTE: { label: string; icon: ReactNode; type: NodeType; tag: string; de
   },
 ];
 
+/** The sidebar was on screen before (opening it again slides it in; the first one is just there). */
+let shownBefore = false;
+
 export function Sidebar() {
   const state = useStore();
+  const nav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const shell = nav.current?.parentElement;
+    if (shownBefore && shell && !reducedMotion()) {
+      shell.classList.add("side-opening");
+      const done = (e?: AnimationEvent) => {
+        if (e && e.target !== shell) return;
+        shell.classList.remove("side-opening");
+        shell.removeEventListener("animationend", done);
+      };
+      shell.addEventListener("animationend", done);
+      setTimeout(done, 400);
+    }
+    shownBefore = true;
+  }, []);
+  const hide = () => {
+    const shell = nav.current?.parentElement ?? null;
+    animateOut(shell, "side-closing", 180, () => {
+      shell?.classList.remove("side-closing");
+      store.set({ sidebarOpen: false });
+    });
+  };
   const go = (view: View) => store.set({ view });
   const engine = currentEngine(state);
   const ready = !!state.agentRun || (engine === "external" ? state.agentWaiting : engine !== "none");
 
   return (
-    <nav className="sidebar" aria-label="Glimpse">
+    <nav ref={nav} className="sidebar" aria-label="Glimpse">
       <div className="side-top">
         <div className="brand">
           <span className="brand-mark">
-            <Mark size={22} />
+            <Mark size={26} />
           </span>
           glimpse
         </div>
-        <button className="icon-btn" title="Hide sidebar" onClick={() => store.set({ sidebarOpen: false })}>
+        <button className="icon-btn" title="Hide sidebar" onClick={hide}>
           <I.Sidebar />
         </button>
       </div>
@@ -96,7 +122,7 @@ export function Sidebar() {
               <button key={h.seq} className="side-item" onClick={() => store.set({ view: "history", openHandoff: h.seq })}>
                 {h.kind === "variants" && <L.Grid size={14} />}
                 <span className="grow ellipsis">{h.title}</span>
-                {h.screenshot && <L.Camera size={13} />}
+                {h.screenshot && <L.Camera size={14} />}
                 <span className="meta">{ago(h.createdAt)}</span>
               </button>
             ))}

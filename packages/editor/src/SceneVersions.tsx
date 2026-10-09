@@ -85,7 +85,7 @@ function Fit({ children }: { children: ReactNode }) {
     if (!el || !c) return;
     const fit = () => {
       const z = Math.min(1, (el.clientWidth - 48) / (c.offsetWidth || 1), (el.clientHeight - 48) / (c.offsetHeight || 1));
-      setK(Math.max(0.2, z));
+      setK(Math.floor(Math.max(0.2, z) * 1000) / 1000);
     };
     fit();
     const ro = new ResizeObserver(fit);

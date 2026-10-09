@@ -4,6 +4,8 @@ import {
   applyOp,
   invertOp,
   buildChangeList,
+  liveRegions,
+  removeRegionOp,
   changeListToPrompt,
   createScene,
   deleteManyOps,
@@ -308,6 +310,35 @@ describe("box prompts (regions)", () => {
     log.undo();
     const notes = buildChangeList(log).changes.filter((c) => c.op === "region");
     expect(notes.map((c) => describeChange(c))).toEqual(['In the area 10,80 300×120 inside the page: "a hero image"']);
+  });
+
+  it("takes a removed box out of what goes to the AI, and brings it back on undo", () => {
+    const log = new OpLog(fixture());
+    const r1 = { op: "region" as const, id: "r1", parent: "root", rect: { x: 0, y: 0, w: 40, h: 20 }, text: "a logo" };
+    const r2 = { op: "region" as const, id: "r2", parent: "b1", rect: { x: 0, y: 0, w: 10, h: 10 }, text: "an icon" };
+    log.apply(r1);
+    log.apply(r2);
+    log.apply(removeRegionOp(r1));
+    const texts = () => buildChangeList(log).changes.flatMap((c) => (c.op === "region" ? [c.text] : []));
+    expect(liveRegions(log.ops).map((r) => r.id)).toEqual(["r2"]);
+    expect(texts()).toEqual(["an icon"]);
+    expect(changeListToPrompt(buildChangeList(log))).not.toContain("a logo");
+    log.undo();
+    expect(liveRegions(log.ops).map((r) => r.id)).toEqual(["r1", "r2"]);
+    expect(texts()).toEqual(["a logo", "an icon"]);
+    log.redo();
+    expect(texts()).toEqual(["an icon"]);
+  });
+
+  it("keeps a box's number when a later op replaces it", () => {
+    const log = new OpLog(fixture());
+    const r1 = { op: "region" as const, id: "r1", parent: "root", rect: { x: 0, y: 0, w: 40, h: 20 }, text: "a logo" };
+    log.apply(r1);
+    log.apply({ ...r1, id: "r2", text: "a menu" });
+    log.apply({ ...r1, text: "a big logo" });
+    expect(liveRegions(log.ops).map((r) => r.text)).toEqual(["a big logo", "a menu"]);
+    log.apply(removeRegionOp(liveRegions(log.ops)[0]!));
+    expect(liveRegions(log.ops).map((r) => r.text)).toEqual(["a menu"]);
   });
 
   it("names an element without text or id by its classes", () => {
