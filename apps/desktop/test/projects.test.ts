@@ -79,6 +79,35 @@ describe("ProjectServers", () => {
     }
   });
 
+  it("doesn't reuse a server that shows another project, and notices when a reused one stops", async () => {
+    const dir = project();
+    const other = await startGlimpse({ dir: project(), port: 0 });
+    let foreign: Awaited<ReturnType<typeof startGlimpse>> | undefined;
+    try {
+      // Left behind by a killed Glimpse whose port another project's Glimpse has taken since.
+      mkdirSync(join(dir, ".glimpse"), { recursive: true });
+      writeFileSync(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: other.url, pid: 99999 }));
+      const servers = new ProjectServers({ start, pid: 4242 });
+      const p = await servers.open(dir);
+      assert.equal(p.owned, true);
+      assert.notEqual(p.url, other.url);
+      await servers.closeAll();
+
+      foreign = await startGlimpse({ dir, port: 0 });
+      writeFileSync(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: foreign.url, pid: 99999 }));
+      const reused = await servers.open(dir);
+      assert.equal(reused.owned, false);
+      assert.equal(await servers.answers(dir), true);
+      await foreign.close();
+      foreign = undefined;
+      assert.equal(await servers.answers(dir), false, "the reused Glimpse stopped");
+      await servers.closeAll();
+    } finally {
+      await foreign?.close();
+      await other.close();
+    }
+  });
+
   it("ignores a stale server.json and starts its own", async () => {
     const dir = project();
     mkdirSync(join(dir, ".glimpse"), { recursive: true });

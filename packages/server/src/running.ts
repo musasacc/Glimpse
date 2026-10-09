@@ -1,0 +1,80 @@
+import { realpathSync } from "node:fs";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+
+/** Whether two paths name the same folder: symlinks resolved, and case-insensitive on macOS and Windows. */
+export function sameDir(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
+  const canon = (p: string) => {
+    const abs = resolve(p);
+    let out: string;
+    try {
+      out = realpathSync.native(abs);
+    } catch {
+      out = abs;
+    }
+    return platform === "win32" || platform === "darwin" ? out.toLowerCase() : out;
+  };
+  return canon(a) === canon(b);
+}
+
+/**
+ * Whether the Glimpse at `url` answers and shows the project in `dir`. A `.glimpse/server.json` left behind by a
+ * Glimpse that was killed can point at a port another project's Glimpse has taken since.
+ */
+export async function servesProject(url: string, dir: string, timeoutMs = 3000): Promise<boolean> {
+  try {
+    const res = await fetch(`${url}/api/session`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { project?: { dir?: unknown } };
+    return typeof body.project?.dir === "string" && sameDir(body.project.dir, dir);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run `fn` (find a running Glimpse for `dir`, or start one and write `.glimpse/server.json`) while holding
+ * `.glimpse/server.lock`, so two tools opening one project at once (the MCP server and the desktop app) don't both
+ * start a server: the second waits, then finds the first one's server.json. A lock whose process is gone, or that
+ * is held longer than `waitMs`, is taken over. In a folder Glimpse can't write to, `fn` runs without a lock.
+ */
+export async function withProjectLock<T>(dir: string, fn: () => Promise<T>, waitMs = 30_000): Promise<T> {
+  const file = join(dir, ".glimpse", "server.lock");
+  const deadline = Date.now() + waitMs;
+  let locked = false;
+  try {
+    await mkdir(dirname(file), { recursive: true });
+    while (!locked) {
+      try {
+        await writeFile(file, String(process.pid), { flag: "wx" });
+        locked = true;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+        const holder = Number(await readFile(file, "utf8").catch(() => ""));
+        const age = Date.now() - ((await stat(file).catch(() => null))?.mtimeMs ?? 0);
+        // An empty lock was just created and its pid isn't written yet.
+        const held = pidAlive(holder) || (!(holder > 0) && age < 2000);
+        if (!held || Date.now() > deadline) await rm(file, { force: true });
+        else await new Promise((r) => setTimeout(r, 100));
+      }
+    }
+  } catch {
+    // read-only folder: no lock
+  }
+  try {
+    return await fn();
+  } finally {
+    if (locked) await rm(file, { force: true }).catch(() => undefined);
+  }
+}
+
+/** Whether a process with this pid exists (0 or garbage: no). */
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}

@@ -36,7 +36,9 @@ Glimpse.app
 ### Security
 
 Project windows load only the local Glimpse server, with `contextIsolation`, `sandbox` and no Node integration; they
-have no preload, so the page (and the preview of your project inside it) can't reach the app. The launcher is a local
+have no preload, so the page (and the preview of your project inside it) can't reach the app. The preview does share
+the editor's origin, so it can do what the editor can (see "HTTP API" in [agents.md](agents.md)): open projects you
+would also run. The launcher is a local
 page with a strict Content-Security-Policy and a sandboxed preload that exposes six IPC calls; the main process
 answers them only for the launcher and only opens folders the user picked or that are in the recent list.
 Navigation away from the server's origin, `window.open` and `target=_blank` links open in the system browser.

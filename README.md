@@ -197,7 +197,7 @@ examples/
 - On handoff, the base and final scenes are **diffed**, so edits that cancel out never reach the AI, and moves come with semantic intent hints.
 - The preview is served with `data-glimpse-src="file:line:col"` on every element (parse5 for HTML, Babel for JSX in a Vite plugin). **Edit source** uses those locations to make surgical edits with magic-string, so your formatting stays intact.
 - Terminal UIs and native GUIs are described in `glimpse.scene.json`; the real TUI runs in a pseudo-terminal (node-pty, optional; plain pipes without it).
-- The server only answers its own pages: other websites can't call its API or open its websocket, and running a command needs the token in `.glimpse/server.json`.
+- The server only answers its own pages: other websites can't call its API or open its websocket, and running a command needs the token in `.glimpse/server.json`. The previewed project runs at the editor's origin (the editor reaches into its page), so open projects you would also run: Glimpse keeps the page's own requests away from its API and never serves `.git/`, `.env` or other dotfiles, but a page that sets out to can script the editor.
 
 ## Roadmap
 

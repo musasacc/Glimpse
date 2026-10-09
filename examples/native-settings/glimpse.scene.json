@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/musasacc/Glimpse/main/docs/glimpse.scene.schema.json",
   "target": "native",
   "theme": "macos",
-  "meta": { "framework": "tkinter", "command": "python app.py", "title": "Settings" },
+  "meta": { "framework": "tkinter", "command": "python3 app.py", "title": "Settings" },
   "root": {
     "type": "window",
     "tag": "SettingsWindow",

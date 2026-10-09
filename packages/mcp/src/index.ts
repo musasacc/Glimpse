@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Target } from "@glimpse/core";
-import { openBrowser, startServer, type GlimpseServer, type Handoff } from "@glimpse/server";
+import { openBrowser, servesProject, startServer, withProjectLock, type GlimpseServer, type Handoff } from "@glimpse/server";
 import { registerSceneTools } from "./scene-tool.js";
 
 export { registerSceneTools, sceneExamplesText, type SceneToolOptions } from "./scene-tool.js";
@@ -80,36 +80,45 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       current = dir;
       return { project: known, opened: false };
     }
-    // Reuse a Glimpse that is already running for this project (e.g. `glimpse open`).
-    const infoFile = join(dir, ".glimpse", "server.json");
-    if (existsSync(infoFile)) {
-      try {
-        const info = JSON.parse(await readFile(infoFile, "utf8")) as ServerInfo;
-        const res = await fetch(`${info.url}/api/session`);
-        if (res.ok) {
-          const project: Project = { dir, url: info.url, ...(typeof info.token === "string" && { token: info.token }) };
-          projects.set(dir, project);
-          current = dir;
-          return { project, opened: true };
-        }
-      } catch {
-        // stale file; start our own below
+    // One at a time per folder, across processes: a desktop app or `glimpse open` starting at the same moment
+    // must not end up with a second server on the project.
+    return withProjectLock(dir, async () => {
+      const again = projects.get(dir);
+      if (again) {
+        current = dir;
+        return { project: again, opened: false };
       }
-    }
-    if (!existsSync(dir)) await mkdir(dir, { recursive: true });
-    const base = { dir, target, entry, command, editorDir: opts.editorDir };
-    const own = await startServer({ ...base, port: opts.port ?? 4321 }).catch((err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") return startServer({ ...base, port: 0 });
-      throw err;
+      // Reuse a Glimpse that is already running for this project (e.g. `glimpse open`).
+      const infoFile = join(dir, ".glimpse", "server.json");
+      if (existsSync(infoFile)) {
+        try {
+          const info = JSON.parse(await readFile(infoFile, "utf8")) as ServerInfo;
+          // Not a Glimpse for another project that took the port of one that was killed.
+          if (await servesProject(info.url, dir)) {
+            const project: Project = { dir, url: info.url, ...(typeof info.token === "string" && { token: info.token }) };
+            projects.set(dir, project);
+            current = dir;
+            return { project, opened: true };
+          }
+        } catch {
+          // stale file; start our own below
+        }
+      }
+      if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+      const base = { dir, target, entry, command, editorDir: opts.editorDir };
+      const own = await startServer({ ...base, port: opts.port ?? 4321 }).catch((err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") return startServer({ ...base, port: 0 });
+        throw err;
+      });
+      await mkdir(dirname(infoFile), { recursive: true });
+      // The token lets other local tools ask this server to run commands; keep the file private to this user.
+      await writeFile(infoFile, JSON.stringify({ url: own.url, pid: process.pid, token: own.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
+      const project = { dir, url: own.url, own };
+      projects.set(dir, project);
+      current = dir;
+      if (opts.browser !== false) openBrowser(own.url);
+      return { project, opened: true };
     });
-    await mkdir(dirname(infoFile), { recursive: true });
-    // The token lets other local tools ask this server to run commands; keep the file private to this user.
-    await writeFile(infoFile, JSON.stringify({ url: own.url, pid: process.pid, token: own.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
-    const project = { dir, url: own.url, own };
-    projects.set(dir, project);
-    current = dir;
-    if (opts.browser !== false) openBrowser(own.url);
-    return { project, opened: true };
   }
 
   const api = async <T>(p: Project, path: string, body?: unknown): Promise<T> => {
@@ -118,7 +127,11 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-    return (await res.json()) as T;
+    const json = (await res.json().catch(() => null)) as (T & { error?: unknown }) | null;
+    if (!res.ok || json === null) {
+      throw new Error(`Glimpse at ${p.url} refused ${path}: ${json && typeof json.error === "string" ? json.error : `HTTP ${res.status}`}`);
+    }
+    return json;
   };
 
   const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
@@ -337,8 +350,10 @@ export async function runStdio(opts: McpOptions = {}): Promise<void> {
     await close().catch(() => {});
     process.exit(0);
   };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  // A second signal while closing: don't wait any longer.
+  const onSignal = () => (stopping ? process.exit(1) : void stop());
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
   // The agent closed the connection (stdin ended): shut down the Glimpse servers we started.
   process.stdin.on("end", () => void stop());
   await mcp.connect(transport);

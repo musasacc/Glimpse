@@ -52,7 +52,7 @@ describe("example projects", () => {
       it("has a scene file without errors, in the canonical nested form", () => {
         expect(parsed.errors).toEqual([]);
         expect(parsed.format).toBe("nested");
-        expect(parsed.extras.meta?.command).toBe("python app.py");
+        expect(parsed.extras.meta?.command).toBe("python3 app.py");
         expect(serializeSceneFile(parsed.scene, parsed.format, parsed.extras)).toBe(text.replace(/\r\n/g, "\n"));
       });
 

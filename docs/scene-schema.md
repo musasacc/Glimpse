@@ -217,7 +217,8 @@ CSS-like string values. Unknown keys are kept and handed to the agent as they ar
 ## Running the real app: `meta.command`
 
 `meta.command` is the shell command that runs the real app from the project directory: `python app.py`, `npm start`,
-`cargo run`, `go run .`. It runs with `/bin/sh -c` on macOS and Linux and `cmd.exe /c` on Windows.
+`cargo run`, `go run .`. It runs with `/bin/sh -c` on macOS and Linux and `cmd.exe /c` on Windows, so spell it the way
+it runs on that machine: macOS and many Linux systems only have `python3`, Windows usually `python` or `py`.
 
 For a TUI, Glimpse runs it in a terminal panel next to the mock (in a real pseudo-terminal when the optional
 `node-pty` is installed, otherwise with piped output), so the human can compare the mock with the real thing and see

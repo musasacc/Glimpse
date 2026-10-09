@@ -125,12 +125,18 @@ The server only answers its own pages: requests whose `Host` isn't this machine 
 `GLIMPSE_DEV_ORIGIN=http://localhost:5173`. Whoever starts the server (`glimpse open`, the MCP server, the desktop
 app) writes `{ url, pid, token }` into `<project>/.glimpse/server.json`; the token is never sent to the browser.
 
+The previewed project itself runs at the editor's origin (the editor needs to reach into its page), so it is
+trusted like code you run with its own dev server. Glimpse keeps its pages' own requests away from the API (a request
+whose `Referer` is a preview, version or variant page gets the project's file for a `GET` and 403 otherwise) and never
+serves the project's dotfiles (`.git/`, `.env`, `.npmrc`, …) or `.glimpse/`, but a page that sets out to can still
+script the editor's window. Open projects you would also run.
+
 | Route | Body → response |
 |---|---|
 | `GET /api/session` | → `{ project: { dir, target, entry }, entryExists, previewError, agentWaiting, lastSeq }` |
 | `POST /api/handoff` | `{ kind: "ai" \| "source", changeList, screenshot?, scene?, sceneVersion? }` → `{ seq, delivered, sceneVersion?, backup? }` (409 when the scene file changed) |
-| `POST /api/patch/preview` | `{ changeList, repeated?, scene?, sceneVersion? }` → `{ files: [{ file, diff }], applied, needsAi }` |
-| `POST /api/patch/apply` | same body → `{ files, applied, needsAi, backup, snapshot, version? }` (Edit source) |
+| `POST /api/patch/preview` | `{ changeList, repeated?, scene?, sceneVersion? }` → `{ files: [{ file, diff }], applied, needsAi, planId }` |
+| `POST /api/patch/apply` | same body, plus `planId?` from the preview → `{ files, applied, needsAi, backup, snapshot, version? }` (Edit source; 409 when the files no longer give the previewed diff) |
 | `POST /api/request` | `{ text, target? }` → `{ seq, delivered }` (home-screen request) |
 | `GET /api/scene` | TUI/native only → `{ exists, file, scene, errors, format, extras, version, invalid? }` |
 | `GET /api/terminal` | → `{ command, running, mode, fallbackReason, autoRestart }` |
@@ -192,7 +198,9 @@ app) writes `{ url, pid, token }` into `<project>/.glimpse/server.json`; the tok
 | `behavior` | Logic: on `event` do `action` (`detail`) |
 | `region` | Box prompt: the human drew an area and said what goes there (`text`). `rect` is relative to the element it was drawn in (`parent`, `label`, `src`) |
 
-Every change carries `src: "file:line:col"` (where the element starts in the source): the HTML file for HTML projects,
-the component's `.jsx`/`.tsx` file for React projects, and the widget's `source` from `glimpse.scene.json` for terminal
-UIs and native GUIs. `add` and `reorder` changes also carry `anchor: { after, before }`, the source locations of the
+A change to an element Glimpse could locate carries `src: "file:line:col"` (where the element starts in the source):
+the HTML file for HTML projects, the component's `.jsx`/`.tsx` file for React projects, and the widget's `source` from
+`glimpse.scene.json` for terminal UIs and native GUIs. Elements without a known location (made by a script, a widget
+the scene file gives no `source`) come without it, and so does an unwrap (a `delete` whose `intent` says to remove only
+the element's tags), which names the location in its `intent` instead. `add` and `reorder` changes also carry `anchor: { after, before }`, the source locations of the
 neighbours the element now sits between.

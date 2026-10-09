@@ -14,7 +14,10 @@ import { startServer, type GlimpseServer, type ServerOptions } from "@glimpse/se
 export {
   detectProject,
   openBrowser,
+  sameDir,
+  servesProject,
   startServer,
+  withProjectLock,
   type GlimpseServer,
   type Handoff,
   type HandoffKind,

@@ -29,8 +29,9 @@ only touch it again if the code ends up different from it.
    and keep them stable when you rewrite the file so unsent edits survive. Missing ids are generated from type and
    position ("button-0", "sidebar.button-2").
 6. "meta": { "framework": "textual", "command": "python app.py", "title": "…" }. "command" is how to run the real
-   app from the project directory ("python app.py", "npm start", "cargo run", "go run ."); Glimpse runs a TUI in
-   its built-in terminal next to the mock so the human can compare.
+   app from the project directory ("python app.py", "npm start", "cargo run", "go run ."), spelled the way it runs on
+   this machine (macOS and many Linux systems only have "python3", Windows usually "python" or "py"); Glimpse runs a
+   TUI in its built-in terminal next to the mock so the human can compare.
 7. "theme" (native only): "macos" | "windows" | "linux", the look of the mock. Omit it to use the human's OS.
 8. "props" hold content and state; text goes in props.text. List-like props ("items", "columns") are arrays,
    table rows are arrays of cells. Flags ("checked", "disabled", "password", …) are booleans and "selected",
