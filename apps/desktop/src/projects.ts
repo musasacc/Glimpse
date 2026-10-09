@@ -44,6 +44,7 @@ interface Entry extends OpenProject {
 export class ProjectServers {
   private readonly entries = new Map<string, Entry>();
   private readonly pending = new Map<string, Promise<OpenProject>>();
+  private readonly closing = new Set<Promise<void>>();
   private readonly pid: number;
 
   constructor(private readonly opts: ProjectServersOptions) {
@@ -76,8 +77,23 @@ export class ProjectServers {
     return task;
   }
 
+  /** Servers still running or still stopping (quitting waits for them, so their server.json is removed). */
+  get active(): boolean {
+    return this.entries.size > 0 || this.pending.size > 0 || this.closing.size > 0;
+  }
+
   /** Stop the server we started for a folder (a reused one keeps running) and forget the folder. */
-  async close(dirArg: string): Promise<void> {
+  close(dirArg: string): Promise<void> {
+    const task = this.closeNow(dirArg);
+    this.closing.add(task);
+    void task.then(
+      () => this.closing.delete(task),
+      () => this.closing.delete(task),
+    );
+    return task;
+  }
+
+  private async closeNow(dirArg: string): Promise<void> {
     const key = dirKey(dirArg);
     await this.pending.get(key)?.catch(() => undefined);
     const e = this.entries.get(key);
@@ -100,7 +116,7 @@ export class ProjectServers {
 
   async closeAll(): Promise<void> {
     await Promise.allSettled([...this.pending.values()]);
-    await Promise.allSettled([...this.entries.values()].map((e) => this.close(e.dir)));
+    await Promise.allSettled([...this.closing, ...[...this.entries.values()].map((e) => this.close(e.dir))]);
   }
 
   private async start(dir: string, key: string): Promise<OpenProject> {

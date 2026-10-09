@@ -56,8 +56,9 @@ npx glimpse-ui open .   # or run it without installing
 
 Download the installer for your system from [GitHub Releases](https://github.com/musasacc/Glimpse/releases):
 `.dmg` for macOS (Apple Silicon and Intel), `.exe` for Windows (x64 and Arm), `.AppImage` or `.deb` for Linux.
-Open a folder (or start a new project) and Glimpse opens it in its own window, with your recent projects one click
-away. Agents connect the same way as below (**Help › Copy MCP Command**) and find the project you have open. See
+The app opens to a home screen: describe the UI you want and send. Glimpse runs the AI itself (Claude Code, Codex or
+a Claude API key) and asks where to save the new project, or builds in the folder you picked; your recent projects are
+one click away. External agents can still connect (**Help › Use with an External Agent…**). See
 [docs/desktop.md](docs/desktop.md) for first-launch steps and building the app yourself.
 
 **From source** (requires Node.js 20+ and [pnpm](https://pnpm.io))

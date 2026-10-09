@@ -146,6 +146,29 @@ describe("ProjectServers", () => {
     for (const p of opened) assert.equal(await alive(p.url), false);
   });
 
+  it("stays active while a closed window's server is still stopping, and closeAll waits for it", async () => {
+    let stopped = false;
+    const servers = new ProjectServers({
+      start: async () => ({
+        url: "http://127.0.0.1:9",
+        close: async () => {
+          await new Promise((r) => setTimeout(r, 150));
+          stopped = true;
+        },
+      }),
+      pid: 4242,
+    });
+    const dir = project();
+    await servers.open(dir);
+    assert.equal(servers.active, true);
+    void servers.close(dir); // a project window closed; the app may be asked to quit right away
+    assert.equal(servers.active, true);
+    await servers.closeAll();
+    assert.equal(stopped, true);
+    assert.equal(servers.active, false);
+    assert.equal(existsSync(join(dir, ".glimpse", "server.json")), false);
+  });
+
   it("rejects folders that don't exist", async () => {
     const servers = new ProjectServers({ start, pid: 4242 });
     await assert.rejects(servers.open(join(root, "missing")), /Folder not found/);

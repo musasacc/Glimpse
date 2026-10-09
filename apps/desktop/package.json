@@ -26,6 +26,7 @@
     "icon": "node scripts/make-icon.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.132.1",
     "@babel/parser": "^7.29.9",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "chokidar": "^5.0.0",

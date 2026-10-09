@@ -1,16 +1,31 @@
-/** What the launcher window may ask the main process for (exposed by preload.ts as `window.glimpse`). */
+/** What the home window may ask the main process for (exposed by preload.ts as `window.glimpse`). */
 export interface LauncherApi {
   info(): Promise<AppInfo>;
   recent(): Promise<RecentEntry[]>;
   /** Pick an existing folder and open it. */
   openFolder(): Promise<void>;
-  /** Pick or create an empty folder and open it as a new project. */
-  newProject(): Promise<void>;
   /** Open a folder from the recent list. */
   openRecent(path: string): Promise<void>;
   removeRecent(path: string): Promise<void>;
   /** Called whenever the recent list changes; returns an unsubscribe function. */
   onRecentChanged(listener: () => void): () => void;
+
+  /** The folder the next request is built in (the composer's folder chip), or null: then sending asks where to save. */
+  folder(): Promise<FolderChoice | null>;
+  /** Pick the folder for the next request (null when the dialog was cancelled; the previous choice stays). */
+  pickFolder(): Promise<FolderChoice | null>;
+  /** Forget the chosen folder ("No folder"). */
+  clearFolder(): Promise<void>;
+  /**
+   * Build something: in the chosen folder, or (none chosen) in a new folder the user names in a save dialog. Opens
+   * the project's window and hands the request to its Glimpse server.
+   */
+  send(request: HomeRequest): Promise<SendResult>;
+
+  /** Which AI builds requests. Never includes the API key. */
+  aiInfo(): Promise<AiInfo>;
+  /** Change the AI settings (glimpse-ui's saveAgentSettings); returns the new info. */
+  saveAi(patch: SaveAiPatch): Promise<AiInfo>;
 }
 
 export interface AppInfo {
@@ -30,13 +45,56 @@ export interface RecentEntry {
   open: boolean;
 }
 
+export interface FolderChoice {
+  path: string;
+  name: string;
+}
+
+/** What the home screen's target selector offers (the editor's targets). */
+export type BuildTarget = "html" | "react" | "tui" | "native";
+
+export interface HomeRequest {
+  text: string;
+  target: BuildTarget;
+}
+
+/** "sent": the project window is open and has the request. "canceled": the user closed the save dialog. "failed": a dialog said why. */
+export type SendResult = { status: "sent"; folder: string } | { status: "canceled" } | { status: "failed"; message: string };
+
+/** The preference in Glimpse's settings (glimpse-ui's AgentEngine). */
+export type AiEngine = "auto" | "claude" | "codex" | "api" | "external";
+/** Who would actually build a request; "none" when nothing can. */
+export type ResolvedAiEngine = "claude" | "codex" | "api" | "external" | "none";
+
+export interface AiInfo {
+  preferred: AiEngine;
+  engine: ResolvedAiEngine;
+  /** "Claude Code", "Codex", "Claude API", "Your agent" or "Set up AI". */
+  label: string;
+  /** What is installed or configured on this machine (`api`: a key in the settings or ANTHROPIC_API_KEY). */
+  available: { claude: boolean; codex: boolean; api: boolean };
+  /** An API key is saved in Glimpse's settings (the key itself never reaches the page). */
+  keySaved: boolean;
+}
+
+/** `anthropicApiKey: null` removes the saved key. */
+export interface SaveAiPatch {
+  engine?: AiEngine;
+  anthropicApiKey?: string | null;
+}
+
 /** IPC channel names (ipcMain.handle / ipcRenderer.invoke). */
 export const IPC = {
   info: "glimpse:info",
   recent: "glimpse:recent",
   openFolder: "glimpse:open-folder",
-  newProject: "glimpse:new-project",
   openRecent: "glimpse:open-recent",
   removeRecent: "glimpse:remove-recent",
   recentChanged: "glimpse:recent-changed",
+  folder: "glimpse:folder",
+  pickFolder: "glimpse:pick-folder",
+  clearFolder: "glimpse:clear-folder",
+  send: "glimpse:send",
+  aiInfo: "glimpse:ai-info",
+  saveAi: "glimpse:save-ai",
 } as const;
