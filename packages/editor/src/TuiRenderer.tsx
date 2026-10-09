@@ -1,6 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+import { memo, type CSSProperties, type ReactNode } from "react";
 import type { Layout, Scene, SceneNode } from "@glimpse/core";
-import type { Cell } from "./scene-geometry";
+import { samePreviewFor, type Cell } from "./scene-geometry";
 import { BORDER_FG, cellWidth, fitCells, mix, SCREEN_BG, SCREEN_FG, textStyle, tuiColor, wrapCells, type TextStyle } from "./tui-colors";
 
 /**
@@ -15,14 +15,19 @@ export interface TuiProps {
   cell: Cell;
   /** Layout overrides while a drag or resize is in progress. */
   preview?: ReadonlyMap<string, Layout>;
+  /** Changes whenever the scene does: it is edited in place, so the object alone doesn't tell. */
+  rev?: number;
 }
 
-/** The whole screen: the root's size in cells, its background, and every widget on it. */
-export function TuiScreen({ scene, cell, preview }: TuiProps) {
+/**
+ * The whole screen: the root's size in cells, its background, and every widget on it.
+ * Memoized, as are its widgets: hovering, the terminal's output and a drag redraw only what changed.
+ */
+export const TuiScreen = memo(function TuiScreen({ scene, cell, preview, rev }: TuiProps) {
   const root = scene.nodes[scene.rootId]!;
   const bg = tuiColor(root.style.background) ?? SCREEN_BG;
   const fg = tuiColor(root.style.color, bg) ?? SCREEN_FG;
-  const ctx: Ctx = { scene, cell, preview, bg, fg };
+  const ctx: Ctx = { scene, cell, preview, bg, fg, rev };
   return (
     <div className="tui-screen" style={{ width: root.layout.w * cell.w, height: root.layout.h * cell.h, background: bg, color: fg }}>
       {root.children.map((id) => (
@@ -30,7 +35,7 @@ export function TuiScreen({ scene, cell, preview }: TuiProps) {
       ))}
     </div>
   );
-}
+});
 
 interface Ctx {
   scene: Scene;
@@ -39,9 +44,24 @@ interface Ctx {
   /** Inherited background and text color (terminal styles inherit). */
   bg: string;
   fg: string;
+  rev?: number;
 }
 
-function TuiNode({ id, ctx }: { id: string; ctx: Ctx }) {
+const TuiNode = memo(TuiNodeView, (a, b) => {
+  const x = a.ctx;
+  const y = b.ctx;
+  return (
+    a.id === b.id &&
+    x.scene === y.scene &&
+    x.cell === y.cell &&
+    x.bg === y.bg &&
+    x.fg === y.fg &&
+    x.rev === y.rev &&
+    samePreviewFor(y.scene, b.id, x.preview, y.preview)
+  );
+});
+
+function TuiNodeView({ id, ctx }: { id: string; ctx: Ctx }) {
   const n = ctx.scene.nodes[id];
   if (!n) return null;
   const l = ctx.preview?.get(id) ?? n.layout;

@@ -198,20 +198,31 @@ function flexLike(parent: Element | undefined): Record<string, string> {
  * inside it is hit too, so dragging over a row of buttons selects the buttons.
  */
 export function elementsIn(rect: Rect): string[] {
+  return marqueeHits()(rect);
+}
+
+/**
+ * elementsIn for a whole marquee gesture: every box is measured once, up
+ * front, instead of on each pointer move (thousands of layout reads on a big page).
+ */
+export function marqueeHits(): (rect: Rect) => string[] {
   const scene = store.scene;
   const surface = store.surface;
-  if (!scene || !surface) return [];
-  const hits: string[] = [];
+  if (!scene || !surface) return () => [];
+  const boxes: { id: string; r: Rect }[] = [];
   for (const id of Object.keys(scene.nodes)) {
     if (id === scene.rootId || scene.nodes[id]!.hidden || !isDrawn(scene, id)) continue;
     const r = surface.rect(id);
-    if (r && r.width > 0 && r.height > 0 && inside(r, rect)) hits.push(id);
+    if (r && r.width > 0 && r.height > 0) boxes.push({ id, r: { left: r.left, top: r.top, width: r.width, height: r.height } });
   }
-  const covered = new Set<string>();
-  for (const id of hits) {
-    for (let p = scene.nodes[id]!.parent; p !== null; p = scene.nodes[p]?.parent ?? null) covered.add(p);
-  }
-  return documentOrder(scene, hits.filter((id) => !covered.has(id)));
+  return (rect) => {
+    const hits = boxes.filter((b) => inside(b.r, rect)).map((b) => b.id);
+    const covered = new Set<string>();
+    for (const id of hits) {
+      for (let p = scene.nodes[id]?.parent ?? null; p !== null; p = scene.nodes[p]?.parent ?? null) covered.add(p);
+    }
+    return documentOrder(scene, hits.filter((id) => !covered.has(id) && scene.nodes[id]));
+  };
 }
 
 /**

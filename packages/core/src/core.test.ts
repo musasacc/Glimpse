@@ -61,6 +61,20 @@ describe("OpLog", () => {
     expect(log.scene.nodes.b1!.props.text).toBe("Buy now");
   });
 
+  it("bumps its revision on every change", () => {
+    const log = new OpLog(fixture());
+    const seen = [log.revision];
+    log.apply({ op: "setText", node: "b1", from: "Button 1", to: "Buy now" });
+    seen.push(log.revision);
+    log.undo();
+    seen.push(log.revision);
+    expect(log.redo()).toBe(true);
+    seen.push(log.revision);
+    log.discard();
+    seen.push(log.revision);
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
   it("undoes a delete including its subtree", () => {
     const log = new OpLog(fixture());
     log.apply(deleteOp(log.scene, "nav"));

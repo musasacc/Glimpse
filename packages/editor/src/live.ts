@@ -21,6 +21,26 @@ export function sendLive(msg: LiveMessage): boolean {
 }
 
 /**
+ * Saves come in bursts (a checkout or a formatter touches hundreds of files at once):
+ * their activity rows are added together, so the editor re-renders once per burst.
+ */
+let fileRows: string[] = [];
+let fileRowsTimer: ReturnType<typeof setTimeout> | undefined;
+
+function fileRow(text: string): void {
+  fileRows.push(text);
+  fileRowsTimer ??= setTimeout(flushFileRows, 100);
+}
+
+function flushFileRows(): void {
+  clearTimeout(fileRowsTimer);
+  fileRowsTimer = undefined;
+  const rows = fileRows;
+  fileRows = [];
+  store.activity("ai-file", ...rows);
+}
+
+/**
  * Live mode: listen to the Glimpse server. File saves (usually the AI editing
  * code) and agent status lines show up in the activity feed as they happen.
  * The preview page updates itself via the injected client; we only rebuild the
@@ -41,6 +61,8 @@ export function connectLive(): () => void {
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(String(ev.data));
+      // Keep the feed in order: saves listed before whatever came after them.
+      if (msg.type !== "file-changed") flushFileRows();
       switch (msg.type) {
         case "hello": {
           const first = store.state.project === null;
@@ -63,7 +85,7 @@ export function connectLive(): () => void {
           void store.refreshHandoffs();
           break;
         case "file-changed": {
-          store.activity("ai-file", `${msg.event === "unlink" ? "deleted" : msg.event === "add" ? "created" : "edited"} \`${msg.path}\``);
+          fileRow(`${msg.event === "unlink" ? "deleted" : msg.event === "add" ? "created" : "edited"} \`${msg.path}\``);
           const entry = store.state.project?.entry;
           if (entry && msg.path === entry) {
             if (msg.event === "add" && !store.state.entryExists) store.set({ entryExists: true, view: "editor", reloadKey: store.state.reloadKey + 1 });
@@ -81,6 +103,7 @@ export function connectLive(): () => void {
         // Version history and variants (see loop.ts).
         case "snapshot":
         case "snapshot-updated":
+        case "snapshots-pruned":
         case "variants":
         case "variant-updated":
         case "variants-removed":

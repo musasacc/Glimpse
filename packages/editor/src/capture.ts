@@ -7,6 +7,8 @@ export interface CaptureOptions {
   maxHeight?: number;
   /** Capture what is scrolled into view instead of the top of the page. */
   atScroll?: boolean;
+  /** Give up (null) on a page with more elements than this: html-to-image copies all of them on the main thread. */
+  maxElements?: number;
 }
 
 /**
@@ -25,6 +27,7 @@ export async function capturePreview(target: HTMLIFrameElement | Document | null
     // One viewport: a page without a doctype (quirks mode) reports its whole height as clientHeight.
     const height = Math.min(root.clientHeight || win.innerHeight, win.innerHeight || Infinity, opts.maxHeight ?? Infinity);
     if (!width || !height) return null;
+    if (opts.maxElements !== undefined && doc.getElementsByTagName("*").length > opts.maxElements) return null;
     const scale = Math.min(1, (opts.maxWidth ?? width) / width);
     const dx = opts.atScroll ? win.scrollX : 0;
     const dy = opts.atScroll ? win.scrollY : 0;

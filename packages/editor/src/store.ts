@@ -116,6 +116,9 @@ class Store {
    */
   private frozen: OpLog | null = null;
   private listeners = new Set<() => void>();
+  private hoverListeners = new Set<() => void>();
+  /** The pending change count for a revision of the op log (diffing the scenes is too slow to repeat per render). */
+  private pendingCache: { log: OpLog; revision: number; count: number } | null = null;
   private activitySeq = 0;
   /** While Edit source writes the files, replayed edits that are already in them can't apply; that's expected. */
   private writing = 0;
@@ -130,11 +133,26 @@ class Store {
 
   getSnapshot = () => this.state;
 
+  /** Hears hover changes only (see useHovered). */
+  subscribeHover = (fn: () => void) => {
+    this.hoverListeners.add(fn);
+    return () => this.hoverListeners.delete(fn);
+  };
+
   set(patch: Partial<State>): void {
     // A plain single selection (most callers) replaces the multi-selection.
     if ("selected" in patch && !("multi" in patch)) patch = { ...patch, multi: patch.selected ? [patch.selected] : [] };
+    const hoverChanged = "hovered" in patch && patch.hovered !== this.state.hovered;
+    // The pointer moving onto another element only re-renders what draws the hover box, not the whole editor.
+    if (Object.keys(patch).length === 1 && "hovered" in patch) {
+      if (!hoverChanged) return;
+      this.state = { ...this.state, hovered: patch.hovered ?? null };
+      for (const fn of this.hoverListeners) fn();
+      return;
+    }
     this.state = { ...this.state, ...patch, rev: this.state.rev + 1 };
     for (const fn of this.listeners) fn();
+    if (hoverChanged) for (const fn of this.hoverListeners) fn();
   }
 
   get scene(): Scene | null {
@@ -147,7 +165,13 @@ class Store {
   }
 
   get pendingCount(): number {
-    return this.log && this.commitTimer === undefined ? buildChangeList(this.log).changes.length : 0;
+    const log = this.log;
+    if (!log || this.commitTimer !== undefined) return 0;
+    const c = this.pendingCache;
+    if (c?.log === log && c.revision === log.revision) return c.count;
+    const count = buildChangeList(log).changes.length;
+    this.pendingCache = { log, revision: log.revision, count };
+    return count;
   }
 
   /**
@@ -525,9 +549,12 @@ class Store {
     return this.log && this.commitTimer === undefined ? buildChangeList(this.log, note) : null;
   }
 
-  activity(kind: ActivityItem["kind"], text: string): void {
-    const item = { id: ++this.activitySeq, at: Date.now(), kind, text };
-    this.set({ activity: [item, ...this.state.activity].slice(0, 200) });
+  /** Add rows to the activity feed (several at once re-render once), newest last. */
+  activity(kind: ActivityItem["kind"], ...texts: string[]): void {
+    if (texts.length === 0) return;
+    const at = Date.now();
+    const items = texts.map((text) => ({ id: ++this.activitySeq, at, kind, text })).reverse();
+    this.set({ activity: [...items, ...this.state.activity].slice(0, 200) });
   }
 }
 
@@ -535,4 +562,9 @@ export const store = new Store();
 
 export function useStore(): State {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);
+}
+
+/** The hovered element; re-renders on hover changes, which useStore() alone doesn't (see Store.set). */
+export function useHovered(): string | null {
+  return useSyncExternalStore(store.subscribeHover, () => store.state.hovered);
 }

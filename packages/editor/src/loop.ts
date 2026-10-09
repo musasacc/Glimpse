@@ -82,6 +82,8 @@ class Loop {
   };
   private listeners = new Set<() => void>();
   private capturing = new Set<string>();
+  /** Versions the backfill already tried: one that can't be pictured isn't loaded again on every reconnect. */
+  private backfilled = new Set<string>();
   /** Set while we restore: the backup snapshot shows the old page, not the reloading one. */
   private restoring = false;
 
@@ -218,8 +220,11 @@ class Loop {
    * newest first and one at a time, each from its own snapshot page.
    */
   private async backfillThumbs(): Promise<void> {
-    const missing = this.state.snapshots.filter((s) => !s.thumb).slice(-BACKFILL_MAX).reverse();
-    for (const s of missing) await this.captureThumb(s, false);
+    const missing = this.state.snapshots.filter((s) => !s.thumb && !this.backfilled.has(s.id)).slice(-BACKFILL_MAX).reverse();
+    for (const s of missing) {
+      this.backfilled.add(s.id);
+      await this.captureThumb(s, false);
+    }
   }
 
   /**
@@ -236,6 +241,8 @@ class Loop {
     try {
       const doc = store.bridge?.doc;
       await sleep(600);
+      // Rendering a page to a picture holds the main thread: wait for a quiet moment (not mid-drag).
+      await idle();
       const liveMatches =
         fromLive &&
         this.live &&
@@ -249,7 +256,7 @@ class Loop {
         !!doc?.defaultView &&
         store.bridge?.doc === doc;
       const width = DEVICE_WIDTH[store.state.device] ?? Math.max(800, doc?.documentElement.clientWidth ?? 1280);
-      const opts = { maxWidth: THUMB_WIDTH, maxHeight: Math.round(width * 0.75) };
+      const opts = { maxWidth: THUMB_WIDTH, maxHeight: Math.round(width * 0.75), maxElements: THUMB_MAX_ELEMENTS };
       // A terminal UI or native GUI: the version's scene file, drawn the way the canvas draws it.
       const sceneThumb = store.sceneSurface?.thumbnail;
       // A React app's snapshot is source that Vite has to build: served as static files it renders blank, so only the live page pictures it.
@@ -367,6 +374,13 @@ class Loop {
         if (!s.thumb) void this.captureThumb(this.snapshot(s.id)!);
         break;
       }
+      case "snapshots-pruned": {
+        // The server dropped its oldest AI rounds (it keeps a few hundred).
+        const ids = new Set(Array.isArray(msg.ids) ? msg.ids.map(String) : []);
+        this.set({ snapshots: this.state.snapshots.filter((x) => !ids.has(x.id)) });
+        this.dropMissingView();
+        break;
+      }
       case "variants":
         this.upsertJob(msg.job as VariantJob);
         break;
@@ -465,6 +479,8 @@ export function since(iso: string): string {
 export const THUMB_WIDTH = 320;
 /** At most this many missing thumbnails are filled in when the history loads. */
 const BACKFILL_MAX = 12;
+/** Pages bigger than this get no thumbnail: copying the whole DOM into a picture would freeze the editor. */
+const THUMB_MAX_ELEMENTS = 6000;
 
 export const KIND_TITLE: Record<SnapshotKind, string> = {
   initial: "First version",
@@ -513,6 +529,11 @@ function message(e: unknown): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Resolves once the browser is idle (or after `timeout` ms at the latest). */
+function idle(timeout = 3000): Promise<void> {
+  return new Promise((r) => (typeof requestIdleCallback === "function" ? requestIdleCallback(() => r(), { timeout }) : setTimeout(r, 0)));
 }
 
 function readFlag(key: string, fallback: boolean): boolean {

@@ -90,9 +90,14 @@ describe("version history", () => {
     expect(manual).toMatchObject({ created: true, snapshot: { id: "s2", kind: "ai", label: "AI edited pages/about.html", fileCount: 3 } });
     expect(await srv.snapshot()).toMatchObject({ id: "s2" });
 
-    const stored = JSON.parse(await readFile(join(dir, ".glimpse", "history", "snapshots.json"), "utf8")) as { files: Record<string, string> }[];
-    expect(Object.keys(stored[1]!.files).sort()).toEqual(["index.html", "pages/about.html", "style.css"]);
-    const sha = stored[1]!.files["pages/about.html"]!;
+    // The first snapshot is stored in full, later ones as their changes.
+    const stored = JSON.parse(await readFile(join(dir, ".glimpse", "history", "snapshots.json"), "utf8")) as {
+      files?: Record<string, string>;
+      changes?: Record<string, string | null>;
+    }[];
+    expect(Object.keys(stored[0]!.files!).sort()).toEqual(["index.html", "style.css"]);
+    expect(Object.keys(stored[1]!.changes!)).toEqual(["pages/about.html"]);
+    const sha = stored[1]!.changes!["pages/about.html"]!;
     expect(await readFile(join(dir, ".glimpse", "history", "objects", sha), "utf8")).toBe("<p>About</p>");
   });
 

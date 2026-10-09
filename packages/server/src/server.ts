@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { copyFile, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
 import { dirname, extname, join, normalize, posix, relative, resolve, sep } from "node:path";
@@ -148,6 +148,8 @@ const VARIANTS_DIR = ".glimpse/variants";
 /** URL paths inside a .glimpse folder (any case, and Windows' ignored trailing dots and spaces). */
 const STATE_PATH = /(^|[/\\])\.glimpse[. ]*([/\\]|$)/i;
 const DEFAULT_MANUAL_LABEL = "Saved by hand";
+/** Backups of files Glimpse overwrote kept in .glimpse/backups (the version history has them too); older ones are removed. */
+const KEEP_BACKUPS = 50;
 /** After the React preview failed to start (usually: dependencies not installed yet), try again at most this often. */
 const PREVIEW_RETRY_MS = 2000;
 /** A terminal UI restarts once its code has been quiet this long. */
@@ -178,6 +180,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 
   const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff) => void }>();
   const sockets = new Set<WebSocket>();
+  /** The live client in previewed pages (the page, compare and variant frames): it only acts on file changes. */
+  const previewSockets = new Set<WebSocket>();
   const token = randomBytes(32).toString("base64url");
   /** Set once listening (the port may be picked by the OS). */
   let port = 0;
@@ -186,9 +190,11 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   const broadcast = (msg: object) => {
     const data = JSON.stringify(msg);
     for (const ws of sockets) if (ws.readyState === ws.OPEN) ws.send(data);
+    if ((msg as { type?: unknown }).type === "file-changed") for (const ws of previewSockets) if (ws.readyState === ws.OPEN) ws.send(data);
   };
   const history = new History(dir, {
     onSnapshot: (s, change) => broadcast({ type: change === "created" ? "snapshot" : "snapshot-updated", snapshot: publicSnapshot(s) }),
+    onPruned: (ids) => broadcast({ type: "snapshots-pruned", ids }),
   });
   const variants = new Variants(dir);
   await history.load();
@@ -839,6 +845,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       await mkdir(dirname(to), { recursive: true });
       await copyFile(from, to);
     }
+    // Their names are timestamps, so they sort oldest first.
+    const all = (await readdir(join(stateDir, "backups")).catch(() => [] as string[])).sort();
+    for (const old of all.slice(0, Math.max(0, all.length - KEEP_BACKUPS))) await rm(join(stateDir, "backups", old), { recursive: true, force: true });
     return relative(dir, backup).split(sep).join("/");
   }
 
@@ -1278,7 +1287,16 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (!hostAllowed(req) || !originAllowed(req)) return refuseUpgrade(socket, "403 Forbidden");
     // Vite's HMR websocket for the React preview: its own upgrade listener answers it.
     if (reactPreview?.isViteUpgrade(req)) return;
-    if (new URL(req.url ?? "/", "http://localhost").pathname !== "/__glimpse/ws") return socket.destroy();
+    const url = new URL(req.url ?? "/", "http://localhost");
+    if (url.pathname !== "/__glimpse/ws") return socket.destroy();
+    if (url.searchParams.get("role") === "preview") {
+      // No hello, terminal catch-up, scenes or snapshots: just the file changes it reloads or morphs on.
+      wss.handleUpgrade(req, socket, head, (ws) => {
+        ws.on("close", () => previewSockets.delete(ws));
+        previewSockets.add(ws);
+      });
+      return;
+    }
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on("message", (raw) => void onClientMessage(ws, raw));
       ws.on("close", () => sockets.delete(ws));

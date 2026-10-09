@@ -4,6 +4,7 @@ import {
   cloneScene,
   OpLog,
   rebaseOps,
+  Scrollback,
   type LogEntry,
   type Scene,
   type SceneFileExtras,
@@ -118,7 +119,7 @@ class SceneMode {
   private themeChosen = false;
   private listeners = new Set<() => void>();
   /** Terminal output since the last start, for a pane that mounts later. */
-  termBuffer = "";
+  private term = new Scrollback(TERM_BUFFER);
   private termListeners = new Set<(data: string | null) => void>();
   /** Set by the canvas: pictures of the mock for handoffs and the timeline. */
   capture: { screenshot(): Promise<string | null>; thumbnail(id: string, maxWidth: number): Promise<string | null> } | null = null;
@@ -253,7 +254,7 @@ class SceneMode {
     switch (msg.type) {
       case "hello": {
         // The terminal's catch-up (term-start, term-data, term-exit) follows.
-        this.termBuffer = "";
+        this.term.clear();
         this.emitTerm(null);
         const t = msg.terminal as Partial<TerminalInfo> | undefined;
         if (t) this.set({ terminal: { ...NO_TERMINAL, ...t, exit: null, error: null } });
@@ -267,7 +268,7 @@ class SceneMode {
         else this.onScene(msg as unknown as ScenePayload);
         break;
       case "term-start":
-        this.termBuffer = "";
+        this.term.clear();
         this.emitTerm(null);
         this.set({
           terminal: { ...this.state.terminal, command: String(msg.command ?? ""), running: true, mode: msg.mode === "pipe" ? "pipe" : "pty", exit: null, error: null },
@@ -275,7 +276,7 @@ class SceneMode {
         break;
       case "term-data": {
         const data = String(msg.data ?? "");
-        this.termBuffer = (this.termBuffer + data).slice(-TERM_BUFFER);
+        this.term.push(data);
         this.emitTerm(data);
         break;
       }
@@ -376,6 +377,10 @@ class SceneMode {
   onTerm(fn: (data: string | null) => void): () => void {
     this.termListeners.add(fn);
     return () => this.termListeners.delete(fn);
+  }
+
+  get termBuffer(): string {
+    return this.term.text();
   }
 
   private emitTerm(data: string | null): void {

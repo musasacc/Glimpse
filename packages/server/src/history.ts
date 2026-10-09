@@ -40,6 +40,13 @@ export const MAX_PNG_BYTES = 5 * 1024 * 1024;
  * calls are seconds apart.
  */
 const ROUND_GAP_MS = 60_000;
+/**
+ * AI rounds kept in the history; older ones are pruned (with the file contents
+ * only they held). Every other kind of version (the human's, handoffs, Glimpse's
+ * own writes) is kept. Pruning waits for some slack, so it runs now and then.
+ */
+export const KEEP_AI_ROUNDS = 200;
+const PRUNE_SLACK = 20;
 
 /**
  * - `initial`: the project as it was when Glimpse opened it
@@ -90,6 +97,10 @@ export interface HistoryOptions {
   warn?: (message: string) => void;
   /** A snapshot was created, or changed in place (an AI round grew, a thumbnail arrived). */
   onSnapshot?: (snapshot: Snapshot, change: "created" | "updated") => void;
+  /** Old AI rounds were pruned (see KEEP_AI_ROUNDS). */
+  onPruned?: (ids: string[]) => void;
+  /** Override KEEP_AI_ROUNDS (tests). */
+  keepAiRounds?: number;
 }
 
 /** What a snapshot Glimpse takes around its own writes is called. */
@@ -126,6 +137,8 @@ export class History {
   private warnedCap = false;
   private readonly warn: (message: string) => void;
   private readonly onSnapshot: (snapshot: Snapshot, change: "created" | "updated") => void;
+  private readonly onPruned: (ids: string[]) => void;
+  private readonly keepAiRounds: number;
 
   constructor(
     private readonly dir: string,
@@ -134,6 +147,8 @@ export class History {
     this.root = join(dir, ".glimpse", "history");
     this.warn = opts.warn ?? ((m) => console.warn(m));
     this.onSnapshot = opts.onSnapshot ?? (() => undefined);
+    this.onPruned = opts.onPruned ?? (() => undefined);
+    this.keepAiRounds = opts.keepAiRounds ?? KEEP_AI_ROUNDS;
   }
 
   async load(): Promise<void> {
@@ -147,13 +162,21 @@ export class History {
     try {
       const raw = JSON.parse(text) as unknown;
       if (!Array.isArray(raw)) throw new Error("not a list of snapshots");
-      this.snapshots = raw
-        .filter(
-          (s): s is Snapshot =>
-            // Ids end up in file names (thumbnails), so only ever "s<n>".
-            !!s && typeof s.id === "string" && /^s\d+$/.test(s.id) && typeof s.seq === "number" && !!s.files && typeof s.files === "object",
-        )
-        .sort((a, b) => a.seq - b.seq);
+      // Each entry holds its files in full (`files`) or as changes from the entry before it (see save).
+      const loaded: Snapshot[] = [];
+      let prev: Files | null = null;
+      for (const s of raw as (Partial<Snapshot> & { changes?: Record<string, string | null> })[]) {
+        // Ids end up in file names (thumbnails), so only ever "s<n>".
+        const ok = !!s && typeof s.id === "string" && /^s\d+$/.test(s.id) && typeof s.seq === "number";
+        let files: Files | null = null;
+        if (ok && !!s.files && typeof s.files === "object") files = s.files;
+        else if (ok && prev && !!s.changes && typeof s.changes === "object") files = applyChanges(prev, s.changes);
+        prev = files;
+        if (!files) continue;
+        const { changes: _, ...meta } = s;
+        loaded.push({ ...(meta as Snapshot), files });
+      }
+      this.snapshots = loaded.sort((a, b) => a.seq - b.seq);
     } catch (err) {
       // Starting over must not destroy what may still be recoverable by hand.
       const kept = `${file}.unreadable-${Date.now()}`;
@@ -375,6 +398,7 @@ export class History {
     this.snapshots.push(snapshot);
     await this.save();
     this.onSnapshot(snapshot, "created");
+    await this.prune();
     return { snapshot, created: true };
   }
 
@@ -406,9 +430,48 @@ export class History {
     return created ? snapshot : null;
   }
 
+  /**
+   * Write snapshots.json. Consecutive snapshots share almost all their files, so
+   * each one after the first is stored as its changes from the one before it
+   * (path → sha, or null when deleted): the index stays small although it is
+   * rewritten with every version. Older Glimpse versions skip those entries.
+   */
   private async save(): Promise<void> {
     await mkdir(this.root, { recursive: true });
-    await writeFileAtomic(join(this.root, "snapshots.json"), JSON.stringify(this.snapshots));
+    let prev: Files | null = null;
+    const entries = this.snapshots.map((s) => {
+      const { files, ...meta } = s;
+      const entry = prev ? { ...meta, changes: fileChanges(prev, files) } : s;
+      prev = files;
+      return entry;
+    });
+    await writeFileAtomic(join(this.root, "snapshots.json"), JSON.stringify(entries));
+  }
+
+  /**
+   * Drop the oldest AI rounds beyond keepAiRounds (never the newest version),
+   * their thumbnails, and every stored file content no remaining version (nor
+   * the files as Glimpse last saw them) refers to.
+   */
+  private async prune(): Promise<void> {
+    const rounds = this.snapshots.filter((s) => s.kind === "ai" && s !== this.snapshots.at(-1));
+    if (rounds.length <= this.keepAiRounds + PRUNE_SLACK) return;
+    const drop = new Set(rounds.slice(0, rounds.length - this.keepAiRounds));
+    this.snapshots = this.snapshots.filter((s) => !drop.has(s));
+    await this.save();
+    const ids = [...drop].map((s) => s.id);
+    for (const id of ids) await rm(this.thumbFile(id), { force: true });
+    this.onPruned(ids);
+    const used = new Set<string>(Object.values(this.baseline?.files ?? {}));
+    for (const s of this.snapshots) for (const sha of Object.values(s.files)) used.add(sha);
+    const objects = join(this.root, "objects");
+    for (const name of await readdir(objects).catch(() => [] as string[])) {
+      if (!SHA.test(name) || used.has(name)) continue;
+      await rm(join(objects, name), { force: true });
+      this.objects.delete(name);
+    }
+    // A cached hash says its content is stored; that no longer holds for the ones just removed.
+    for (const [path, h] of this.hashes) if (!used.has(h.sha)) this.hashes.delete(path);
   }
 
   /** Hash every versioned file of the project (storing new contents as objects). */
@@ -574,6 +637,24 @@ function sameFiles(a: Files, b: Files): boolean {
   const ka = Object.keys(a);
   if (ka.length !== Object.keys(b).length) return false;
   return ka.every((k) => Object.hasOwn(b, k) && a[k] === b[k]);
+}
+
+/** What changed from `before` to `after`: path → its new sha, or null when it was deleted. */
+function fileChanges(before: Files, after: Files): Record<string, string | null> {
+  const out = Object.create(null) as Record<string, string | null>;
+  for (const k of Object.keys(after)) if (!Object.hasOwn(before, k) || before[k] !== after[k]) out[k] = after[k]!;
+  for (const k of Object.keys(before)) if (!Object.hasOwn(after, k)) out[k] = null;
+  return out;
+}
+
+/** `before` with fileChanges applied. */
+function applyChanges(before: Files, changes: Record<string, string | null>): Files {
+  const out = Object.assign(Object.create(null) as Files, before);
+  for (const [k, sha] of Object.entries(changes)) {
+    if (sha === null) delete out[k];
+    else if (typeof sha === "string") out[k] = sha;
+  }
+  return out;
 }
 
 /** Paths added, changed or deleted between two files maps, sorted. */

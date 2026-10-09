@@ -219,3 +219,56 @@ describe("History", () => {
     expect(history.findPath(snapshot.id, "img/hero.jpg", false)).toBe("img/hero.jpg");
   });
 });
+
+describe("History storage", () => {
+  it("stores each version as its changes from the one before, and loads them back", async () => {
+    await put("a.txt", "a1");
+    await put("b.txt", "b1");
+    const first = (await history.snapshot("initial", "Opened")).snapshot;
+    await put("a.txt", "a2");
+    await rm(join(dir, "b.txt"));
+    await put("c/__proto__", "c1");
+    const second = (await history.snapshot("manual", "Saved")).snapshot;
+    const raw = JSON.parse(await readFile(join(history.root, "snapshots.json"), "utf8")) as Record<string, unknown>[];
+    expect(raw[0]!.files).toBeDefined();
+    expect(raw[1]!.files).toBeUndefined();
+    expect(Object.keys(raw[1]!.changes as object).sort()).toEqual(["a.txt", "b.txt", "c/__proto__"]);
+
+    const again = new History(dir, { warn: () => undefined });
+    await again.load();
+    expect(again.list()).toEqual(history.list());
+    expect({ ...again.get(first.id)!.files }).toEqual({ ...first.files });
+    expect({ ...again.get(second.id)!.files }).toEqual({ ...second.files });
+    expect(String(await again.readFile(second.id, "c/__proto__"))).toBe("c1");
+  });
+
+  it("prunes the oldest AI rounds and the file contents only they held", async () => {
+    const pruned: string[] = [];
+    history = new History(dir, { warn: () => undefined, keepAiRounds: 2, onPruned: (ids) => pruned.push(...ids) });
+    await put("page.html", "v0");
+    const initial = (await history.snapshot("initial", "Opened")).snapshot;
+    const objects = () => readdir(join(history.root, "objects"));
+    for (let i = 1; i <= 23; i++) {
+      await put("page.html", `v${i}`);
+      await history.endRound(true);
+    }
+    expect(pruned).toEqual([]);
+    expect(await objects()).toHaveLength(24);
+    await put("page.html", "v24");
+    await history.endRound(true);
+    // 24 rounds: all but the newest two (and the newest version) go.
+    expect(pruned).toHaveLength(21);
+    const left = history.list();
+    expect(left.map((s) => s.kind)).toEqual(["initial", "ai", "ai", "ai"]);
+    expect(left[0]!.id).toBe(initial.id);
+    expect(await objects()).toHaveLength(4);
+    expect(String(await history.readFile(left.at(-1)!.id, "page.html"))).toBe("v24");
+    expect(String(await history.readFile(initial.id, "page.html"))).toBe("v0");
+
+    // Content whose object was pruned is stored again when it comes back.
+    await put("page.html", "v5");
+    await history.endRound(true);
+    const latest = history.list().at(-1)!;
+    expect(String(await history.readFile(latest.id, "page.html"))).toBe("v5");
+  });
+});

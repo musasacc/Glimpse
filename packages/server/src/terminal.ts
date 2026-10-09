@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { constants } from "node:os";
 import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { Scrollback } from "@glimpse/core";
 
 /**
  * Runs the real terminal app inside Glimpse, next to its scene mock.
@@ -118,6 +119,7 @@ interface Run {
 }
 
 const SCROLLBACK_BYTES = 256 * 1024;
+const FLUSH_MS = 16;
 const isWindows = process.platform === "win32";
 
 export class TerminalSession extends EventEmitter<TerminalEvents> {
@@ -127,12 +129,16 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
   private starting = 0;
   private options: TerminalStartOptions | undefined;
   private size = { cols: 80, rows: 24 };
-  private buffer = "";
+  private buffer: Scrollback;
+  /** Output not passed on yet: a busy app's output goes out about once a frame, not once per chunk. */
+  private pending = "";
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
   /** Why the last start used pipes although a pty was wanted, if it did. */
   fallbackReason: string | undefined;
 
-  constructor(private readonly scrollback = SCROLLBACK_BYTES) {
+  constructor(scrollback = SCROLLBACK_BYTES) {
     super();
+    this.buffer = new Scrollback(scrollback);
   }
 
   /** How the current (or last) process runs. */
@@ -162,7 +168,7 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
 
   /** Recent output of the current (or last) run, for a client that connects late. */
   get output(): string {
-    return this.buffer;
+    return this.buffer.text();
   }
 
   /**
@@ -335,9 +341,10 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
   }
 
   private begin(run: Run): void {
+    this.flush();
     this.current = run;
     this.last = run;
-    this.buffer = "";
+    this.buffer.clear();
     // The app runs in its own process group, so it wouldn't go down with Glimpse: take it along on exit.
     if (run.pid > 0) {
       run.onProcessExit = () => killTreeSync(run.pid);
@@ -348,8 +355,22 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
   private push(run: Run, data: string): void {
     // Late output of a run that was already replaced belongs to nobody.
     if (run !== this.last || data === "") return;
-    this.buffer += data;
-    if (this.buffer.length > this.scrollback) this.buffer = this.buffer.slice(-this.scrollback);
+    this.pending += data;
+    if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => this.flush(), FLUSH_MS);
+      this.flushTimer.unref();
+    }
+  }
+
+  /** Pass on the pending output. Before any other event, so the order stays. */
+  private flush(): void {
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    const data = this.pending;
+    if (!data) return;
+    this.pending = "";
+    // Scrollback and listeners see the same output at the same time, so a late client's catch-up never repeats it.
+    this.buffer.push(data);
     this.emit("data", data);
   }
 
@@ -358,6 +379,7 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
     run.done = true;
     if (run.onProcessExit) process.off("exit", run.onProcessExit);
     if (this.current === run) this.current = undefined;
+    this.flush();
     this.emit("exit", code, signal);
   }
 }

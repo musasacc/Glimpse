@@ -95,7 +95,7 @@ export const CLIENT_SCRIPT = String.raw`(() => {
   }
 
   function connect() {
-    const ws = new WebSocket(proto + "//" + location.host + "/__glimpse/ws");
+    const ws = new WebSocket(proto + "//" + location.host + "/__glimpse/ws?role=preview");
     ws.onmessage = async (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type !== "file-changed") return;

@@ -1,5 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+import { memo, type CSSProperties, type ReactNode } from "react";
 import type { Layout, Scene, SceneNode, SceneTheme } from "@glimpse/core";
+import { samePreviewFor } from "./scene-geometry";
 
 /**
  * Draws a native GUI mock: a desktop window in the chosen platform's look
@@ -17,10 +18,15 @@ export interface NativeProps {
   preview?: ReadonlyMap<string, Layout>;
   /** Where the scene file lives, for image paths (relative to it). */
   base?: string;
+  /** Changes whenever the scene does: it is edited in place, so the object alone doesn't tell. */
+  rev?: number;
 }
 
-/** The window: title bar per theme, then the client area (the root) with its widgets. */
-export function NativeWindow({ scene, theme, title, preview, base = "" }: NativeProps) {
+/**
+ * The window: title bar per theme, then the client area (the root) with its widgets.
+ * Memoized, as are its widgets: hovering, the app's output and a drag redraw only what changed.
+ */
+export const NativeWindow = memo(function NativeWindow({ scene, theme, title, preview, base = "", rev }: NativeProps) {
   const root = scene.nodes[scene.rootId]!;
   const name = root.props.title ?? title ?? "";
   return (
@@ -28,12 +34,12 @@ export function NativeWindow({ scene, theme, title, preview, base = "" }: Native
       <TitleBar theme={theme} title={name} />
       <div className="nat-client" style={{ width: root.layout.w, height: root.layout.h, ...css(root) }}>
         {root.children.map((id) => (
-          <NativeNode key={id} id={id} scene={scene} preview={preview} base={base} />
+          <NativeNode key={id} id={id} scene={scene} preview={preview} base={base} rev={rev} />
         ))}
       </div>
     </div>
   );
-}
+});
 
 function TitleBar({ theme, title }: { theme: SceneTheme; title: string }) {
   if (theme === "macos") {
@@ -79,7 +85,14 @@ function TitleBar({ theme, title }: { theme: SceneTheme; title: string }) {
   );
 }
 
-function NativeNode({ id, scene, preview, base }: { id: string; scene: Scene; preview?: ReadonlyMap<string, Layout>; base: string }) {
+type NodeProps = { id: string; scene: Scene; preview?: ReadonlyMap<string, Layout>; base: string; rev?: number };
+
+const NativeNode = memo(
+  NativeNodeView,
+  (a, b) => a.id === b.id && a.scene === b.scene && a.base === b.base && a.rev === b.rev && samePreviewFor(b.scene, b.id, a.preview, b.preview),
+);
+
+function NativeNodeView({ id, scene, preview, base, rev }: NodeProps) {
   const n = scene.nodes[id];
   if (!n) return null;
   const l = preview?.get(id) ?? n.layout;
@@ -87,7 +100,7 @@ function NativeNode({ id, scene, preview, base }: { id: string; scene: Scene; pr
   return (
     <div className={`nat-node${n.hidden ? " is-hidden" : ""}`} data-scene-id={id} style={{ left: l.x, top: l.y, width: l.w, height: l.h }}>
       {widget(n, l, base)}
-      {n.children.map((c) => (n.type !== "tabs" || c === pane ? <NativeNode key={c} id={c} scene={scene} preview={preview} base={base} /> : null))}
+      {n.children.map((c) => (n.type !== "tabs" || c === pane ? <NativeNode key={c} id={c} scene={scene} preview={preview} base={base} rev={rev} /> : null))}
     </div>
   );
 }

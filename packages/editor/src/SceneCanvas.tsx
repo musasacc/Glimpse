@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { describeNode, topLevel, type Layout, type Op, type SceneNode } from "@glimpse/core";
-import { elementsIn, regionRect, regionTarget, type Rect } from "./arrange";
+import { marqueeHits, regionRect, regionTarget, type Rect } from "./arrange";
 import type { Mode } from "./Canvas";
 import * as I from "./icons";
 import * as L from "./loop-icons";
@@ -9,7 +9,7 @@ import { MOD } from "./platform";
 import { captureFrame, renderThumbnail } from "./scene-capture";
 import { absBox, editableProp, unitSize, type Cell, type SceneTarget } from "./scene-geometry";
 import { sceneMode, useSceneMode } from "./scene-mode";
-import { store, useStore } from "./store";
+import { store, useHovered, useStore } from "./store";
 import { TalkPopover } from "./Talk";
 import { TuiScreen } from "./TuiRenderer";
 import { TuiWindow } from "./SceneView";
@@ -31,7 +31,7 @@ const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 type Gesture =
   | { kind: "move"; start: Pt; ids: string[]; from: Map<string, Layout>; moved: boolean; single: string | null; startPx: Pt }
   | { kind: "resize"; id: string; handle: Handle; start: Pt; from: Layout }
-  | { kind: "marquee"; start: Pt; base: string[] }
+  | { kind: "marquee"; start: Pt; base: string[]; hits: (rect: Rect) => string[] }
   | { kind: "region"; start: Pt; startPx: Pt };
 
 interface Pt {
@@ -47,6 +47,7 @@ interface Pt {
  */
 export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: boolean; setTalkOpen: (v: boolean) => void }) {
   const state = useStore();
+  const hovered = useHovered();
   const sm = useSceneMode();
   const scene = store.scene;
   const target = sm.target;
@@ -191,7 +192,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
     }
     const id = pick(e.target);
     if (!id) {
-      gesture.current = { kind: "marquee", start, base: e.shiftKey ? store.selection : [] };
+      gesture.current = { kind: "marquee", start, base: e.shiftKey ? store.selection : [], hits: marqueeHits() };
       if (!e.shiftKey) store.select(null);
       return;
     }
@@ -222,7 +223,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
     if (!g) {
       if (mode !== "edit" || state.tool !== "select") return;
       const id = pick(e.target);
-      if (id !== state.hovered) store.set({ hovered: id });
+      if (id !== store.state.hovered) store.set({ hovered: id });
       return;
     }
     const p = toUnits(e);
@@ -239,7 +240,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
     } else if (g.kind === "marquee") {
       const r = span(g.start, p);
       setMarquee(r);
-      const ids = [...new Set([...g.base, ...elementsIn({ left: r.x, top: r.y, width: r.w, height: r.h })])];
+      const ids = [...new Set([...g.base, ...g.hits({ left: r.x, top: r.y, width: r.w, height: r.h })])];
       if (ids.join() !== store.state.multi.join()) store.selectMany(ids);
     } else {
       setDrawing(cells(g.start, p, target));
@@ -324,7 +325,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
   const single = multi.length <= 1;
   const selected = state.selected ? scene?.nodes[state.selected] : undefined;
   const selRect = toPx(boxOf(state.selected));
-  const hovRect = state.tool === "select" && state.hovered && !multi.includes(state.hovered) ? toPx(boxOf(state.hovered)) : null;
+  const hovRect = state.tool === "select" && hovered && !multi.includes(hovered) ? toPx(boxOf(hovered)) : null;
   const draftRect = draft ? toPx(regionRect({ op: "region", id: "draft", text: "", ...draft })) : null;
   const meta = sm.extras.meta;
   const title = meta?.title ?? (typeof meta?.command === "string" ? meta.command : undefined);
@@ -365,7 +366,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={cancel}
-              onPointerLeave={() => !gesture.current && state.hovered && store.set({ hovered: null })}
+              onPointerLeave={() => !gesture.current && store.state.hovered && store.set({ hovered: null })}
               onDoubleClick={onDoubleClick}
               onContextMenu={onContextMenu}
             >
@@ -373,11 +374,11 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
                 <div className="scene-frame" ref={frame}>
                   {target === "tui" ? (
                     <TuiWindow title={title} size={`${root.layout.w}×${root.layout.h}`} screenRef={screen}>
-                      <TuiScreen scene={scene} cell={sm.cell} preview={preview ?? undefined} />
+                      <TuiScreen scene={scene} cell={sm.cell} preview={preview ?? undefined} rev={state.rev} />
                     </TuiWindow>
                   ) : (
                     <NativeShell screenRef={screen}>
-                      <NativeWindow scene={scene} theme={sm.theme} title={meta?.title} preview={preview ?? undefined} base={base} />
+                      <NativeWindow scene={scene} theme={sm.theme} title={meta?.title} preview={preview ?? undefined} base={base} rev={state.rev} />
                     </NativeShell>
                   )}
                 </div>
