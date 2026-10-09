@@ -1,0 +1,6 @@
+node_modules/
+dist/
+release/
+.test-dist/
+# Copied from packages/cli/dist by scripts/prepare.mjs
+app/

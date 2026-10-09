@@ -1,0 +1,27 @@
+{
+  "name": "@glimpse/mcp",
+  "version": "0.1.0",
+  "description": "Glimpse MCP server: lets any MCP-capable AI agent open UIs in Glimpse and receive the human's edits.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@glimpse/core": "workspace:*",
+    "@glimpse/server": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.0.0"
+  }
+}

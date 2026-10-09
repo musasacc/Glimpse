@@ -1,0 +1,75 @@
+{
+  "name": "glimpse-ui",
+  "version": "0.1.0",
+  "description": "Glimpse — see what your AI built, edit it visually, hand the changes back.",
+  "keywords": [
+    "ai",
+    "mcp",
+    "visual-editor",
+    "claude-code",
+    "codex",
+    "ui"
+  ],
+  "homepage": "https://github.com/musasacc/Glimpse#readme",
+  "bugs": {
+    "url": "https://github.com/musasacc/Glimpse/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/musasacc/Glimpse.git",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "glimpse": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "types": "./dist/lib.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "prepack": "node scripts/prepack.mjs",
+    "postpack": "node scripts/prepack.mjs --cleanup"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.9",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "chokidar": "^5.0.0",
+    "diff": "^9.0.0",
+    "magic-string": "^1.4.3",
+    "parse5": "^8.0.1",
+    "ws": "^8.18.3",
+    "zod": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@glimpse/core": "workspace:*",
+    "@glimpse/editor": "workspace:*",
+    "@glimpse/mcp": "workspace:*",
+    "@glimpse/react": "workspace:*",
+    "@glimpse/server": "workspace:*",
+    "dts-bundle-generator": "^9.5.1",
+    "esbuild": "^0.28.2"
+  }
+}

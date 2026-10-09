@@ -1,0 +1,495 @@
+/* ── Version loop: timeline, viewing, compare, variants ── */
+/* Bundled before styles.css, so overrides of its classes need the extra class (.btn.tl-save). */
+:root {
+  --variant: #c3a6ff;
+}
+
+/* The timeline adds a row under the canvas (the inspector keeps its full height). */
+.editor.with-timeline {
+  grid-template-rows: 48px minmax(0, 1fr) auto;
+}
+.editor.with-timeline:not(.no-inspector) {
+  grid-template-areas:
+    "toolbar toolbar"
+    "canvas inspector"
+    "timeline inspector";
+}
+.editor.no-inspector.with-timeline {
+  grid-template-areas:
+    "toolbar"
+    "canvas"
+    "timeline";
+}
+
+/* Kind colours, shared by the timeline and the history list. */
+[data-kind="ai"] {
+  --kind: var(--accent);
+}
+[data-kind="handoff"] {
+  --kind: var(--ok);
+}
+[data-kind="source"] {
+  --kind: var(--warn);
+}
+[data-kind="variant"] {
+  --kind: var(--variant);
+}
+[data-kind="manual"] {
+  --kind: var(--text);
+}
+.kind.kind-variants {
+  color: var(--variant);
+}
+
+/* Timeline strip */
+.timeline {
+  grid-area: timeline;
+  display: flex;
+  min-width: 0;
+  height: 136px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+.tl-head {
+  flex: none;
+  /* Room for "Versions 123" beside the hide button. */
+  width: 172px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+.tl-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+.tl-count {
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.btn.tl-save {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+.icon-btn.tl-hide {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+}
+.tl-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  outline: none;
+  scrollbar-width: thin;
+}
+.tl-list:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.tl-empty {
+  align-self: center;
+  max-width: 420px;
+  padding: 0 12px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.tl-card {
+  flex: none;
+  width: 128px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.tl-thumb {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 72px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #0d0d0d;
+  color: var(--kind, var(--faint));
+  overflow: hidden;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.tl-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top center;
+  background: #fff;
+}
+.tl-badge {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.78);
+  color: var(--kind, var(--muted));
+}
+.tl-card:hover .tl-thumb {
+  border-color: #444;
+}
+.tl-card.active .tl-thumb {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.tl-label {
+  font-size: 12px;
+  line-height: 1.3;
+  color: #d4d4d8;
+}
+.tl-card.active .tl-label {
+  color: var(--text);
+}
+.tl-time {
+  font-size: 11px;
+  color: var(--faint);
+}
+.tl-now {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.tl-now .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* A version, comparison or variants in place of the live canvas (same grid cell, on top). */
+.canvas.loop-stage {
+  z-index: 4;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px 24px;
+  overflow: hidden;
+}
+.loop-stage > .frame {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  max-width: 100%;
+}
+.loop-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.loop-bar > svg {
+  flex: none;
+}
+.loop-bar b {
+  color: var(--text);
+  font-weight: 600;
+}
+.loop-tag {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--kind, var(--muted));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.loop-error {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 92, 122, 0.35);
+  background: rgba(255, 92, 122, 0.08);
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* Before/after slider */
+.cmp iframe {
+  position: absolute;
+  inset: 0;
+}
+.cmp-label {
+  position: absolute;
+  top: 10px;
+  z-index: 1;
+  max-width: 42%;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.cmp-label.before {
+  left: 10px;
+}
+.cmp-label.after {
+  right: 10px;
+}
+.cmp-divider {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 24px;
+  margin-left: -12px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.cmp-divider::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 11px;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 12px rgba(92, 225, 255, 0.6);
+}
+.cmp-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  padding: 0;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: #000;
+  color: var(--accent);
+  cursor: ew-resize;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+}
+.cmp-handle:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* Variants */
+.loop-banners {
+  grid-area: canvas;
+  align-self: end;
+  justify-self: center;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  margin-bottom: 16px;
+  pointer-events: none;
+}
+.loop-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: #0d0d0d;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.75);
+  color: var(--muted);
+  font-size: 12.5px;
+  pointer-events: auto;
+}
+.loop-banner b {
+  color: var(--text);
+  font-weight: 600;
+}
+.seg.vr-count {
+  justify-self: start;
+}
+.vr-count button {
+  min-width: 40px;
+  justify-content: center;
+}
+.vr-grid {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: grid;
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 12px;
+}
+.vr-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.vr-cell > header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.vr-cell .btn {
+  height: 28px;
+}
+.vr-name {
+  font-weight: 600;
+}
+.vr-frame {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+}
+.vr-frame iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  transform-origin: 0 0;
+}
+.vr-wait {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: center;
+  padding: 16px;
+}
+.vr-wait svg {
+  width: 56px;
+  color: #2a2a2a;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* Right-click menu on the canvas */
+.menu.ctx-menu {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  z-index: 60;
+  min-width: 210px;
+}
+.ctx-title {
+  max-width: 240px;
+  padding: 6px 10px 4px;
+  color: var(--faint);
+  font-size: 11px;
+}
+.ctx-menu button svg {
+  color: var(--muted);
+}
+.ctx-menu .kbd {
+  margin-left: auto;
+}
+.menu.ctx-menu button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: transparent;
+}
+.ctx-menu button.danger,
+.ctx-menu button.danger svg {
+  color: var(--danger);
+}
+
+/* History: handoffs that carried a screenshot */
+.shot {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-left: 6px;
+  color: var(--muted);
+}
+.history-shot {
+  display: block;
+  max-width: 100%;
+  margin-top: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+}
+
+/* A past version of a React app, which can't be rendered: said in place of a blank page. */
+.loop-note {
+  margin: auto;
+  max-width: 440px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.loop-note p {
+  margin: 0 0 8px;
+}
+.loop-note b {
+  color: var(--text);
+  font-weight: 600;
+}
+.frame:has(> .loop-note) {
+  display: flex;
+  background: var(--panel);
+}

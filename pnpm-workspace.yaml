@@ -1,0 +1,10 @@
+packages:
+  - "packages/*"
+  - "examples/react-donut"
+
+# pnpm 10 skips build scripts unless allowed:
+# - esbuild (used to bundle glimpse-ui) checks its platform binary after install.
+# - node-pty (optional, for the real TUI view) has a native build step.
+onlyBuiltDependencies:
+  - esbuild
+  - node-pty

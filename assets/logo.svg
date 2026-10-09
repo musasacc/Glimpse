@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 312 96" width="312" height="96" role="img" aria-label="Glimpse">
+  <rect width="312" height="96" rx="20" fill="#000"/>
+  <g transform="translate(16 16)">
+    <path d="M9 32C17.5 19 46.5 19 55 32C46.5 45 17.5 45 9 32Z" fill="none" stroke="#fafafa" stroke-width="3.5" stroke-linejoin="round"/>
+    <circle cx="35" cy="31" r="7.5" fill="#fafafa"/>
+    <circle cx="37.6" cy="28.4" r="2.2" fill="#5ce1ff"/>
+  </g>
+  <text x="90" y="61" textLength="194" lengthAdjust="spacingAndGlyphs" fill="#fafafa" font-family="Inter, 'SF Pro Display', 'Segoe UI', Helvetica, Arial, sans-serif" font-size="44" font-weight="600">glimpse</text>
+</svg>

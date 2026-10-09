@@ -1,0 +1,157 @@
+{
+  "$schema": "https://raw.githubusercontent.com/musasacc/Glimpse/main/docs/glimpse.scene.schema.json",
+  "target": "native",
+  "theme": "macos",
+  "meta": { "framework": "tkinter", "command": "python3 app.py", "title": "Settings" },
+  "root": {
+    "type": "window",
+    "tag": "SettingsWindow",
+    "layout": { "x": 0, "y": 0, "w": 640, "h": 440 },
+    "props": { "title": "Settings" },
+    "source": { "file": "app.py", "line": 15, "col": 7 },
+    "children": [
+      {
+        "id": "sidebar",
+        "type": "box",
+        "tag": "ttk.Frame",
+        "layout": { "x": 0, "y": 0, "w": 160, "h": 440 },
+        "source": { "file": "app.py", "line": 30, "col": 19 },
+        "children": [
+          {
+            "id": "sections",
+            "type": "list",
+            "tag": "tk.Listbox",
+            "layout": { "x": 8, "y": 8, "w": 144, "h": 424 },
+            "props": {
+              "items": ["General", "Appearance", "Notifications", "Privacy", "Advanced"],
+              "selected": 0
+            },
+            "source": { "file": "app.py", "line": 33, "col": 25 }
+          }
+        ]
+      },
+      {
+        "type": "divider",
+        "tag": "ttk.Separator",
+        "layout": { "x": 160, "y": 0, "w": 1, "h": 440 },
+        "source": { "file": "app.py", "line": 40, "col": 9 }
+      },
+      {
+        "id": "content",
+        "type": "box",
+        "tag": "ttk.Frame",
+        "layout": { "x": 161, "y": 0, "w": 479, "h": 440 },
+        "style": { "padding": "20px 24px" },
+        "source": { "file": "app.py", "line": 43, "col": 19 },
+        "children": [
+          {
+            "id": "heading",
+            "type": "label",
+            "tag": "ttk.Label",
+            "layout": { "x": 24, "y": 20, "w": 120, "h": 24 },
+            "style": { "font-size": "16px", "font-weight": "bold" },
+            "props": { "text": "General" },
+            "source": { "file": "app.py", "line": 48, "col": 24 }
+          },
+          {
+            "type": "label",
+            "tag": "ttk.Label",
+            "layout": { "x": 24, "y": 68, "w": 90, "h": 20 },
+            "props": { "text": "Display name" },
+            "source": { "file": "app.py", "line": 51, "col": 9 }
+          },
+          {
+            "id": "name_entry",
+            "type": "input",
+            "tag": "ttk.Entry",
+            "layout": { "x": 126, "y": 66, "w": 329, "h": 24 },
+            "props": { "text": "Ada Lovelace" },
+            "source": { "file": "app.py", "line": 52, "col": 22 }
+          },
+          {
+            "type": "label",
+            "tag": "ttk.Label",
+            "layout": { "x": 24, "y": 104, "w": 90, "h": 20 },
+            "props": { "text": "Email" },
+            "source": { "file": "app.py", "line": 55, "col": 9 }
+          },
+          {
+            "id": "email_entry",
+            "type": "input",
+            "tag": "ttk.Entry",
+            "layout": { "x": 126, "y": 102, "w": 329, "h": 24 },
+            "props": { "text": "ada@example.com" },
+            "source": { "file": "app.py", "line": 56, "col": 23 }
+          },
+          {
+            "type": "label",
+            "tag": "ttk.Label",
+            "layout": { "x": 24, "y": 140, "w": 90, "h": 20 },
+            "props": { "text": "Language" },
+            "source": { "file": "app.py", "line": 59, "col": 9 }
+          },
+          {
+            "id": "language",
+            "type": "select",
+            "tag": "ttk.Combobox",
+            "layout": { "x": 126, "y": 138, "w": 329, "h": 24 },
+            "props": {
+              "items": ["English", "Deutsch", "Español", "Français", "日本語"],
+              "selected": 0
+            },
+            "source": { "file": "app.py", "line": 60, "col": 20 }
+          },
+          {
+            "id": "login",
+            "type": "checkbox",
+            "tag": "ttk.Checkbutton",
+            "layout": { "x": 126, "y": 174, "w": 120, "h": 20 },
+            "props": { "text": "Open at login", "checked": true },
+            "source": { "file": "app.py", "line": 63, "col": 17 }
+          },
+          {
+            "id": "updates",
+            "type": "checkbox",
+            "tag": "ttk.Checkbutton",
+            "layout": { "x": 126, "y": 206, "w": 230, "h": 20 },
+            "props": { "text": "Check for updates automatically", "checked": true },
+            "source": { "file": "app.py", "line": 65, "col": 19 }
+          },
+          {
+            "id": "usage",
+            "type": "checkbox",
+            "tag": "ttk.Checkbutton",
+            "layout": { "x": 126, "y": 238, "w": 230, "h": 20 },
+            "props": { "text": "Send anonymous usage statistics", "checked": false },
+            "source": { "file": "app.py", "line": 67, "col": 17 }
+          },
+          {
+            "id": "buttons",
+            "type": "box",
+            "tag": "ttk.Frame",
+            "layout": { "x": 271, "y": 388, "w": 184, "h": 32 },
+            "source": { "file": "app.py", "line": 71, "col": 19 },
+            "children": [
+              {
+                "id": "save",
+                "type": "button",
+                "tag": "ttk.Button",
+                "layout": { "x": 96, "y": 0, "w": 88, "h": 32 },
+                "props": { "text": "Save", "default": true },
+                "source": { "file": "app.py", "line": 73, "col": 16 }
+              },
+              {
+                "id": "cancel",
+                "type": "button",
+                "tag": "ttk.Button",
+                "layout": { "x": 0, "y": 0, "w": 88, "h": 32 },
+                "props": { "text": "Cancel" },
+                "source": { "file": "app.py", "line": 75, "col": 18 }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

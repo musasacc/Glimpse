@@ -1,0 +1,91 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: #fff7ef;
+  color: #3b2416;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 40px 16px;
+}
+
+.top {
+  text-align: center;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 40px;
+}
+
+.tagline {
+  margin: 8px 0 0;
+  color: #8a6650;
+}
+
+.stage {
+  width: min(520px, 100%);
+  height: 200px;
+  position: relative;
+  border-radius: 24px;
+  background: #ffe9d6;
+  overflow: hidden;
+}
+
+.donut {
+  position: absolute;
+  top: 50px;
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffe9d6 0 18px, #f28fb1 19px 40px, #d98a4e 41px);
+  animation: roll 3s ease-in-out infinite alternate;
+}
+
+@keyframes roll {
+  from {
+    left: 16px;
+    transform: rotate(0deg);
+  }
+  to {
+    left: calc(100% - 116px);
+    transform: rotate(360deg);
+  }
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+}
+
+.btn {
+  border: 0;
+  border-radius: 999px;
+  padding: 12px 20px;
+  font-size: 16px;
+  background: #3b2416;
+  color: #fff7ef;
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: #f28fb1;
+  color: #3b2416;
+  font-weight: 700;
+}
+
+.order {
+  margin: 0;
+  color: #8a6650;
+}
