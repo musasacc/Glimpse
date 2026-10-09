@@ -25,6 +25,11 @@ export interface ProjectServersOptions {
   pid?: number;
   /** How long to wait for a running Glimpse to answer before starting our own. */
   probeTimeoutMs?: number;
+  /**
+   * Runs finding or starting a folder's server under the folder's lock (glimpse-ui's withProjectLock), so an agent's
+   * MCP server or `glimpse open` starting at the same moment doesn't start a second one. Default: no lock.
+   */
+  lock?: <T>(dir: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 interface Entry extends OpenProject {
@@ -86,6 +91,13 @@ export class ProjectServers {
     }
   }
 
+  /** Whether the folder's server still answers: always for one we run, and for a reused one while it keeps running. */
+  async answers(dirArg: string): Promise<boolean> {
+    const e = this.entries.get(dirKey(dirArg));
+    if (!e || e.owned) return true;
+    return (await this.findRunning(e.dir)) === e.url;
+  }
+
   async closeAll(): Promise<void> {
     await Promise.allSettled([...this.pending.values()]);
     await Promise.allSettled([...this.entries.values()].map((e) => this.close(e.dir)));
@@ -93,6 +105,10 @@ export class ProjectServers {
 
   private async start(dir: string, key: string): Promise<OpenProject> {
     if (!isDir(dir)) throw new Error(`Folder not found: ${dir}`);
+    return this.opts.lock ? this.opts.lock(dir, () => this.startUnlocked(dir, key)) : this.startUnlocked(dir, key);
+  }
+
+  private async startUnlocked(dir: string, key: string): Promise<OpenProject> {
     const running = await this.findRunning(dir);
     if (running) {
       const entry: Entry = { dir, url: running, owned: false };
@@ -120,7 +136,10 @@ export class ProjectServers {
       const info = JSON.parse(await readFile(join(dir, ".glimpse", "server.json"), "utf8")) as { url?: unknown; pid?: unknown };
       if (typeof info.url !== "string" || info.pid === this.pid) return undefined;
       const res = await fetch(`${info.url}/api/session`, { signal: AbortSignal.timeout(this.opts.probeTimeoutMs ?? 1500) });
-      return res.ok ? info.url : undefined;
+      if (!res.ok) return undefined;
+      // A Glimpse that was killed leaves server.json behind, and another project's Glimpse may have its port now.
+      const session = (await res.json()) as { project?: { dir?: unknown } };
+      return typeof session.project?.dir === "string" && dirKey(session.project.dir) === dirKey(dir) ? info.url : undefined;
     } catch {
       return undefined; // missing, stale or unreadable
     }

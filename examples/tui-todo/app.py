@@ -1,6 +1,6 @@
 """A small todo list in the terminal, built with Textual.
 
-Run it with `pip install -r requirements.txt` and then `python app.py`.
+Run it with `pip install -r requirements.txt` and then `python3 app.py`.
 Its layout is described for Glimpse in glimpse.scene.json, next to this file.
 """
 

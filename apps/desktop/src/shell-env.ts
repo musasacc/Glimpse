@@ -27,19 +27,21 @@ export function parseShellEnv(output: string, marker: string): Record<string, st
  * Run the user's shell as a login, interactive shell (it reads the profile and rc files) and read its environment,
  * printed by this very executable as Node (ELECTRON_RUN_AS_NODE). Null on Windows, on failure or after `timeoutMs`.
  */
-export function loginShellEnv(timeoutMs = 10_000): Promise<Record<string, string> | null> {
+export function loginShellEnv(timeoutMs = 5000): Promise<Record<string, string> | null> {
   if (process.platform === "win32") return Promise.resolve(null);
   const shell = process.env.SHELL || (process.platform === "darwin" ? "/bin/zsh" : "/bin/sh");
   const marker = `__glimpse_env_${randomUUID()}__`;
   const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const command = `${quote(process.execPath)} -e ${quote(`process.stdout.write(${JSON.stringify(marker)} + JSON.stringify(process.env) + ${JSON.stringify(marker)})`)}`;
   return new Promise((resolve) => {
-    execFile(
+    const child = execFile(
       shell,
       ["-ilc", command],
       { env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ELECTRON_NO_ATTACH_CONSOLE: "1" }, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
       (_err, stdout) => resolve(parseShellEnv(String(stdout ?? ""), marker)),
     );
+    // An rc file that asks something (`read`, an update prompt) gets end-of-input instead of waiting for the timeout.
+    child.stdin?.end();
   });
 }
 

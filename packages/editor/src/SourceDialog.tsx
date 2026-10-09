@@ -10,6 +10,8 @@ interface Preview {
   files: { file: string; diff: string }[];
   applied: Change[];
   needsAi: Change[];
+  /** Sent back on apply: the server refuses (409) when the files changed since this diff. */
+  planId?: string;
 }
 
 /**
@@ -68,7 +70,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
               fetch("/api/patch/apply", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
-                body: JSON.stringify({ changeList: list, repeated, ...sceneMode.body() }),
+                body: JSON.stringify({ changeList: list, repeated, planId: preview.planId, ...sceneMode.body() }),
               }),
             );
             const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };

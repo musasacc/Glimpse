@@ -18,7 +18,7 @@ import {
   type MenuItemConstructorOptions,
   type WebContents,
 } from "electron";
-import { startGlimpse, VERSION as GLIMPSE_VERSION } from "../app/glimpse/lib.js";
+import { startGlimpse, VERSION as GLIMPSE_VERSION, withProjectLock } from "../app/glimpse/lib.js";
 import { IPC, type AppInfo, type RecentEntry } from "./api.js";
 import { chromeScript, desktopPlatform, fullscreenScript, MAC_TRAFFIC_LIGHTS, MCP_SETUP } from "./chrome.js";
 import { canonicalDir, dirKey, folderName } from "./paths.js";
@@ -42,13 +42,16 @@ if (process.env.GLIMPSE_USER_DATA_DIR) app.setPath("userData", resolve(process.e
 // Every window sets sandbox: true itself. (app.enableSandbox() would also stop `--no-sandbox` from working, which
 // some Linux setups need for AppImages.)
 
-// Commands the projects run (meta.command, the agent's glimpse_open) need the PATH a terminal would have.
+// Commands the projects run (meta.command, the agent's glimpse_open) need the PATH a terminal would have. They
+// start later (Run, an agent), so a project doesn't wait long for a slow shell: the environment is read at spawn time.
 const shellEnv = adoptLoginShellEnv();
+const SHELL_ENV_WAIT_MS = 1500;
 
 const recent = new RecentProjects(join(app.getPath("userData"), "recent-projects.json"));
 const servers = new ProjectServers({
+  lock: withProjectLock,
   start: async (dir) => {
-    await shellEnv;
+    await Promise.race([shellEnv, new Promise((r) => setTimeout(r, SHELL_ENV_WAIT_MS))]);
     const srv = await startGlimpse({ dir });
     return {
       url: srv.url,
@@ -234,6 +237,11 @@ function openProject(dirArg: string): Promise<void> {
   const key = dirKey(dir);
   const existing = projectWindows.get(key);
   if (existing && !existing.isDestroyed()) {
+    if (servers.get(dir)?.owned === false && !opening.has(key)) {
+      const task = reopenIfStopped(dir, existing).finally(() => opening.delete(key));
+      opening.set(key, task);
+      return task;
+    }
     if (existing.isMinimized()) existing.restore();
     existing.focus();
     return Promise.resolve();
@@ -247,6 +255,29 @@ function openProject(dirArg: string): Promise<void> {
     .finally(() => opening.delete(key));
   opening.set(key, task);
   return task;
+}
+
+/**
+ * A window on a Glimpse started elsewhere (`glimpse open`): focus it while that Glimpse runs, or, once it has
+ * stopped, replace the window with one on a server of our own.
+ */
+async function reopenIfStopped(dir: string, win: BrowserWindow): Promise<void> {
+  if (await servers.answers(dir)) {
+    if (win.isDestroyed()) return;
+    if (win.isMinimized()) win.restore();
+    win.focus();
+    return;
+  }
+  if (!win.isDestroyed()) {
+    await new Promise<void>((resolve) => {
+      win.once("closed", () => resolve());
+      win.destroy();
+    });
+  }
+  await servers.close(dir); // forgets the stopped server (the window's own close may still be under way)
+  await createProjectWindow(dir, dirKey(dir)).catch((err: unknown) => {
+    dialog.showErrorBox(`Couldn't open “${folderName(dir)}”`, err instanceof Error ? err.message : String(err));
+  });
 }
 
 async function createProjectWindow(dir: string, key: string): Promise<void> {

@@ -247,7 +247,7 @@ describe("prompts", () => {
     const { final, ops } = edit(read.scene);
     const list: ChangeList = { version: 1, target: "tui", createdAt: "", note: "Make it roomier", changes: diffScenes(read.scene, final, ops) };
     const written = sceneChangesPrompt(list, { extras: read.extras, sceneWritten: true });
-    expect(written).toContain("In Glimpse, the human edited the mock of a Textual (Python) terminal UI, run with `python app.py`. Apply these");
+    expect(written).toContain("In Glimpse, the human edited the mock of a Textual (Python) terminal UI, run with `python3 app.py`. Apply these");
     expect(written).toContain("glimpse.scene.json already matches the edited mock");
     expect(written).toContain("terminal cells (columns and rows)");
     expect(written).toContain("Note from the human: Make it roomier");

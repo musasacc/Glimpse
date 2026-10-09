@@ -3,6 +3,7 @@ import { join, normalize, sep } from "node:path";
 import MagicString from "magic-string";
 import { createTwoFilesPatch } from "diff";
 import type { Change, SceneNode } from "@glimpse/core";
+import { htmlCharset } from "./charset.js";
 import { parseWithLocations, walkElements, type Element } from "./instrument.js";
 
 export interface FilePatch {
@@ -52,7 +53,10 @@ export async function planPatch(dir: string, changes: Change[]): Promise<PatchPl
     }
     let before: string;
     try {
-      before = await readFile(path, "utf8");
+      const bytes = await readFile(path);
+      // Glimpse writes UTF-8: a page in another encoding (windows-1252, Shift_JIS) would get its other characters mangled.
+      if (htmlCharset(bytes) !== "utf-8") throw new Error("not UTF-8");
+      before = bytes.toString("utf8");
     } catch {
       needsAi.push(...fileChanges);
       continue;

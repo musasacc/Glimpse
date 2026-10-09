@@ -168,7 +168,8 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: desktop
+    # Only once the npm job has passed its typecheck, tests and pack smoke test (the desktop job runs none).
+    needs: [desktop, npm]
     runs-on: ubuntu-latest
     permissions:
       contents: write

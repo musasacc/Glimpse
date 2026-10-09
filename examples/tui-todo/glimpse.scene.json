@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/musasacc/Glimpse/main/docs/glimpse.scene.schema.json",
   "target": "tui",
-  "meta": { "framework": "textual", "command": "python app.py", "title": "Todo" },
+  "meta": { "framework": "textual", "command": "python3 app.py", "title": "Todo" },
   "root": {
     "type": "root",
     "tag": "TodoApp",

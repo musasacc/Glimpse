@@ -57,7 +57,7 @@ describe("scene targets", () => {
     expect(srv.project).toMatchObject({ target: "tui", entry: "glimpse.scene.json" });
     const scene = (await (await fetch(`${srv.url}/api/scene`)).json()) as ScenePayload;
     expect(scene).toMatchObject({ exists: true, file: "glimpse.scene.json", errors: [], format: "nested" });
-    expect(scene.extras.meta?.command).toBe("python app.py");
+    expect(scene.extras.meta?.command).toBe("python3 app.py");
     expect(scene.scene.nodes.add!.props.text).toBe("Add");
     expect(scene.version).toMatch(/^[0-9a-f]{16}$/);
   });
@@ -109,7 +109,7 @@ describe("scene targets", () => {
 
     const h = (await waiting)!;
     expect(h.kind).toBe("ai");
-    expect(h.prompt).toContain("a Textual (Python) terminal UI, run with `python app.py`");
+    expect(h.prompt).toContain("a Textual (Python) terminal UI, run with `python3 app.py`");
     expect(h.prompt).toContain("glimpse.scene.json already matches the edited mock");
     expect(h.changeList.changes.map((c) => c.op)).toEqual(["setText", "comment"]); // the lock is editor-only
 

@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -21,6 +21,7 @@ import {
   type PublicSnapshot,
   type SnapshotKind,
 } from "./history.js";
+import { decodeHtml, htmlCharset } from "./charset.js";
 import { CLIENT_SCRIPT, injectClient } from "./inject.js";
 import { instrumentHtml } from "./instrument.js";
 import { planPatch, type FilePatch } from "./patch-html.js";
@@ -150,6 +151,7 @@ const STATE_PATH = /(^|[/\\])\.glimpse[. ]*([/\\]|$)/i;
 const DEFAULT_MANUAL_LABEL = "Saved by hand";
 /** Backups of files Glimpse overwrote kept in .glimpse/backups (the version history has them too); older ones are removed. */
 const KEEP_BACKUPS = 50;
+const TARGETS: readonly unknown[] = ["html", "react", "tui", "native"] satisfies Target[];
 /** After the React preview failed to start (usually: dependencies not installed yet), try again at most this often. */
 const PREVIEW_RETRY_MS = 2000;
 /** A terminal UI restarts once its code has been quiet this long. */
@@ -178,7 +180,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   const stateDir = join(dir, ".glimpse");
   await mkdir(join(stateDir, "handoffs"), { recursive: true });
 
-  const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff) => void }>();
+  const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff) => void; stop: () => void }>();
   const sockets = new Set<WebSocket>();
   /** The live client in previewed pages (the page, compare and variant frames): it only acts on file changes. */
   const previewSockets = new Set<WebSocket>();
@@ -201,10 +203,13 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   await variants.load();
   // Anything from a previous run counts as delivered so it isn't replayed, except a variants
   // request no agent got yet whose job is still open: the editor still shows it as waiting.
-  const handoffs: Handoff[] = await loadHandoffs(
+  const loaded = await loadHandoffs(
     join(stateDir, "handoffs"),
     (h) => h.kind === "variants" && !h.cancelled && !!h.variants && !!variants.get(h.variants.id),
   );
+  const handoffs: Handoff[] = loaded.handoffs;
+  /** The highest seq on disk, readable or not: a new handoff never takes the number (and files) of an unreadable one. */
+  const seqFloor = loaded.lastSeq;
   /** Variants jobs being chosen or discarded right now. */
   const busyJobs = new Set<string>();
   const host = opts.host ?? "127.0.0.1";
@@ -521,6 +526,15 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       send(res, 403, { error: `Cross-origin request refused (Origin: ${req.headers.origin ?? "none"})` });
       return;
     }
+    // The previewed app (and versions and variants of it) runs at this origin and never needs Glimpse's API, so its
+    // own requests don't get it: a GET of an /api/ path is the app's (served from the project like any root-absolute
+    // URL), anything else is refused. A page can still reach the API through the editor (window.parent shares the
+    // origin): open projects you trust, as you would before running their dev server.
+    const projectPage = guarded && fromProjectPage(req);
+    if (projectPage && method !== "GET" && method !== "HEAD") {
+      send(res, 403, { error: "The previewed page can't change Glimpse's state" });
+      return;
+    }
     // API bodies are JSON, which no other site can send without a preflight (and this server answers none).
     if (api && method !== "GET" && method !== "HEAD" && !/^application\/json\s*(;|$)/i.test(req.headers["content-type"] ?? "")) {
       send(res, 415, { error: "Expected a JSON body (content-type: application/json)" });
@@ -531,6 +545,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     // (static preview, the project's Vite, variants, root-absolute fallback) would otherwise read it: the
     // previewed app runs at this origin and must not get hold of it.
     if (STATE_PATH.test(path)) return send(res, 404, { error: "Not found" });
+    // Neither are the project's dotfiles (.git/config, .env and .npmrc hold secrets). Vite applies its own fs.deny to /@fs/.
+    if ((!api || projectPage) && !/^\/(preview\/)?@fs\//.test(path) && hiddenPath(path)) return send(res, 404, { error: "Not found" });
+    if (projectPage) return serveFromProject(req, res, path);
 
     if (path === "/__glimpse/client.js") {
       res.writeHead(200, { "content-type": MIME[".js"]!, "cache-control": "no-store" });
@@ -635,7 +652,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if ((path === "/api/patch/preview" || path === "/api/patch/apply") && req.method === "POST") {
-      const body = (await readJson(req)) as { changeList?: ChangeList; repeated?: unknown; scene?: unknown; sceneVersion?: unknown };
+      const body = (await readJson(req)) as { changeList?: ChangeList; repeated?: unknown; scene?: unknown; sceneVersion?: unknown; planId?: unknown };
       if (!isChangeList(body.changeList)) {
         send(res, 400, { error: "Expected { changeList }" });
         return;
@@ -657,7 +674,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         );
       if (previewOnly) {
         const plan = await planAll();
-        send(res, 200, { files: plan.files.map(({ file, diff }) => ({ file, diff })), applied: plan.applied, needsAi: plan.needsAi });
+        send(res, 200, { files: plan.files.map(({ file, diff }) => ({ file, diff })), applied: plan.applied, needsAi: plan.needsAi, planId: planId(plan.files) });
         return;
       }
       const label = (plan?: { applied: unknown[] }) => {
@@ -673,6 +690,10 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         (r?: { plan: { applied: unknown[] } }) => label(r?.plan),
         async () => {
           const plan = await planAll();
+          // The files changed since the human reviewed the diff (the agent saved one): write nothing they haven't seen.
+          if (typeof body.planId === "string" && body.planId !== planId(plan.files)) {
+            throw new HttpError(409, "The files changed since you reviewed these edits. Open Edit source again to see the new diff.");
+          }
           // Back up every file before writing it, so "Edit source" can always be undone by hand.
           const backup = await backupFiles(plan.files);
           for (const f of plan.files) await writeFile(join(dir, f.file), f.after);
@@ -695,13 +716,13 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/request" && req.method === "POST") {
-      const body = (await readJson(req)) as { text?: string; target?: Target };
-      const text = String(body.text ?? "").trim();
-      if (!text) {
-        send(res, 400, { error: "Expected { text }" });
+      const body = (await readJson(req)) as { text?: unknown; target?: unknown };
+      const text = typeof body.text === "string" ? body.text.trim() : "";
+      if (!text || (body.target != null && !TARGETS.includes(body.target as Target))) {
+        send(res, 400, { error: `Expected { text, target?: ${TARGETS.join(" | ")} }` });
         return;
       }
-      const target = body.target ?? project.target;
+      const target = (body.target as Target | null | undefined) ?? project.target;
       const h = await addHandoff({
         kind: "request",
         changeList: { version: 1, target, createdAt: new Date().toISOString(), changes: [] },
@@ -716,7 +737,12 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (path === "/api/handoff/next" && req.method === "GET") {
       const afterParam = url.searchParams.get("after");
       const after = afterParam === null || afterParam === "" ? undefined : Number(afterParam);
-      const timeout = Math.min(Number(url.searchParams.get("timeout") ?? 30), 600) * 1000;
+      const timeoutSec = Number(url.searchParams.get("timeout") ?? 30);
+      if ((after !== undefined && !Number.isInteger(after)) || !Number.isFinite(timeoutSec) || timeoutSec < 0) {
+        send(res, 400, { error: "Expected ?timeout=<seconds>&after=<seq>, both numbers" });
+        return;
+      }
+      const timeout = Math.min(timeoutSec, 600) * 1000;
       // If the agent disconnects mid-wait, stop waiting so nothing is delivered to a dead request.
       const cancel = new AbortController();
       res.on("close", () => cancel.abort());
@@ -769,15 +795,21 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 
     // Root-absolute URLs in the previewed app (<img src="/logo.svg">, fetch("/data.json")) skip the /preview/
     // prefix and land here: serve them from the project when the live preview asked for them.
-    if ((req.method === "GET" || req.method === "HEAD") && path !== "/" && fromLivePreview(req)) {
-      if (project.target === "react") {
-        req.url = `/preview${req.url ?? "/"}`;
-        return serveReactPreview(req, res);
-      }
-      if (!isScene()) return servePreview(path.replace(/^\/+/, ""), res);
+    if ((req.method === "GET" || req.method === "HEAD") && path !== "/" && fromLivePreview(req) && !isScene()) {
+      return serveFromProject(req, res, path);
     }
 
     await serveEditor(path, res);
+  }
+
+  /** A root-absolute URL of the previewed app, served from the project. */
+  async function serveFromProject(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
+    if (project.target === "react") {
+      req.url = `/preview${req.url ?? "/"}`;
+      return serveReactPreview(req, res);
+    }
+    if (isScene()) return send(res, 404, { error: "Not found" });
+    return servePreview(path.replace(/^\/+/, ""), res);
   }
 
   /** The React app through the project's own Vite, or a page saying why it can't run. */
@@ -795,6 +827,15 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   function fromLivePreview(req: IncomingMessage): boolean {
     try {
       return new URL(req.headers.referer ?? "").pathname.startsWith("/preview/");
+    } catch {
+      return false;
+    }
+  }
+
+  /** Whether a request comes from a page of the project: the live preview, or a version or variant of it. */
+  function fromProjectPage(req: IncomingMessage): boolean {
+    try {
+      return /^\/(preview|snapshot|variant)(\/|$)/.test(new URL(req.headers.referer ?? "").pathname);
     } catch {
       return false;
     }
@@ -1035,7 +1076,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (!h || h.delivered) return;
     h.delivered = true;
     h.cancelled = true;
-    await writeFile(join(stateDir, "handoffs", `${h.seq}.json`), JSON.stringify(h, null, 2));
+    await persist(h);
     broadcast({ type: "handoff-delivered", seq: h.seq });
   }
 
@@ -1065,7 +1106,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     const stored = history.findPath(id, file, CASE_INSENSITIVE_FS);
     const data = stored === null ? null : await history.readFile(id, stored);
     if (data) {
-      res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
+      // Exactly as stored, so in the encoding the page declares.
+      const contentType = type === MIME[".html"] ? `text/html; charset=${htmlCharset(data)}` : type;
+      res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
       res.end(data);
       return;
     }
@@ -1111,7 +1154,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   async function sendLive(res: ServerResponse, file: string, rel: string): Promise<void> {
     const ext = extname(file).toLowerCase();
     if (ext === ".html" || ext === ".htm") {
-      const html = injectClient(instrumentHtml(await readFile(file, "utf8"), rel));
+      // Served as UTF-8 whatever the file declares (the header wins over its <meta charset>), so decoded as declared.
+      const html = injectClient(instrumentHtml(decodeHtml(await readFile(file)), rel));
       res.writeHead(200, { "content-type": MIME[".html"]!, "cache-control": "no-store" });
       res.end(html);
       return;
@@ -1160,7 +1204,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     opts: { notify?: boolean; screenshot?: Buffer },
   ): Promise<Handoff> {
     const notify = opts.notify ?? true;
-    const handoff: Handoff = { seq: (handoffs.at(-1)?.seq ?? 0) + 1, createdAt: new Date().toISOString(), delivered: !notify, ...h };
+    const handoff: Handoff = { seq: Math.max(handoffs.at(-1)?.seq ?? 0, seqFloor) + 1, createdAt: new Date().toISOString(), delivered: !notify, ...h };
     if (opts.screenshot) {
       // Written before the agent can receive the handoff, so the file is always there when it looks.
       const file = join(stateDir, "handoffs", `${handoff.seq}.png`);
@@ -1181,13 +1225,21 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     return handoff;
   }
 
-  async function persist(h: Handoff): Promise<void> {
-    await writeFile(join(stateDir, "handoffs", `${h.seq}.json`), JSON.stringify(h, null, 2));
-    await writeFile(join(stateDir, "latest.json"), JSON.stringify(h, null, 2));
+  // One write at a time: a handoff is saved when added and again when delivered, and two writes of one file at
+  // once can leave it mixed. latest.json is always the newest handoff, never an older one delivered later.
+  let persistQueue: Promise<unknown> = Promise.resolve();
+  function persist(h: Handoff): Promise<void> {
+    const run = persistQueue.then(async () => {
+      const json = JSON.stringify(h, null, 2);
+      await writeFile(join(stateDir, "handoffs", `${h.seq}.json`), json);
+      if (h.seq === handoffs.at(-1)?.seq) await writeFile(join(stateDir, "latest.json"), json);
+    });
+    persistQueue = run.catch(() => undefined);
+    return run;
   }
 
   function nextHandoff(after: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Handoff | null> {
-    if (signal?.aborted) return Promise.resolve(null);
+    if (signal?.aborted || closing) return Promise.resolve(null);
     endAiRound();
     // "source" handoffs are informational and never wake an agent; withdrawn ones are gone.
     const ready =
@@ -1195,7 +1247,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (ready) {
       if (!ready.delivered) {
         ready.delivered = true;
-        void persist(ready);
+        persist(ready).catch((err: unknown) => console.warn(`glimpse: couldn't save handoff #${ready.seq} (${err instanceof Error ? err.message : String(err)})`));
         broadcast({ type: "handoff-delivered", seq: ready.seq });
       }
       return Promise.resolve(ready);
@@ -1208,6 +1260,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
           broadcast({ type: "handoff-delivered", seq: h.seq });
           resolvePromise(h);
         },
+        stop: () => stop(),
       };
       const stop = () => {
         clearTimeout(timer);
@@ -1417,9 +1470,14 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       // Let in-flight snapshots, variant updates and scene reads finish before the project goes away.
       await history.idle();
       await variants.idle();
-      await Promise.all([refreshQueue, sceneQueue]);
+      await Promise.all([refreshQueue, sceneQueue, handoffQueue, persistQueue]);
       await closeReactPreview();
-      await new Promise<void>((ok) => server.close(() => ok()));
+      // Agents long-polling /api/handoff/next get their answer ("editing") now instead of holding the server open.
+      for (const w of [...waiters]) w.stop();
+      const closed = new Promise<void>((ok) => server.close(() => ok()));
+      server.closeIdleConnections();
+      const force = setTimeout(() => server.closeAllConnections(), 1000);
+      await closed.finally(() => clearTimeout(force));
     },
   };
 }
@@ -1460,6 +1518,13 @@ function summarize(h: Handoff): HandoffSummary {
   };
 }
 
+/** Identifies an Edit source plan (every file before and after), so apply can tell whether it is still the one previewed. */
+function planId(files: FilePatch[]): string {
+  const hash = createHash("sha256");
+  for (const f of files) hash.update(`${f.file}\0${f.before}\0${f.after}\0`);
+  return hash.digest("base64url");
+}
+
 function sourcePrompt(list: ChangeList, files: string[]): string {
   return [
     `The human used "Edit source" in Glimpse, which wrote these changes directly into ${files.join(", ")}. Nothing to do; this is for your information:`,
@@ -1488,10 +1553,14 @@ function requestPrompt(text: string, target: Target, project: ProjectInfo): stri
 }
 
 /** Handoffs from a previous run, all counted as delivered (so they aren't replayed) unless `stillPending` keeps an undelivered one. */
-async function loadHandoffs(dir: string, stillPending: (h: Handoff) => boolean): Promise<Handoff[]> {
+async function loadHandoffs(dir: string, stillPending: (h: Handoff) => boolean): Promise<{ handoffs: Handoff[]; lastSeq: number }> {
   const out: Handoff[] = [];
+  let lastSeq = 0;
   for (const name of await readdir(dir).catch(() => [] as string[])) {
-    if (!/^\d+\.json$/.test(name)) continue;
+    const m = /^(\d+)\.(json|png)$/.exec(name);
+    if (!m) continue;
+    lastSeq = Math.max(lastSeq, Number(m[1]));
+    if (m[2] !== "json") continue;
     try {
       const h = JSON.parse(await readFile(join(dir, name), "utf8")) as Handoff;
       out.push({ ...h, delivered: h.delivered || !stillPending(h) });
@@ -1499,7 +1568,7 @@ async function loadHandoffs(dir: string, stillPending: (h: Handoff) => boolean):
       // ignore unreadable files
     }
   }
-  return out.sort((a, b) => a.seq - b.seq);
+  return { handoffs: out.sort((a, b) => a.seq - b.seq), lastSeq };
 }
 
 function warnSnapshot(err: unknown): void {
@@ -1544,6 +1613,20 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   }
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
+}
+
+/**
+ * A URL path to a dotfile or dot-folder (".git/config", ".env"), or with a ".." segment (a backslash one, which URL
+ * parsing leaves alone). Package managers' and Vite's folders inside node_modules (.pnpm, .vite/deps) are fine.
+ */
+function hiddenPath(path: string): boolean {
+  let deps = false;
+  for (const part of path.split(/[/\\]/)) {
+    if (part === "..") return true;
+    if (part === "node_modules") deps = true;
+    else if (!deps && part.startsWith(".") && part !== "." && part !== ".well-known") return true;
+  }
+  return false;
 }
 
 /** Join `rel` onto `root`, refusing anything that escapes `root`. */

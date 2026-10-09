@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Target } from "@glimpse/core";
-import { openBrowser, startServer, type Handoff } from "@glimpse/server";
+import { openBrowser, servesProject, startServer, withProjectLock, type Handoff } from "@glimpse/server";
 import { runStdio } from "@glimpse/mcp";
 import { VERSION } from "./lib.js";
 
@@ -89,21 +89,24 @@ async function open(args: string[]): Promise<void> {
   const editorDir = join(dirname(fileURLToPath(import.meta.url)), "editor");
   const base = {
     dir,
-    target: values.target as Target | undefined,
+    target: targetArg(values.target),
     entry: values.entry,
     command,
     editorDir: existsSync(editorDir) ? editorDir : undefined,
   };
-  const wanted = values.port ? Number(values.port) : 4321;
-  const srv = await startServer({ ...base, port: wanted }).catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "EADDRINUSE" && !values.port) return startServer({ ...base, port: 0 });
-    throw err;
-  });
-
+  const wanted = values.port ? intArg("--port", values.port, 0, 65535) : 4321;
   const infoFile = join(dir, ".glimpse", "server.json");
-  await mkdir(dirname(infoFile), { recursive: true });
-  // The token lets local tools ask this server to run commands; keep the file private to this user.
-  await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid, token: srv.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
+  // Under the project's lock, so the MCP server or the desktop app opening it at the same moment waits and reuses this one.
+  const srv = await withProjectLock(dir, async () => {
+    const srv = await startServer({ ...base, port: wanted }).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE" && !values.port) return startServer({ ...base, port: 0 });
+      throw err;
+    });
+    await mkdir(dirname(infoFile), { recursive: true });
+    // The token lets local tools ask this server to run commands; keep the file private to this user.
+    await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid, token: srv.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
+    return srv;
+  });
 
   process.stdout.write(
     [
@@ -122,7 +125,7 @@ async function open(args: string[]): Promise<void> {
 
   let stopping = false;
   const shutdown = async () => {
-    if (stopping) return;
+    if (stopping) process.exit(1); // a second Ctrl+C: don't wait any longer
     stopping = true;
     await rm(infoFile, { force: true });
     await srv.close();
@@ -138,7 +141,7 @@ async function mcp(args: string[]): Promise<void> {
   await runStdio({
     editorDir: existsSync(editorDir) ? editorDir : undefined,
     browser: !values["no-browser"],
-    port: values.port ? Number(values.port) : undefined,
+    port: values.port ? intArg("--port", values.port, 0, 65535) : undefined,
   });
 }
 
@@ -155,15 +158,17 @@ async function wait(args: string[]): Promise<void> {
   const dir = resolve(positionals[0] ?? ".");
   const server = await findServer(dir);
   // Without --after, the server hands out the oldest message no agent has received yet.
-  const afterParam = values.after !== undefined ? `&after=${Number(values.after)}` : "";
-  const timeout = Number(values.timeout);
+  const afterParam = values.after !== undefined ? `&after=${intArg("--after", values.after, 0)}` : "";
+  const timeout = intArg("--timeout", values.timeout, 1);
 
   // Long-poll in chunks so proxies and agent tool timeouts don't cut the request.
   const deadline = Date.now() + timeout * 1000;
   while (Date.now() < deadline) {
     const chunk = Math.max(1, Math.min(60, Math.ceil((deadline - Date.now()) / 1000)));
-    const res = await fetch(`${server.url}/api/handoff/next?timeout=${chunk}${afterParam}`);
-    const body = (await res.json()) as { status: string; handoff?: Handoff };
+    const res = await fetch(`${server.url}/api/handoff/next?timeout=${chunk}${afterParam}`).catch(() => {
+      throw new Error(`Glimpse at ${server.url} stopped. Run \`glimpse open ${dir}\` again.`);
+    });
+    const body = await apiJson<{ status: string; handoff?: Handoff }>(res);
     if (body.status === "ready" && body.handoff) {
       printHandoff(body.handoff, values.json, dir);
       return;
@@ -188,11 +193,40 @@ async function status(args: string[]): Promise<void> {
   const message = positionals.join(" ").trim();
   if (!message) throw new Error("Usage: glimpse status <message>");
   const server = await findServer(resolve(values.dir));
-  await fetch(`${server.url}/api/status`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ message }),
-  });
+  await apiJson(
+    await fetch(`${server.url}/api/status`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message }),
+    }),
+  );
+}
+
+/** A response's JSON body; an error with the server's message when it refused the request. */
+async function apiJson<T>(res: Response): Promise<T> {
+  const body = (await res.json().catch(() => null)) as (T & { error?: unknown }) | null;
+  if (!res.ok || body === null) {
+    const why = body && typeof body.error === "string" ? body.error : `HTTP ${res.status} ${res.statusText}`.trim();
+    throw new Error(`Glimpse refused the request: ${why}`);
+  }
+  return body;
+}
+
+/** A whole-number option in [min, max], or a clear error. */
+function intArg(name: string, value: string, min: number, max = Number.MAX_SAFE_INTEGER): number {
+  const n = Number(value);
+  if (!/^\s*\d+\s*$/.test(value) || n < min || n > max) {
+    throw new Error(`${name} expects a whole number${max < Number.MAX_SAFE_INTEGER ? ` from ${min} to ${max}` : ` of at least ${min}`}, not "${value}"`);
+  }
+  return n;
+}
+
+const TARGETS: readonly Target[] = ["html", "react", "tui", "native"];
+
+function targetArg(value: string | undefined): Target | undefined {
+  if (value === undefined) return undefined;
+  if (!(TARGETS as readonly string[]).includes(value)) throw new Error(`--target expects one of ${TARGETS.join(", ")}, not "${value}"`);
+  return value as Target;
 }
 
 function printHandoff(h: Handoff, json: boolean, dir: string): void {
@@ -209,10 +243,9 @@ async function findServer(dir: string): Promise<ServerInfo> {
   const file = join(dir, ".glimpse", "server.json");
   if (!existsSync(file)) throw new Error(`Glimpse isn't open for ${dir}. Run \`glimpse open ${dir}\` first.`);
   const info = JSON.parse(await readFile(file, "utf8")) as ServerInfo;
-  try {
-    await fetch(`${info.url}/api/session`);
-  } catch {
-    throw new Error(`Glimpse at ${info.url} isn't responding. Run \`glimpse open ${dir}\` again.`);
+  // A Glimpse that was killed leaves server.json behind, and another project's Glimpse may have its port now.
+  if (typeof info.url !== "string" || !(await servesProject(info.url, dir))) {
+    throw new Error(`Glimpse isn't running for ${dir} anymore (nothing at ${String(info.url)} shows it). Run \`glimpse open ${dir}\` again.`);
   }
   return info;
 }

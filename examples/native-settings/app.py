@@ -1,6 +1,6 @@
 """A settings window built with Tkinter, Python's built-in GUI toolkit.
 
-Run it with `python app.py` (no packages needed; on Linux you may need the
+Run it with `python3 app.py` (no packages needed; on Linux you may need the
 python3-tk package). Its layout is described for Glimpse in glimpse.scene.json.
 """
 

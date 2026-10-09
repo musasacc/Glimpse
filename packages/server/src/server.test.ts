@@ -241,3 +241,82 @@ describe("server", () => {
     ]);
   });
 });
+
+describe("robustness", () => {
+  const postJson = (path: string, body: unknown) =>
+    fetch(`${srv.url}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const request = (text: string) => postJson("/api/request", { text }).then((r) => r.json() as Promise<{ seq: number }>);
+
+  it("closes promptly while an agent is long-polling", async () => {
+    const waiting = fetch(`${srv.url}/api/handoff/next?timeout=600`).then((r) => r.json());
+    await expect.poll(async () => ((await (await fetch(`${srv.url}/api/session`)).json()) as { agentWaiting: boolean }).agentWaiting).toBe(true);
+    const t0 = Date.now();
+    await srv.close();
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(await waiting).toEqual({ status: "editing" });
+    srv = await startServer({ dir, port: 0 }); // for afterEach
+  });
+
+  it("keeps latest.json on the newest handoff when an older one is delivered", async () => {
+    await request("first");
+    await request("second");
+    expect((await srv.nextHandoff(undefined, 100))?.seq).toBe(1);
+    await srv.close(); // waits for the writes
+    const latest = JSON.parse(await readFile(join(dir, ".glimpse", "latest.json"), "utf8")) as { seq: number };
+    expect(latest.seq).toBe(2);
+    srv = await startServer({ dir, port: 0 });
+  });
+
+  it("never reuses the number of an unreadable handoff", async () => {
+    await request("one");
+    await srv.close();
+    await writeFile(join(dir, ".glimpse", "handoffs", "2.json"), "{ not json");
+    srv = await startServer({ dir, port: 0 });
+    expect((await request("three")).seq).toBe(3);
+    expect(await readFile(join(dir, ".glimpse", "handoffs", "2.json"), "utf8")).toBe("{ not json");
+  });
+
+  it("validates request targets and long-poll parameters", async () => {
+    expect((await postJson("/api/request", { text: "x", target: "flash" })).status).toBe(400);
+    expect((await postJson("/api/request", { text: "x", target: "react" })).status).toBe(200);
+    expect((await fetch(`${srv.url}/api/handoff/next?timeout=abc`)).status).toBe(400);
+    expect((await fetch(`${srv.url}/api/handoff/next?timeout=1&after=x`)).status).toBe(400);
+  });
+
+  it("refuses to write edits the human didn't review (the file changed after the preview)", async () => {
+    const changeList: ChangeList = {
+      version: 1,
+      target: "html",
+      createdAt: new Date().toISOString(),
+      changes: [{ op: "setText", node: "n1", src: "index.html:1:28", from: "Hi", to: "Hello" }],
+    };
+    const preview = (await (await postJson("/api/patch/preview", { changeList })).json()) as { planId: string };
+    expect(preview.planId).toMatch(/^[\w-]{20,}$/);
+    // The agent saves the page in between: the same location is now another element.
+    const edited = "<!doctype html><html><body><a>Hi</a><button>Hi</button></body></html>";
+    await writeFile(join(dir, "index.html"), edited);
+    const res = await postJson("/api/patch/apply", { changeList, planId: preview.planId });
+    expect(res.status).toBe(409);
+    expect(await readFile(join(dir, "index.html"), "utf8")).toBe(edited);
+    // Previewed again, it applies.
+    const again = (await (await postJson("/api/patch/preview", { changeList })).json()) as { planId: string };
+    expect((await postJson("/api/patch/apply", { changeList, planId: again.planId })).status).toBe(200);
+  });
+
+  it("serves a legacy-encoded page decoded, and leaves its source to the AI", async () => {
+    const page = '<!doctype html><html><head><meta charset="windows-1252"></head><body><p>Caf\xe9</p></body></html>';
+    await writeFile(join(dir, "index.html"), Buffer.from(page, "latin1"));
+    const res = await fetch(`${srv.url}/preview/`);
+    expect(res.headers.get("content-type")).toContain("utf-8");
+    expect(await res.text()).toContain("Café</p>");
+    const changeList: ChangeList = {
+      version: 1,
+      target: "html",
+      createdAt: new Date().toISOString(),
+      changes: [{ op: "setText", node: "n1", src: `index.html:1:${page.indexOf("<p>") + 1}`, from: "Café", to: "Bar" }],
+    };
+    const plan = (await (await postJson("/api/patch/preview", { changeList })).json()) as { files: unknown[]; needsAi: unknown[] };
+    expect(plan.files).toEqual([]);
+    expect(plan.needsAi).toHaveLength(1);
+  });
+});
