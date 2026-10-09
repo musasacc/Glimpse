@@ -39,7 +39,7 @@ async function listen() {
   await new Promise((ok) => ws.once("open", ok));
   return {
     messages,
-    waitFor<T = Msg>(pred: (m: Msg) => boolean, timeoutMs = 6000): Promise<T> {
+    waitFor<T = Msg>(pred: (m: Msg) => boolean, timeoutMs = 15_000): Promise<T> {
       return new Promise((ok, fail) => {
         const timer = setTimeout(() => fail(new Error("timed out waiting for a websocket message")), timeoutMs);
         const check = () => {
@@ -69,7 +69,8 @@ async function writeVariant(id: string, k: number, path: string, content: string
   await writeFile(file, content);
 }
 
-describe("variants", () => {
+// These wait on real file-watch events, which macOS runners can deliver several seconds late.
+describe("variants", { timeout: 30_000 }, () => {
   it("creates a job and hands it to the agent as a variants handoff", async () => {
     const live = await listen();
     const job = await createJob();
@@ -127,7 +128,7 @@ describe("variants", () => {
     expect(live.messages.filter((m) => m.type === "file-changed")).toEqual([]);
     expect((await get<{ snapshots: PublicSnapshot[] }>("/api/history")).snapshots.map((s) => s.kind)).toEqual(["initial"]);
     live.close();
-  }, 15_000);
+  });
 
   it("uses the chosen variant: copies its files over the project and keeps a backup", async () => {
     const job = await createJob(2);
@@ -157,8 +158,7 @@ describe("variants", () => {
     expect(await (await fetch(`${srv.url}/snapshot/${body.backup.id}/index.html`)).text()).toContain("<button>Hi</button>");
     expect((await post(`/api/variants/v1/choose`, { k: 1 })).status).toBe(404);
     live.close();
-    // Waits on real file-watch events, which macOS runners deliver slowly.
-  }, 15_000);
+  });
 
   it("discards a job and never reuses its id", async () => {
     const job = await createJob(2);
