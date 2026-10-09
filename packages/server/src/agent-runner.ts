@@ -4,6 +4,7 @@
  * or the Anthropic API — in the project folder, one run at a time, and streams its progress to the editor.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
@@ -342,9 +343,24 @@ export class AgentRunner {
     return name;
   }
 
+  private realDir?: string;
+
+  /** A path the agent reported, relative to the project. Agents report real paths, so try the folder's realpath too
+   *  (on macOS /var is a symlink to /private/var). */
   private relPath(p: string): string {
-    const rel = isAbsolute(p) ? relative(this.deps.dir, p) : p;
-    return rel.startsWith("..") ? p : rel.split(sep).join("/");
+    if (!isAbsolute(p)) return p.split(sep).join("/");
+    if (this.realDir === undefined) {
+      try {
+        this.realDir = realpathSync(this.deps.dir);
+      } catch {
+        this.realDir = this.deps.dir;
+      }
+    }
+    for (const root of [this.deps.dir, this.realDir]) {
+      const rel = relative(root, p);
+      if (rel && !rel.startsWith("..") && !isAbsolute(rel)) return rel.split(sep).join("/");
+    }
+    return p;
   }
 
   private async runCodex(run: Run, prompt: string): Promise<string | undefined> {
