@@ -1571,12 +1571,27 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     history.endRound(pending).catch(warnSnapshot);
   }
 
+  // Safety net for missed file events: while a job still waits for variants, look at its folders every 2 s.
+  const variantRescan = setInterval(() => {
+    for (const job of variants.list()) {
+      if (job.ready.length >= job.count) continue;
+      variants.refreshReady(job.id).then(
+        (changed) => {
+          const fresh = variants.get(job.id);
+          if (changed && fresh) broadcast({ type: "variants", job: fresh });
+        },
+        () => undefined,
+      );
+    }
+  }, 2000);
+  variantRescan.unref();
+
   /** The agent wrote into .glimpse/variants/<id>/<k>/: tell the editor, and track which variants are ready. */
   function variantChanged(event: string, rel: string): void {
     const v = parseVariantPath(rel);
     const job = v && variants.get(v.id);
     if (!v || !job || v.k < 1 || v.k > job.count) return;
-    if (v.path && event !== "unlinkDir") broadcast({ type: "variant-updated", id: v.id, k: v.k, path: v.path, event, at: Date.now() });
+    if (v.path && event !== "unlinkDir" && event !== "addDir") broadcast({ type: "variant-updated", id: v.id, k: v.k, path: v.path, event, at: Date.now() });
     variants.refreshReady(v.id).then(
       (changed) => {
         const fresh = variants.get(v.id);
@@ -1646,6 +1661,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     });
   } catch (err) {
     closing = true;
+    clearInterval(variantRescan);
     unbridge();
     throw err;
   }
@@ -1678,10 +1694,22 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         else if (CODE_FILE.test(rel)) scheduleTerminalRestart();
       });
     }
+    // macOS can coalesce the events for files in a folder that was just created: count the folder itself too.
+    watcher.on("addDir", (file: string) => {
+      const rel = relative(dir, file).split(sep).join("/");
+      if (rel.startsWith(`${VARIANTS_DIR}/`)) variantChanged("addDir", rel.slice(VARIANTS_DIR.length + 1));
+    });
+    // A folder deleted or locked under the watcher (EPERM/EBUSY on Windows) must never take Glimpse down.
+    watcher.on("error", (err: unknown) => {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code === "ENOENT" || code === "EPERM" || code === "EBUSY") return;
+      console.warn(`glimpse: file watching: ${err instanceof Error ? err.message : String(err)}`);
+    });
     await watcherReady;
   } catch (err) {
     // Leave nothing running, so the caller can try again.
     closing = true;
+    clearInterval(variantRescan);
     unbridge();
     clearTimeout(aiRoundTimer);
     await watcher?.close();
@@ -1733,6 +1761,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       for (const ws of wss.clients) ws.terminate();
       wss.close();
       await watcher?.close();
+      clearInterval(variantRescan);
       clearTimeout(aiRoundTimer);
       // Let in-flight snapshots, variant updates and scene reads finish before the project goes away.
       await history.idle();
