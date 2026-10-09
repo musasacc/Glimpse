@@ -49,7 +49,11 @@ describe("withProjectLock", () => {
         order.push(`${name} out`);
       });
     await Promise.all([run("a"), run("b")]);
-    expect(order).toEqual(["a in", "a out", "b in", "b out"]);
+    // Either may go first; what matters is that they never overlap.
+    expect([
+      ["a in", "a out", "b in", "b out"],
+      ["b in", "b out", "a in", "a out"],
+    ]).toContainEqual(order);
     expect(existsSync(join(root, ".glimpse", "server.lock"))).toBe(false);
   });
 
