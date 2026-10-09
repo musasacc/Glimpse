@@ -147,9 +147,31 @@ describe("planScenePatch", () => {
     const final = structuredClone(read.scene);
     final.nodes.add!.locked = false;
     final.nodes.todos!.locked = true;
+    final.nodes.add!.props.text = "Add todo";
     const after = parseSceneFile((await planScenePatch(dir, "glimpse.scene.json", final, [])).files[0]!.after).scene;
     expect(after.nodes.add!.locked).toBe(true);
     expect(after.nodes.todos!.locked).toBeUndefined();
+  });
+
+  it("leaves a file in the agent's own format alone when the scene didn't change", async () => {
+    const dir = await project();
+    const text = JSON.stringify(
+      { target: "tui", root: { type: "screen", layout: { x: 0, y: 0, w: 80, h: 24 }, children: [{ id: "t", type: "text", source: "app.py:12", layout: { x: 0, y: 0, w: "100%", h: 1 }, props: { text: "Hi" } }] } },
+      null,
+      4,
+    );
+    await writeFile(join(dir, "glimpse.scene.json"), text);
+    const read = (await readScene(dir))!;
+    const comment = { op: "comment" as const, node: "t", id: "c", text: "make it green" };
+    expect((await planScenePatch(dir, "glimpse.scene.json", read.scene, [comment])).files).toEqual([]);
+    // Locks are editor-only too.
+    const locked = structuredClone(read.scene);
+    locked.nodes.t!.locked = true;
+    expect((await planScenePatch(dir, "glimpse.scene.json", locked, [])).files).toEqual([]);
+    // A real edit still writes it.
+    const edited = structuredClone(read.scene);
+    edited.nodes.t!.props.text = "Hello";
+    expect((await planScenePatch(dir, "glimpse.scene.json", edited, diffScenes(read.scene, edited))).files).toHaveLength(1);
   });
 
   it("has nothing to write when the scene is unchanged", async () => {
@@ -192,6 +214,20 @@ describe("detectProject for scene targets", () => {
     expect(detectProject(dir)).toEqual({ dir, target: "native", entry: "glimpse.scene.json" });
     await writeFile(join(dir, "glimpse.scene.json"), JSON.stringify({ target: "tui", root: { type: "root" } }));
     expect(detectProject(dir).target).toBe("tui");
+  });
+
+  it("keeps a native GUI one while its scene file is empty, cut short or gone for a moment", async () => {
+    const dir = await project();
+    const previous = { dir, target: "native" as const, entry: "glimpse.scene.json" };
+    await writeFile(join(dir, "index.html"), "<!doctype html>");
+    for (const text of ["", "{", '{ "tar']) {
+      await writeFile(join(dir, "glimpse.scene.json"), text);
+      expect(detectProject(dir, {}, previous)).toEqual(previous);
+    }
+    await rm(join(dir, "glimpse.scene.json"));
+    expect(detectProject(dir, {}, previous)).toEqual(previous);
+    // Without a scene target before, it is the HTML page.
+    expect(detectProject(dir, {}, { dir, target: "html", entry: "index.html" }).target).toBe("html");
   });
 });
 

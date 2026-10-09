@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -123,6 +123,21 @@ describe("POST /api/terminal/run", () => {
     expect(await output).toContain("hello from the app");
     ws.close();
   }, 20_000);
+
+  it("keeps the token away from the previewed app", async () => {
+    await mkdir(join(dir, ".glimpse"), { recursive: true });
+    await writeFile(join(dir, ".glimpse", "server.json"), JSON.stringify({ token: srv.token }));
+    for (const path of ["/preview/.glimpse/server.json", "/preview/.GLIMPSE/server.json", "/preview/x/..%2f.glimpse%2fserver.json", "/.glimpse/server.json", "/variant/v1/1/.glimpse/server.json"]) {
+      const res = await raw("GET", path, { referer: `http://127.0.0.1:${srv.port}/preview/` });
+      expect(res.status, path).toBe(404);
+      expect(res.body).not.toContain(srv.token);
+    }
+    // Even with the token, a browser page (which always sends Origin) can't start a command.
+    const body = JSON.stringify({ command });
+    const res = await raw("POST", "/api/terminal/run", { "content-type": "application/json", origin: `http://127.0.0.1:${srv.port}`, "x-glimpse-token": srv.token }, body);
+    expect(res.status).toBe(403);
+    expect(srv.terminal.command).toBeUndefined();
+  });
 
   it("never takes a command from the browser's websocket", async () => {
     const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws`);

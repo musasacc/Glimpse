@@ -29,7 +29,7 @@ export function SceneToolbar() {
         title={sm.target === "tui" ? "The real app, running in a terminal next to the mock" : "Output of the real app"}
         onClick={() => sceneMode.setDock({ open: !sm.dock.open })}
       >
-        <I.Terminal size={14} /> {sm.target === "tui" ? "Terminal" : "App log"}
+        <I.Terminal size={14} /> <span className="tb-label">{sm.target === "tui" ? "Terminal" : "App log"}</span>
         <span className={`term-dot${t.running ? " on" : ""}`} />
       </button>
     </>

@@ -573,6 +573,26 @@ code {
 .no-sidebar .toolbar {
   padding-left: 48px;
 }
+/* Controls keep their size (a .seg would otherwise shrink to nothing, clipped by its overflow); when they don't
+   fit, labels give way to their icons (.compact, see useCompactToolbar), and as a last resort the toolbar scrolls
+   sideways rather than cut off the buttons at its end. */
+.toolbar {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.toolbar::-webkit-scrollbar {
+  display: none;
+}
+.toolbar > * {
+  flex-shrink: 0;
+}
+.toolbar.compact {
+  gap: 6px;
+}
+.toolbar.compact .tb-label {
+  display: none;
+}
 .inspector {
   grid-area: inspector;
   border-left: 1px solid var(--border);
@@ -1130,6 +1150,7 @@ html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .
   -webkit-app-region: drag;
 }
 html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .toolbar) :is(button, a, input, select, textarea, label, [role="button"]),
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .main > .floating,
 html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .scrim {
   -webkit-app-region: no-drag;
 }

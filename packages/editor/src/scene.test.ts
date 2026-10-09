@@ -92,4 +92,9 @@ describe("terminal text", () => {
     expect(wrapCells("a\nb", 10)).toEqual(["a", "b"]);
     expect(wrapCells("abcdefghij", 4)).toEqual(["abcd", "efgh", "ij"]);
   });
+
+  it("gets through wide characters in a one-cell line", () => {
+    expect(wrapCells("🔍", 1)).toEqual(["🔍", ""]);
+    expect(wrapCells("日本x", 1)).toEqual(["日", "本", "x"]);
+  });
 });

@@ -87,7 +87,7 @@ export function BoxPromptToggle({ onEnable }: { onEnable: () => void }) {
         store.setTool(on ? "select" : "region");
       }}
     >
-      <I.BoxPrompt size={14} /> Box prompt
+      <I.BoxPrompt size={14} /> <span className="tb-label">Box prompt</span>
     </button>
   );
 }

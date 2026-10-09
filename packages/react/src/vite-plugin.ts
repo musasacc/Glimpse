@@ -1,4 +1,5 @@
-import { relative } from "node:path";
+import { realpathSync } from "node:fs";
+import { isAbsolute, relative } from "node:path";
 import type { Plugin } from "vite";
 import { instrumentJsx } from "./instrument-jsx.js";
 import { PREVIEW_CLIENT, PREVIEW_CLIENT_ID } from "./preview-client.js";
@@ -24,13 +25,28 @@ const NOT_SOURCE = /[?&](?:raw|url|worker|sharedworker|inline)\b/;
  */
 export function glimpseVitePlugin(options: GlimpseVitePluginOptions = {}): Plugin {
   let root = options.root ?? process.cwd();
+  let realRoot: string | undefined;
   const client = options.client ?? true;
+  /**
+   * `file` relative to the root. Vite hands out real paths, so when the project was opened through a
+   * symlink (on macOS even /tmp and /var are ones) the path is relative to the root's real path instead.
+   */
+  const relPath = (file: string): string => {
+    let rel = relative(root, file);
+    if (outside(rel)) {
+      realRoot ??= realpath(root);
+      const real = relative(realRoot, file);
+      if (!outside(real)) rel = real;
+    }
+    return rel.split("\\").join("/");
+  };
   return {
     name: "glimpse",
     enforce: "pre",
     apply: "serve",
     configResolved(config) {
       root = options.root ?? config.root;
+      realRoot = undefined;
     },
     resolveId(id) {
       return client && id === PREVIEW_CLIENT_ID ? id : null;
@@ -52,10 +68,22 @@ export function glimpseVitePlugin(options: GlimpseVitePluginOptions = {}): Plugi
         if (id.startsWith("\0") || NOT_SOURCE.test(id)) return null;
         const file = id.replace(/[?#].*$/, "");
         if (!SCRIPT.test(file) || /[\\/]node_modules[\\/]/.test(file) || !code.includes("<")) return null;
-        const rel = relative(root, file).split("\\").join("/");
+        const rel = relPath(file);
         const out = instrumentJsx(code, rel, { source: file });
         return out ? { code: out.code, map: out.map } : null;
       },
     },
   };
+}
+
+function outside(rel: string): boolean {
+  return rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel);
+}
+
+function realpath(dir: string): string {
+  try {
+    return realpathSync.native(dir);
+  } catch {
+    return dir;
+  }
 }

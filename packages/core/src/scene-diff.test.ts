@@ -38,6 +38,17 @@ describe("diffScenes on mocks", () => {
     log.apply({ op: "move", node: "cancel", from: { x: 10, y: 0 }, to: { x: 14, y: 0 } });
     const moves = diffScenes(log.base, log.scene).filter((c) => c.op === "move");
     expect(moves.map((c) => c.op === "move" && c.node)).toEqual(["cancel"]);
+    // Measured on screen, not in the group's coordinates (10 → 14 there, 12 → 16 in the row).
+    expect(moves[0]!.intent).toMatch(/^moved 4px right(;|$)/);
+  });
+
+  it("says which way a regrouped node moved on screen, also when resized", () => {
+    const log = grouped("tui");
+    log.apply({ op: "move", node: "ok", from: { x: -2, y: 0 }, to: { x: 0, y: 0 } });
+    log.apply({ op: "resize", node: "cancel", from: { x: 10, y: 0, w: 10, h: 3 }, to: { x: 8, y: 0, w: 12, h: 3 } });
+    const changes = diffScenes(log.base, log.scene);
+    expect(changes.find((c) => c.op === "move")!.intent).toMatch(/^moved 2 cells right(;|$)/);
+    expect(changes.find((c) => c.op === "resize")!.intent).toMatch(/; also moved 2 cells left$/);
   });
 
   it("keeps reporting coordinate changes of reparented nodes on web pages", () => {

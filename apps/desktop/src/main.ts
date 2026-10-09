@@ -24,6 +24,7 @@ import { chromeScript, desktopPlatform, fullscreenScript, MAC_TRAFFIC_LIGHTS, MC
 import { canonicalDir, dirKey, folderName } from "./paths.js";
 import { ProjectServers } from "./projects.js";
 import { RecentProjects } from "./recent.js";
+import { adoptLoginShellEnv } from "./shell-env.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const isMac = process.platform === "darwin";
@@ -41,9 +42,13 @@ if (process.env.GLIMPSE_USER_DATA_DIR) app.setPath("userData", resolve(process.e
 // Every window sets sandbox: true itself. (app.enableSandbox() would also stop `--no-sandbox` from working, which
 // some Linux setups need for AppImages.)
 
+// Commands the projects run (meta.command, the agent's glimpse_open) need the PATH a terminal would have.
+const shellEnv = adoptLoginShellEnv();
+
 const recent = new RecentProjects(join(app.getPath("userData"), "recent-projects.json"));
 const servers = new ProjectServers({
   start: async (dir) => {
+    await shellEnv;
     const srv = await startGlimpse({ dir });
     return {
       url: srv.url,

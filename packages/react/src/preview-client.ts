@@ -15,6 +15,8 @@ export const PREVIEW_CLIENT_ID = "/@glimpse/preview-client";
  *   postMessage { glimpse: "ready", engine: "vite" }       to the parent, after "glimpse:ready"
  *   postMessage { glimpse: "morphed", engine: "vite" }     to the parent, after "glimpse:after-update"
  *                            (the same message the HTML live client sends after a morph)
+ *   postMessage { glimpse: "error", engine: "vite", message, blank }   the app threw (blank: nothing is left
+ *                            on the page, as after a render error, which makes React unmount the whole root)
  *
  * Vite's error overlay gets `data-glimpse-internal` so the editor skips it.
  */
@@ -36,6 +38,16 @@ if (!w.__glimpsePreview) {
     timer = setTimeout(done, quiet);
     const cap = setTimeout(done, max);
   });
+
+  // An error thrown while rendering unmounts the app and leaves an empty page with no hint (Vite's overlay is only
+  // for compile errors): tell the editor. The error itself stays in the preview's console.
+  const crashed = (err) => setTimeout(() => {
+    const message = String((err && err.message) || err || "Unknown error");
+    const blank = !!document.body && !document.body.innerText.trim() && !document.body.querySelector("img, svg, canvas, video, input, button");
+    post({ glimpse: "error", message, blank });
+  }, 50);
+  w.addEventListener("error", (e) => crashed(e.error || e.message));
+  w.addEventListener("unhandledrejection", (e) => crashed(e.reason));
 
   const start = () => {
     new MutationObserver((records) => {

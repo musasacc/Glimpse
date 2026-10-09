@@ -126,7 +126,10 @@ export async function planScenePatch(
   const after = serializeSceneFile(scene, format, extras);
 
   const file = relFile(entry);
-  const files: FilePatch[] = after === before ? [] : [{ file, before, after, diff: createTwoFilesPatch(file, file, before, after, "", "", { context: 3 }) }];
+  // Compared as scenes, not as text: a file the agent formatted its own way (or with values the parser had to
+  // patch over) is only rewritten when the human really changed the scene, never by a comment or a note.
+  const unchanged = after === before || (current !== null && after === serializeSceneFile(withFileLocks(current.scene, current.scene), format, extras));
+  const files: FilePatch[] = unchanged ? [] : [{ file, before, after, diff: createTwoFilesPatch(file, file, before, after, "", "", { context: 3 }) }];
   return {
     files,
     applied: changes.filter((c) => !NOT_IN_SCENE.has(c.op)),

@@ -466,3 +466,24 @@
   border: 1px solid var(--border-strong);
   border-radius: 8px;
 }
+
+/* A past version of a React app, which can't be rendered: said in place of a blank page. */
+.loop-note {
+  margin: auto;
+  max-width: 440px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.loop-note p {
+  margin: 0 0 8px;
+}
+.loop-note b {
+  color: var(--text);
+  font-weight: 600;
+}
+.frame:has(> .loop-note) {
+  display: flex;
+  background: var(--panel);
+}

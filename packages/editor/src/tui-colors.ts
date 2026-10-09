@@ -198,7 +198,8 @@ export function wrapCells(text: string, width: number): string[] {
       line = /^\s+$/.test(word) ? "" : word;
       // A word longer than the line breaks anywhere.
       while (cellWidth(line) > width) {
-        const head = fitCells(line, width);
+        // A wide glyph in a 1-cell line doesn't fit at all: take it anyway, or the line never gets shorter.
+        const head = fitCells(line, width) || [...line][0]!;
         out.push(head);
         line = line.slice(head.length);
       }

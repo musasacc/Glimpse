@@ -130,6 +130,8 @@ const AI_ROUND_QUIET_MS = 1500;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** Where the agent writes variants, relative to the project (forward slashes). */
 const VARIANTS_DIR = ".glimpse/variants";
+/** URL paths inside a .glimpse folder (any case, and Windows' ignored trailing dots and spaces). */
+const STATE_PATH = /(^|[/\\])\.glimpse[. ]*([/\\]|$)/i;
 const DEFAULT_MANUAL_LABEL = "Saved by hand";
 /** After the React preview failed to start (usually: dependencies not installed yet), try again at most this often. */
 const PREVIEW_RETRY_MS = 2000;
@@ -138,6 +140,8 @@ const TERMINAL_RESTART_MS = 800;
 /** Saves of these restart a running terminal UI (not data or logs the app writes itself, which would loop). */
 const CODE_FILE = /\.(py|pyw|tcss|css|[cm]?[jt]sx?|rs|go|rb|java|kts?|cs|fs|swift|c|cc|cpp|cxx|h|hpp|m|mm|lua|php|pl|sh|ex|exs|hs|ml|nim|zig|dart|scala|clj|toml)$/i;
 /** Files whose changes can turn the folder into another kind of project, or make its React preview work. */
+/** A Vite config file at the project root. */
+const VITE_CONFIG = /^vite\.config\.(?:js|mjs|cjs|ts|mts|cts)$/;
 const PROJECT_FILES = new Set(["package.json", SCENE_FILE, "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"]);
 const NOTHING_TO_RUN = 'Nothing to run yet: set meta.command in glimpse.scene.json (e.g. "python app.py"), or start Glimpse with --run "<command>".';
 
@@ -324,7 +328,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     refreshQueue = refreshQueue
       .then(async () => {
         if (closing) return;
-        const next = detectProject(dir, { target: opts.target, entry: opts.entry });
+        const next = detectProject(dir, { target: opts.target, entry: opts.entry }, project);
         const wasReact = project.target === "react";
         if (next.target !== project.target || next.entry !== project.entry) {
           Object.assign(project, next);
@@ -339,6 +343,24 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         }
       })
       .catch((err: unknown) => console.warn(`glimpse: couldn't detect the project again (${err instanceof Error ? err.message : String(err)})`));
+  }
+
+  /**
+   * A vite.config appeared (or changed) at the project root. Vite restarts itself only for the config file it
+   * loaded at startup, so a preview started without one (before the agent wrote it) or one that failed (a broken
+   * config) starts over, and the editor reloads it.
+   */
+  function viteConfigChanged(): void {
+    refreshQueue = refreshQueue
+      .then(async () => {
+        if (closing || project.target !== "react") return;
+        const running = reactPreview ?? (await reactPreviewLoad?.catch(() => null)) ?? null;
+        if (running?.vite.config.configFile) return; // Vite restarts on its own
+        await closeReactPreview();
+        if ((await ensureReactPreview()) || running) broadcast({ type: "reload" });
+      })
+      .catch((err: unknown) => console.warn(`glimpse: couldn't restart the preview (${err instanceof Error ? err.message : String(err)})`));
+    refreshProject();
   }
 
   /* ── Scene (terminal UIs and native GUIs) ─────────────────────────── */
@@ -462,6 +484,10 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       return;
     }
     const path = decodeURIComponent(url.pathname);
+    // Glimpse's own state (.glimpse/server.json holds the token) is never served, whichever route or engine
+    // (static preview, the project's Vite, variants, root-absolute fallback) would otherwise read it: the
+    // previewed app runs at this origin and must not get hold of it.
+    if (STATE_PATH.test(path)) return send(res, 404, { error: "Not found" });
 
     if (path === "/__glimpse/client.js") {
       res.writeHead(200, { "content-type": MIME[".js"]!, "cache-control": "no-store" });
@@ -486,6 +512,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/terminal/run" && req.method === "POST") {
+      // Only local tools: a browser page (even Glimpse's own origin, where the previewed app runs) always sends Origin.
+      if (req.headers.origin !== undefined) return send(res, 403, { error: "Commands can't be started from a browser" });
       if (!tokenOk(req)) return send(res, 403, { error: "Missing or wrong x-glimpse-token (it is in .glimpse/server.json)" });
       const body = (await readJson(req)) as { command?: unknown };
       const command = typeof body.command === "string" ? body.command.trim() : "";
@@ -1129,6 +1157,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       broadcast({ type: "file-changed", event, path: rel, at: Date.now() });
       scheduleAiRound();
       if (PROJECT_FILES.has(rel) || rel === entryRel()) refreshProject();
+      else if (VITE_CONFIG.test(rel)) viteConfigChanged();
       if (isScene() && rel === entryRel()) sceneChanged(event === "unlink");
       else if (CODE_FILE.test(rel)) scheduleTerminalRestart();
     });

@@ -128,4 +128,24 @@ describe("React projects with Vite", { timeout: 60_000 }, () => {
     expect(applied).toMatchObject({ files: ["src/App.tsx"], applied: 1, needsAi: [] });
     expect(await readFile(join(dir, "src", "App.tsx"), "utf8")).toContain('<button className="btn">Maple</button>');
   });
+
+  it("starts the preview over when a vite.config appears after it started", async () => {
+    const dir = join(reactFixtures, ".tmp", `server-cfg-${process.pid}-${Date.now().toString(36)}`);
+    await mkdir(dirname(dir), { recursive: true });
+    await cp(join(reactFixtures, "basic"), dir, { recursive: true, filter: (src) => !/[\\/]node_modules([\\/]|$)/.test(src) });
+    cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+    const config = await readFile(join(dir, "vite.config.ts"), "utf8");
+    await rm(join(dir, "vite.config.ts"));
+    const srv = await serve(dir, { target: "react" });
+    const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws`);
+    cleanups.push(async () => ws.close());
+    const messages: { type: string }[] = [];
+    ws.on("message", (data) => messages.push(JSON.parse(String(data))));
+    await expect.poll(() => messages[0]?.type).toBe("hello");
+    expect(await (await fetch(`${srv.url}/preview/`)).text()).not.toContain("@react-refresh");
+
+    await writeFile(join(dir, "vite.config.ts"), config);
+    await expect.poll(() => messages.some((m) => m.type === "reload"), { timeout: 10_000 }).toBe(true);
+    expect(await (await fetch(`${srv.url}/preview/`)).text()).toContain("@react-refresh");
+  });
 });

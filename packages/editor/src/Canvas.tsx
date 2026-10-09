@@ -36,6 +36,8 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const live = useRef<Live>({ marquee: null, region: null }).current;
   const cancelGesture = useRef(() => {});
   const [draft, setDraft] = useState<Draft | null>(null);
+  /** The React app crashed while rendering and left a blank page: why, until it renders again. */
+  const [crash, setCrash] = useState<string | null>(null);
 
   // Re-render the overlay when the page scrolls or resizes.
   const rerender = () => setTick((t) => t + 1);
@@ -46,6 +48,9 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
       setDraft(null);
     };
   }, []);
+
+  // A React app runs with the edits off its DOM (see Store.interact).
+  useEffect(() => store.interact(mode === "interact"), [mode]);
 
   // Tools and half-done gestures belong to edit mode.
   useEffect(() => {
@@ -64,7 +69,11 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   useEffect(() => {
     const onMessage = (ev: MessageEvent) => {
       // Only our own page (compare and variant frames run the live client too), once attached to it.
-      if (ev.data?.glimpse === "morphed" && ev.source === iframe.current?.contentWindow && store.bridge?.doc === iframe.current?.contentDocument) {
+      if (ev.source !== iframe.current?.contentWindow) return;
+      if (ev.data?.glimpse === "error") setCrash(ev.data.blank ? String(ev.data.message ?? "") : null);
+      if (ev.data?.glimpse === "morphed" && store.bridge?.doc === iframe.current?.contentDocument) {
+        // The update after a crash still leaves it blank; one that renders the app again ends it.
+        if (hasContent(store.bridge.doc)) setCrash(null);
         store.pageChanged();
         rerender();
       }
@@ -74,6 +83,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   }, []);
 
   const onLoad = () => {
+    setCrash(null);
     const doc = iframe.current?.contentDocument;
     if (!doc) return;
     // A React page renders after the load event: start once its first render has settled (if it's still the page).
@@ -82,6 +92,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
 
   const attachPage = (doc: Document) => {
     store.attach(doc);
+    if (modeRef.current === "interact") store.interact(true);
     setDraft(null);
     cancelGesture.current = installPageHandlers(doc, {
       mode: () => modeRef.current,
@@ -153,6 +164,16 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
         <div className="banner">
           Some edits could not be replayed after the AI changed the page.
           <button className="btn" onClick={() => store.set({ stale: false })}>
+            OK
+          </button>
+        </div>
+      )}
+      {crash !== null && (
+        <div className="banner" role="alert" style={{ maxWidth: "min(720px, calc(100% - 32px))" }}>
+          <span className="ellipsis" title={crash}>
+            The app crashed while rendering{crash ? `: ${crash}` : ""}. The full error is in the preview's console; the page comes back once the code is fixed.
+          </span>
+          <button className="btn" onClick={() => setCrash(null)}>
             OK
           </button>
         </div>
@@ -490,6 +511,11 @@ export function editText(id: string): void {
 }
 
 /** Editor shortcuts; installed on both the editor window and the page. */
+/** The page shows something (a React app that crashed while rendering leaves an empty root). */
+function hasContent(doc: Document): boolean {
+  return !!doc.body && (!!doc.body.innerText.trim() || !!doc.body.querySelector("img, svg, canvas, video, input, button"));
+}
+
 export function handleKey(e: KeyboardEvent, openTalk: () => void): void {
   const t = e.target as HTMLElement;
   if (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;

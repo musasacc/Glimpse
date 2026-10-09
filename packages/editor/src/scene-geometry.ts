@@ -72,6 +72,21 @@ export function isSceneContainer(n: SceneNode): boolean {
   return CONTAINERS.has(n.type);
 }
 
+/** The pane a tabs node shows (its selected tab's), the only one of its children that is drawn. */
+export function shownPane(n: SceneNode): string | undefined {
+  const v = n.props.selected?.trim();
+  return n.children[v && /^-?\d+$/.test(v) ? Number(v) : 0];
+}
+
+/** The node is drawn: no tabs node above it shows another pane instead (hidden nodes aside). */
+export function isDrawn(scene: Scene, id: string): boolean {
+  for (let n = scene.nodes[id]; n?.parent; n = scene.nodes[n.parent]) {
+    const p = scene.nodes[n.parent];
+    if (p?.type === "tabs" && shownPane(p) !== n.id) return false;
+  }
+  return true;
+}
+
 /** The host OS's look, for native mocks that don't name a theme. The desktop app says which it runs on. */
 export function hostTheme(): SceneTheme {
   const desktop = new URLSearchParams(location.search).get("desktop");

@@ -81,7 +81,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
           fetch("/api/handoff", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}), ...sceneMode.body() }),
+            body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}), ...sceneMode.body({ handoff: true }) }),
           }),
         );
         if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);

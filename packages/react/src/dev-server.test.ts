@@ -114,3 +114,35 @@ describe("createReactPreview", { timeout: 30_000 }, () => {
     }
   });
 });
+
+describe("createReactPreview with the project's own settings", { timeout: 30_000 }, () => {
+  it("keeps the HMR client on Glimpse's server whatever the project's hmr address settings say", async () => {
+    const fx = await serveFixture("basic", {
+      viteConfig: `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+export default defineConfig({ plugins: [react()], server: { hmr: { clientPort: 443, host: "example.com", path: "/hmr" } } });
+`,
+    });
+    try {
+      const client = await (await fetch(`${fx.url}/preview/@vite/client`)).text();
+      expect(client).not.toContain("443");
+      expect(client).not.toContain("example.com");
+      expect(client).toMatch(/const hmrPort = null/);
+      expect((await handshake(fx.port, "/preview/", "vite-hmr")).status).toBe(101);
+    } finally {
+      await fx.close();
+    }
+  }, 60_000);
+
+  it("reports source paths relative to the project when it is opened through a symlink", async () => {
+    const fx = await serveFixture("basic", { viaLink: true });
+    try {
+      const js = await (await fetch(`${fx.url}/preview/src/App.tsx`)).text();
+      const srcs = [...js.matchAll(/"data-glimpse-src":\s*"([^"]+)"/g)].map((m) => m[1]);
+      expect(srcs.length).toBeGreaterThan(0);
+      for (const src of srcs) expect(src).toMatch(/^src\/App\.tsx:/);
+    } finally {
+      await fx.close();
+    }
+  }, 60_000);
+});

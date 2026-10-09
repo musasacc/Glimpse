@@ -11,8 +11,13 @@ export interface ProjectInfo {
 
 export const SCENE_FILE = "glimpse.scene.json";
 
-/** Work out what kind of UI lives in `dir` and which file to open first. */
-export function detectProject(dir: string, override?: { target?: Target; entry?: string }): ProjectInfo {
+/**
+ * Work out what kind of UI lives in `dir` and which file to open first. `previous` (detecting again while
+ * Glimpse runs) keeps a terminal UI or native GUI one while its scene file is missing or half-written: the agent
+ * may be rewriting it, and switching targets would drop the human's unsent edits.
+ */
+export function detectProject(dir: string, override?: { target?: Target; entry?: string }, previous?: ProjectInfo): ProjectInfo {
+  const prevScene = previous && (previous.target === "tui" || previous.target === "native") ? previous.target : undefined;
   if (override?.target && override.entry) return { dir, target: override.target, entry: override.entry };
 
   const scenePath = join(dir, override?.entry ?? SCENE_FILE);
@@ -23,12 +28,13 @@ export function detectProject(dir: string, override?: { target?: Target; entry?:
       target = (JSON.parse(text) as { target?: Target }).target;
     } catch {
       // The agent may be halfway through writing it; the editor shows the error once it loads.
-      target = /"target"\s*:\s*"native"/.test(text) ? "native" : undefined;
+      target = /"target"\s*:\s*"native"/.test(text) ? "native" : /"target"\s*:\s*"tui"/.test(text) ? "tui" : prevScene;
     }
     return { dir, target: override?.target ?? target ?? "tui", entry: override?.entry ?? SCENE_FILE };
   }
   // A terminal UI or desktop GUI whose scene file the agent hasn't written yet.
   if (override?.target === "tui" || override?.target === "native") return { dir, target: override.target, entry: SCENE_FILE };
+  if (prevScene && !override?.target) return { dir, target: prevScene, entry: override?.entry ?? SCENE_FILE };
 
   const pkgPath = join(dir, "package.json");
   if (existsSync(pkgPath)) {

@@ -86,7 +86,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # A fixed Ubuntu image: what the Linux installers need from the system shouldn't change with "latest".
+        os: [macos-latest, windows-latest, ubuntu-24.04]
     defaults:
       run:
         shell: bash
@@ -102,6 +103,16 @@ jobs:
       - name: Install desktop dependencies
         working-directory: apps/desktop
         run: npm ci
+      # node-pty has no Linux prebuild, so npm compiled it against this runner's glibc (2.39 needs GLIBC_2.34 for
+      # forkpty), and the real terminal wouldn't load on Ubuntu 20.04, Debian 11 or RHEL 8. Rebuild it on Debian 11
+      # (glibc 2.31) and check what it needs.
+      - name: Build node-pty for older Linux
+        if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w/apps/desktop -u "$(id -u):$(id -g)" -e HOME=/tmp node:22-bullseye npm rebuild node-pty
+          pty=apps/desktop/node_modules/node-pty/build/Release/pty.node
+          objdump -T "$pty" | grep -o 'GLIBC_[0-9.]*' | sort -uV
+          if objdump -T "$pty" | grep -qE 'GLIBC_2\.(3[2-9]|[4-9][0-9])'; then echo "::error::$pty needs a newer glibc than 2.31"; exit 1; fi
 
       - name: Configure code signing (optional)
         env:

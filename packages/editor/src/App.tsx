@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { describeChange, type ChangeList } from "@glimpse/core";
 import { Canvas, handleKey, type Mode } from "./Canvas";
 import { Activity, Inspector } from "./Panels";
@@ -32,15 +32,16 @@ export function App() {
     <div className={`shell${state.sidebarOpen ? "" : " no-sidebar"}`}>
       {state.sidebarOpen && <Sidebar />}
       <main className="main">
+        {state.view === "home" && <Home />}
+        {state.view === "history" && <HistoryView />}
+        {/* The editor stays mounted so the page and unsent edits survive view switches. */}
+        <Editor hidden={state.view !== "editor"} />
+        {/* After the toolbar it sits on: in the macOS app a later no-drag region wins over the toolbar's drag one. */}
         {!state.sidebarOpen && (
           <button className="icon-btn floating" title="Show sidebar" onClick={() => store.set({ sidebarOpen: true })}>
             <I.Sidebar />
           </button>
         )}
-        {state.view === "home" && <Home />}
-        {state.view === "history" && <HistoryView />}
-        {/* The editor stays mounted so the page and unsent edits survive view switches. */}
-        <Editor hidden={state.view !== "editor"} />
       </main>
     </div>
   );
@@ -71,19 +72,21 @@ function Editor({ hidden }: { hidden: boolean }) {
   }, [hidden]);
   useEffect(() => setTalkOpen(false), [state.selected]);
 
+  const toolbar = useRef<HTMLElement>(null);
+  const compact = useCompactToolbar(toolbar);
   const pending = store.pendingCount;
   // A terminal UI or native GUI: its mock from glimpse.scene.json instead of a live page.
   const scene = isSceneTarget(state.project?.target);
 
   return (
     <div className={`editor${state.inspectorOpen ? "" : " no-inspector"}${timelineOpen ? " with-timeline" : ""}`} hidden={hidden}>
-      <header className="toolbar">
+      <header className={`toolbar${compact ? " compact" : ""}`} ref={toolbar}>
         <div className="seg" role="group" aria-label="Mode">
           <button className={mode === "edit" ? "active" : ""} onClick={() => setMode("edit")} title="Edit: select, move and change elements">
-            <I.Pointer size={14} /> Edit
+            <I.Pointer size={14} /> <span className="tb-label">Edit</span>
           </button>
           <button className={mode === "interact" ? "active" : ""} onClick={() => setMode("interact")} title="Interact: use the page normally">
-            <I.Hand size={14} /> Interact
+            <I.Hand size={14} /> <span className="tb-label">Interact</span>
           </button>
         </div>
         <BoxPromptToggle onEnable={() => setMode("edit")} />
@@ -100,7 +103,7 @@ function Editor({ hidden }: { hidden: boolean }) {
         )}
         <span className={`live${state.connected ? " on" : ""}`} title="Changes your AI makes to the files appear here instantly">
           <span className="dot" />
-          {state.connected ? "Live" : "Offline"}
+          <span className="tb-label">{state.connected ? "Live" : "Offline"}</span>
         </span>
         <LoopToolbar />
         <div className="spacer" />
@@ -117,10 +120,10 @@ function Editor({ hidden }: { hidden: boolean }) {
           title="Glimpse writes your edits straight into the files (with a diff preview)"
           onClick={() => setEditing(store.changeList())}
         >
-          <I.Code size={14} /> Edit source
+          <I.Code size={14} /> <span className="tb-label">Edit source</span>
         </button>
-        <button className="btn primary" disabled={pending === 0} onClick={() => setSending(store.changeList())}>
-          <I.Send size={14} /> Send to AI <span className="count">{pending}</span>
+        <button className="btn primary" disabled={pending === 0} title="Send your edits to the AI" onClick={() => setSending(store.changeList())}>
+          <I.Send size={14} /> <span className="tb-label">Send to AI</span> <span className="count">{pending}</span>
         </button>
         <button
           className={`icon-btn${state.inspectorOpen ? " on" : ""}`}
@@ -147,6 +150,38 @@ function Editor({ hidden }: { hidden: boolean }) {
 }
 
 /** "Send instructions to AI": review the change list, add a note, hand it off. */
+/**
+ * The toolbar's labels give way to their icons once its controls don't fit, and come back when it is as wide
+ * again as they needed.
+ */
+function useCompactToolbar(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [compact, setCompact] = useState(false);
+  const needed = useRef(0);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => {
+      if (!el.classList.contains("compact")) {
+        if (el.scrollWidth > el.clientWidth + 1) {
+          needed.current = el.scrollWidth;
+          setCompact(true);
+        }
+      } else if (el.clientWidth >= needed.current) setCompact(false);
+    };
+    const resized = new ResizeObserver(check);
+    resized.observe(el);
+    // Buttons that come and go (Compare, a native mock's platform switch).
+    const changed = new MutationObserver(check);
+    changed.observe(el, { childList: true, subtree: true });
+    check();
+    return () => {
+      resized.disconnect();
+      changed.disconnect();
+    };
+  }, [ref]);
+  return compact;
+}
+
 function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }) {
   const state = useStore();
   const [note, setNote] = useState("");
@@ -165,7 +200,7 @@ function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }
         fetch("/api/handoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}), ...sceneMode.body() }),
+          body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}), ...sceneMode.body({ handoff: true }) }),
         }),
       );
       if (!res.ok) throw new Error((await res.json()).error ?? res.statusText);

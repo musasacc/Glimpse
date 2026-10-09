@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,10 +24,14 @@ export interface ServedFixture {
  * Glimpse server will: one http server, the preview on /preview/, and an
  * upgrade handler that destroys every socket except /__glimpse/ws and Vite's.
  */
-export async function serveFixture(name: string): Promise<ServedFixture> {
-  const dir = join(FIXTURES, ".tmp", `${name}-${process.pid}-${Date.now().toString(36)}`);
-  await mkdir(dirname(dir), { recursive: true });
-  await cp(join(FIXTURES, name), dir, { recursive: true, filter: (src) => !/[\\/]node_modules([\\/]|$)/.test(src) });
+export async function serveFixture(name: string, opts: { viteConfig?: string; viaLink?: boolean } = {}): Promise<ServedFixture> {
+  const copy = join(FIXTURES, ".tmp", `${name}-${process.pid}-${Date.now().toString(36)}`);
+  await mkdir(dirname(copy), { recursive: true });
+  await cp(join(FIXTURES, name), copy, { recursive: true, filter: (src) => !/[\\/]node_modules([\\/]|$)/.test(src) });
+  if (opts.viteConfig !== undefined) await writeFile(join(copy, "vite.config.ts"), opts.viteConfig);
+  // Opened through a symlink (a junction on Windows, which needs no privileges), as /tmp is on macOS.
+  const dir = opts.viaLink ? `${copy}-link` : copy;
+  if (opts.viaLink) await symlink(copy, dir, "junction");
 
   let preview: ReactPreview | undefined;
   const server = createServer((req, res) => {
@@ -58,7 +62,8 @@ export async function serveFixture(name: string): Promise<ServedFixture> {
       await preview!.close();
       server.closeAllConnections();
       await new Promise<void>((ok) => server.close(() => ok()));
-      await rm(dir, { recursive: true, force: true, maxRetries: 5 });
+      if (opts.viaLink) await rm(dir, { force: true });
+      await rm(copy, { recursive: true, force: true, maxRetries: 5 });
     },
   };
 }

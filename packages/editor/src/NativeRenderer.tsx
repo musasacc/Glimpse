@@ -114,11 +114,20 @@ const CSS_KEYS = [
   "opacity",
 ];
 
+/** Keys whose bare numbers aren't pixels. */
+const UNITLESS = new Set(["font-weight", "opacity"]);
+
+/** A bare number in pixels, or as is. A small line-height (1.4) is a multiple of the font size, a large one (20) pixels. */
+function cssValue(key: string, v: string): string {
+  if (!/^-?\d+(\.\d+)?$/.test(v) || UNITLESS.has(key)) return v;
+  return key === "line-height" && Number(v) <= 4 ? v : `${v}px`;
+}
+
 function css(n: SceneNode): CSSProperties {
   const out: Record<string, string> = {};
   for (const key of CSS_KEYS) {
     const v = n.style[key];
-    if (v !== undefined && v !== "") out[key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = /^-?\d+(\.\d+)?$/.test(v) && key !== "font-weight" && key !== "opacity" ? `${v}px` : v;
+    if (v !== undefined && v !== "") out[key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = cssValue(key, v);
   }
   return out as CSSProperties;
 }

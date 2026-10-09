@@ -248,8 +248,13 @@ export function patchJsx(code: string, changes: Change[], options: string | Patc
           // Neighbours count only when they sit right inside the same JSX parent.
           const inParent = (x: JsxElementInfo | undefined) =>
             x && (parent ? x.parent === parent.el : isJsxParent(x.parent)) ? x : undefined;
+          // A neighbour rendered more than once (a list item from .map(), a shared component) means the new
+          // element belongs to that logic, not as a hard-coded copy: the AI does it.
+          if ([c.anchor?.before, c.anchor?.after].some((a) => a && repeated.has(a))) throw new Error("next to a repeated element");
           const before = inParent(find(c.anchor?.before));
           const after = inParent(find(c.anchor?.after));
+          // It goes before something that isn't right here (in another file, deeper down): the end of the parent is the wrong place.
+          if (c.anchor?.before && !before) throw new Error("the element it goes before isn't a sibling here");
           const unit = indentUnit(code);
           if (parent && goneEl(parent.el)) throw new Error("the parent was deleted");
           if (!before && !after && parent && !parent.el.closingElement) {

@@ -32,7 +32,7 @@ type Gesture =
   | { kind: "move"; start: Pt; ids: string[]; from: Map<string, Layout>; moved: boolean; single: string | null; startPx: Pt }
   | { kind: "resize"; id: string; handle: Handle; start: Pt; from: Layout }
   | { kind: "marquee"; start: Pt; base: string[] }
-  | { kind: "region"; start: Pt };
+  | { kind: "region"; start: Pt; startPx: Pt };
 
 interface Pt {
   x: number;
@@ -185,7 +185,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
     setMenu(null);
     const start = toUnits(e);
     if (state.tool === "region" || e.altKey) {
-      gesture.current = { kind: "region", start };
+      gesture.current = { kind: "region", start, startPx: { x: e.clientX, y: e.clientY } };
       store.set({ hovered: null });
       return;
     }
@@ -269,7 +269,9 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
       if (to.x !== g.from.x || to.y !== g.from.y || to.w !== g.from.w || to.h !== g.from.h) store.edit({ op: "resize", node: g.id, from: g.from, to });
     } else if (g.kind === "region") {
       const r = cells(g.start, p, target);
-      const big = target === "tui" ? r.w >= 1 && r.h >= 1 : r.w >= 8 && r.h >= 8;
+      // A click is no box: a terminal cell snaps outward to a whole cell however small the drag, so it has to be a drag.
+      const dragged = Math.abs(e.clientX - g.startPx.x) >= 4 && Math.abs(e.clientY - g.startPx.y) >= 4;
+      const big = target === "tui" ? dragged && r.w >= 1 && r.h >= 1 : r.w >= 8 && r.h >= 8;
       if (big) setDraft(regionTarget({ left: r.x, top: r.y, width: r.w, height: r.h }));
     }
     setPreview(null);
@@ -557,7 +559,10 @@ function InlineEditor({ node, rect, target, cell, zoom }: { node: SceneNode; rec
   };
 
   const rows = Math.max(1, value.split("\n").length);
-  const lineH = target === "tui" ? cell.h * zoom : 18 * zoom;
+  // The text being typed stays legible (at least 12px) however small the fitted mock is; the box grows with it.
+  const font = target === "tui" ? 14 : 13;
+  const scale = Math.max(zoom, 12 / font);
+  const lineH = (target === "tui" ? cell.h : 18) * scale;
   return (
     <textarea
       ref={input}
@@ -565,9 +570,9 @@ function InlineEditor({ node, rect, target, cell, zoom }: { node: SceneNode; rec
       style={{
         left: rect.left,
         top: rect.top,
-        width: Math.max(rect.width, 120),
-        height: Math.max(rect.height, rows * lineH + 8),
-        fontSize: target === "tui" ? 14 * zoom : 13 * zoom,
+        width: Math.max((rect.width * scale) / zoom, 120),
+        height: Math.max((rect.height * scale) / zoom, rows * lineH + 8),
+        fontSize: font * scale,
         lineHeight: `${lineH}px`,
       }}
       value={value}

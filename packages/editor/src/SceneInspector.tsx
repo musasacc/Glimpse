@@ -332,7 +332,8 @@ function TableEditor({ node }: { node: SceneNode }) {
         ))}
       </div>
       <div className="row">
-        <button className="btn" onClick={() => save(header, [...rows.map(pad), pad([])])}>
+        {/* One empty cell would be no rows at all (items ""): the first row of a one-column table gets a placeholder. */}
+        <button className="btn" onClick={() => save(header, [...rows.map(pad), cols === 1 && rows.length === 0 ? ["Row 1"] : pad([])])}>
           + Row
         </button>
         <button className="btn" onClick={() => save([...pad(header), `Column ${cols + 1}`], rows.map((r) => [...pad(r), ""]))}>

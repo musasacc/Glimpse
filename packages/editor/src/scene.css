@@ -1070,11 +1070,14 @@
   min-height: 0;
   background: var(--panel);
 }
+/* The remembered size may come from a bigger window: the mock always keeps some room. */
 .dock-bottom .term-pane {
   border-top: 1px solid var(--border);
+  max-height: calc(100% - 160px);
 }
 .dock-right .term-pane {
   border-left: 1px solid var(--border);
+  max-width: calc(100% - 160px);
 }
 .term-splitter {
   position: absolute;

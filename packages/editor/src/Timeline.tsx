@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { Mode } from "./Canvas";
-import { Compare } from "./Compare";
+import { Compare, isReactProject, ReactVersionNote } from "./Compare";
 import * as I from "./icons";
 import * as L from "./loop-icons";
 import { enc, KIND_TITLE, loop, readOnly, since, useLoop, type PublicSnapshot, type SnapshotKind } from "./loop";
@@ -27,7 +27,9 @@ const closeVariants = () => loop.set({ variantsFor: null });
 /** Toolbar: show/hide the timeline, and compare before/after the AI's last round. */
 export function LoopToolbar() {
   const ls = useLoop();
-  const round = ls.historyAvailable ? loop.lastRound() : null;
+  useStore();
+  // A React app's past versions can't be rendered (only its running Vite can): nothing to compare.
+  const round = ls.historyAvailable && !isReactProject() ? loop.lastRound() : null;
   return (
     <>
       <button
@@ -40,7 +42,7 @@ export function LoopToolbar() {
       </button>
       {round && (
         <button className="btn" title={`Before/after the AI's last round: “${round.before.label}” vs. now`} onClick={() => loop.compare(round.before.id, null)}>
-          <L.Split size={14} /> Compare
+          <L.Split size={14} /> <span className="tb-label">Compare</span>
         </button>
       )}
     </>
@@ -214,6 +216,7 @@ function SnapshotView({ id }: { id: string }) {
 
   if (!s) return null;
   const width = DEVICE_WIDTH[state.device];
+  const react = isReactProject();
   return (
     <div className="canvas loop-stage">
       <div className="loop-bar">
@@ -226,9 +229,11 @@ function SnapshotView({ id }: { id: string }) {
         <button className="btn" onClick={() => loop.set({ confirmRestore: s.id })} title="Put the project files back to this version">
           <L.Restore size={14} /> Restore
         </button>
-        <button className="btn" onClick={() => loop.compare(s.id, null)} title="Before/after slider: this version vs. now">
-          <L.Split size={14} /> Compare with now
-        </button>
+        {!react && (
+          <button className="btn" onClick={() => loop.compare(s.id, null)} title="Before/after slider: this version vs. now">
+            <L.Split size={14} /> Compare with now
+          </button>
+        )}
         <button className="btn primary" onClick={() => loop.backToLive()} title="Back to the live page (Esc)">
           Back to live
         </button>
@@ -237,6 +242,8 @@ function SnapshotView({ id }: { id: string }) {
         {/* A terminal UI or native GUI has no page: draw the version's scene file instead. */}
         {store.sceneSurface ? (
           <SceneVersion key={id} id={id} />
+        ) : react ? (
+          <ReactVersionNote />
         ) : (
           <iframe
             key={id}

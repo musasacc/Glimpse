@@ -80,6 +80,8 @@ export function Compare({ before, after }: { before: string; after: string | nul
         {/* A terminal UI or native GUI: both sides are scene files, drawn like the canvas. */}
         {store.sceneSurface ? (
           <SceneCompareLayers before={before} after={a ? a.id : null} pos={pos} />
+        ) : isReactProject() ? (
+          <ReactVersionNote />
         ) : (
           <>
             <iframe ref={below} src={`/snapshot/${enc(before)}/`} title={`Before: ${b.label}`} onLoad={() => link(below, above)} />
@@ -142,4 +144,21 @@ function link(self: RefObject<HTMLIFrameElement | null>, twin: RefObject<HTMLIFr
 
 function clamp(n: number): number {
   return Math.max(0, Math.min(100, n));
+}
+
+/** The project is a React app: Glimpse keeps its files per version, but only the project's running Vite renders it. */
+export function isReactProject(): boolean {
+  return store.state.project?.target === "react";
+}
+
+/** In place of a past version of a React app, which would be a blank page. */
+export function ReactVersionNote() {
+  return (
+    <div className="loop-note">
+      <p>
+        <b>Past versions of a React app can't be shown here.</b>
+      </p>
+      <p>Only the app's own Vite can run it, and that serves the current files. Restore puts this version's files back, and the preview then shows it.</p>
+    </div>
+  );
 }

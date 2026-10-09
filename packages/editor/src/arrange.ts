@@ -12,6 +12,7 @@ import {
   type Scene,
   type SceneNode,
 } from "@glimpse/core";
+import { isDrawn } from "./scene-geometry";
 import { store } from "./store";
 
 /**
@@ -192,7 +193,7 @@ export function elementsIn(rect: Rect): string[] {
   if (!scene || !surface) return [];
   const hits: string[] = [];
   for (const id of Object.keys(scene.nodes)) {
-    if (id === scene.rootId || scene.nodes[id]!.hidden) continue;
+    if (id === scene.rootId || scene.nodes[id]!.hidden || !isDrawn(scene, id)) continue;
     const r = surface.rect(id);
     if (r && r.width > 0 && r.height > 0 && inside(r, rect)) hits.push(id);
   }
@@ -213,7 +214,7 @@ export function regionTarget(rect: Rect): { parent: string; rect: Layout } {
   let best = scene.rootId;
   let bestDepth = 0;
   for (const id of Object.keys(scene.nodes)) {
-    if (id === scene.rootId || scene.nodes[id]!.hidden) continue;
+    if (id === scene.rootId || scene.nodes[id]!.hidden || !isDrawn(scene, id)) continue;
     const r = surface.rect(id);
     if (!r || !inside(rect, r)) continue;
     const depth = depthOf(scene, id);

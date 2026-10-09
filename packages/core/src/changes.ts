@@ -113,12 +113,12 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     const { x: fx, y: fy, w: fw, h: fh } = f.layout;
     // A mock (terminal UI, native GUI) places nodes by their layout. One that changed parent (group,
     // ungroup) but kept its place on screen only has new coordinates relative to that parent.
-    const stayed = b.parent !== f.parent && PLACED.has(final.target) && samePlace(base, final, id);
+    const moved = b.parent !== f.parent && PLACED.has(final.target) ? !samePlace(base, final, id) : bx !== fx || by !== fy;
     if (bw !== fw || bh !== fh) {
-      edits.push(withMeta(final, f, { op: "resize", node: id, from: b.layout, to: f.layout }, resizeIntent(final, b, f)));
-    } else if ((bx !== fx || by !== fy) && !stayed) {
+      edits.push(withMeta(final, f, { op: "resize", node: id, from: b.layout, to: f.layout }, resizeIntent(base, final, b, f)));
+    } else if (moved) {
       edits.push(
-        withMeta(final, f, { op: "move", node: id, from: { x: bx, y: by }, to: { x: fx, y: fy } }, moveIntent(final, b, f)),
+        withMeta(final, f, { op: "move", node: id, from: { x: bx, y: by }, to: { x: fx, y: fy } }, moveIntent(base, final, b, f)),
       );
     }
     if ((b.props.text ?? "") !== (f.props.text ?? "")) {
@@ -160,16 +160,20 @@ const PLACED = new Set<Target>(["tui", "native"]);
 
 /** The node is at the same place relative to the root in both scenes. */
 function samePlace(base: Scene, final: Scene, id: string): boolean {
-  const at = (scene: Scene) => {
-    let x = 0;
-    let y = 0;
-    for (let n = scene.nodes[id]; n && n.parent !== null; n = scene.nodes[n.parent]) {
-      x += n.layout.x;
-      y += n.layout.y;
-    }
-    return `${x},${y}`;
-  };
-  return at(base) === at(final);
+  const a = absPos(base, id);
+  const b = absPos(final, id);
+  return a.x === b.x && a.y === b.y;
+}
+
+/** Where a node is relative to the root: its layout plus every ancestor's offset. */
+function absPos(scene: Scene, id: string): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  for (let n = scene.nodes[id]; n && n.parent !== null; n = scene.nodes[n.parent]) {
+    x += n.layout.x;
+    y += n.layout.y;
+  }
+  return { x, y };
 }
 
 export function describeNode(n: SceneNode): string {
@@ -298,9 +302,13 @@ function positionIntent(scene: Scene, n: SceneNode): string {
 }
 
 /** "3px right and 2px down", or "1 cell right" in a terminal UI (laid out in character cells). */
-function shift(scene: Scene, b: SceneNode, f: SceneNode): string {
-  const dx = f.layout.x - b.layout.x;
-  const dy = f.layout.y - b.layout.y;
+function shift(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
+  // Layouts are relative to the parent: after a group or ungroup on a mock, compare places on screen instead.
+  const across = b.parent !== f.parent && PLACED.has(scene.target);
+  const from = across ? absPos(base, b.id) : b.layout;
+  const to = across ? absPos(scene, f.id) : f.layout;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
   const unit = (n: number) => (scene.target === "tui" ? ` cell${Math.abs(n) === 1 ? "" : "s"}` : "px");
   const parts: string[] = [];
   if (dx) parts.push(`${Math.abs(dx)}${unit(dx)} ${dx > 0 ? "right" : "left"}`);
@@ -308,8 +316,8 @@ function shift(scene: Scene, b: SceneNode, f: SceneNode): string {
   return parts.join(" and ");
 }
 
-function moveIntent(scene: Scene, b: SceneNode, f: SceneNode): string {
-  let hint = `moved ${shift(scene, b, f)}`;
+function moveIntent(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
+  let hint = `moved ${shift(base, scene, b, f)}`;
 
   // Name the closest sibling to anchor the new position semantically.
   const cx = f.layout.x + f.layout.w / 2;
@@ -347,10 +355,10 @@ function moveIntent(scene: Scene, b: SceneNode, f: SceneNode): string {
   return hint;
 }
 
-function resizeIntent(scene: Scene, b: SceneNode, f: SceneNode): string {
+function resizeIntent(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
   const fmt = (n: number) => (n > 0 ? `+${n}` : `${n}`);
   const size = `size ${b.layout.w}×${b.layout.h} → ${f.layout.w}×${f.layout.h} (${fmt(f.layout.w - b.layout.w)}w, ${fmt(f.layout.h - b.layout.h)}h)`;
   // Resizing from the left or top edge also moves the element.
-  const moved = shift(scene, b, f);
+  const moved = shift(base, scene, b, f);
   return moved ? `${size}; also moved ${moved}` : size;
 }

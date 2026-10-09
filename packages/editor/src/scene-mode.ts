@@ -111,6 +111,8 @@ class SceneMode {
   /** Requests that may write the scene file are in flight: scene messages wait for them. */
   private writing = 0;
   private queued: ScenePayload[] = [];
+  /** Unsent edits kept while the scene file is missing, replayed when it comes back. */
+  private orphaned: readonly LogEntry[] = [];
   private loadSeq = 0;
   private nextId = 1;
   private themeChosen = false;
@@ -163,6 +165,7 @@ class SceneMode {
   private activate(target: SceneTarget): void {
     store.sceneSurface = this.surface;
     store.log = null;
+    this.orphaned = [];
     this.version = null;
     // A native app opens its own window: its log pane starts closed unless the human opened it before.
     const dock = target === "native" && readDock().open === undefined ? { ...this.state.dock, open: this.state.terminal.running } : this.state.dock;
@@ -196,6 +199,8 @@ class SceneMode {
   private receive(p: ScenePayload): void {
     const fresh = { file: p.file, loadError: null };
     if (!p.exists || !p.scene) {
+      // Gone for a moment (the agent deletes and writes it again): its unsent edits wait for it to come back.
+      if (store.log?.entries.length) this.orphaned = store.log.entries;
       store.log = null;
       this.version = null;
       this.set({ ...fresh, status: "missing", errors: [], invalid: null, editing: null });
@@ -212,7 +217,8 @@ class SceneMode {
     const extras = p.extras ?? {};
     const log = store.log;
     // The file now says exactly what is on screen: only the notes for the AI are left to replay.
-    const entries = !log ? [] : sameScene(p.scene, log.scene) ? notesOnly(log.entries) : log.entries;
+    const entries = !log ? this.orphaned : sameScene(p.scene, log.scene) ? notesOnly(log.entries) : log.entries;
+    this.orphaned = [];
     this.adopt(p.scene, entries);
     const theme = !this.themeChosen && extras.theme ? { theme: extras.theme } : {};
     this.set({ ...fresh, ...theme, status: "ready", invalid: null, errors: p.errors ?? [], extras });
@@ -315,8 +321,14 @@ class SceneMode {
         return res;
       }
       if (res.status !== 409) return res;
+      const refused = ((await res.json().catch(() => ({}))) as { error?: string }).error;
+      const was = this.version;
       await this.reload();
-      const message = `${this.state.file} changed on disk while you were editing. Glimpse loaded the new version and replayed your edits on it: check them and try again.`;
+      // Only a new version on disk is news; a file that is still broken keeps the server's reason.
+      const message =
+        this.version !== was && !this.state.invalid
+          ? `${this.state.file} changed on disk while you were editing. Glimpse loaded the new version and replayed your edits on it: check them and try again.`
+          : (refused ?? `${this.state.file} can't be written right now.`);
       return new Response(JSON.stringify({ error: message }), { status: 409, headers: { "content-type": "application/json" } });
     } finally {
       this.writing--;
@@ -331,9 +343,14 @@ class SceneMode {
     }
   }
 
-  /** Extra body fields for Edit source and Send to AI: the edited scene and the version it is based on. */
-  body(): { scene?: Scene; sceneVersion?: string } {
+  /**
+   * Extra body fields for Edit source and Send to AI: the edited scene and the version it is based on. A handoff
+   * while the file isn't valid JSON goes without it (nothing can be written into the file), so notes and edits
+   * still reach the agent, as instructions.
+   */
+  body(opts: { handoff?: boolean } = {}): { scene?: Scene; sceneVersion?: string } {
     if (!this.state.active || !store.log) return {};
+    if (opts.handoff && this.state.invalid) return {};
     return { scene: store.log.scene, ...(this.version !== null && { sceneVersion: this.version }) };
   }
 

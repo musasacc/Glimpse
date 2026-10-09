@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
 import { followMoves, followOps, isVitePage, repeatedSources, undoAll } from "./hmr";
+import { shownPane } from "./scene-geometry";
 import { domSurface, type Surface } from "./surface";
 
 export type Device = "desktop" | "tablet" | "mobile";
@@ -104,6 +105,11 @@ class Store {
   private heldTimer: ReturnType<typeof setTimeout> | undefined;
   /** React pages: edits already handed off. They stay on screen until React next updates the page. */
   private sent: OpLog[] = [];
+  /**
+   * React pages in Interact mode: the unsent edits, recorded on the scene only, while the app runs on the DOM
+   * React made (see interact). Counting and sending them works as usual; they come back on leaving the mode.
+   */
+  private frozen: OpLog | null = null;
   private listeners = new Set<() => void>();
   private activitySeq = 0;
 
@@ -140,6 +146,13 @@ class Store {
    */
   attach(doc: Document): void {
     // React renders a reloaded page anew, reusing nothing; follow the elements as after an update.
+    if (this.frozen && this.log === this.frozen) {
+      // Interacting: the edits stay off the new page until editing resumes.
+      this.sent = [];
+      this.bridge = new DomBridge(doc);
+      this.set({});
+      return;
+    }
     const before = isVitePage(doc) ? (this.heldBase ?? this.log?.base ?? null) : null;
     const pending = this.unsent();
     this.sent = [];
@@ -171,6 +184,12 @@ class Store {
    */
   beforeUpdate(): void {
     if (!this.bridge || this.held) return;
+    if (this.frozen) {
+      // Interacting: the unsent edits are already off the page.
+      for (const log of this.sent.reverse()) undoAll(log);
+      this.sent = [];
+      return;
+    }
     this.held = [...(this.log?.entries ?? [])];
     this.heldBase = this.log?.base ?? null;
     if (this.log) undoAll(this.log);
@@ -193,9 +212,34 @@ class Store {
   commitHandoff(): void {
     if (!this.surface) return;
     // React still renders the page without them: they come off before its next update (see beforeUpdate).
-    if (this.log?.canUndo && this.isVitePage) this.sent.push(this.log);
+    if (this.log?.canUndo && this.isVitePage && this.log !== this.frozen) this.sent.push(this.log);
     this.log = this.newLog();
     this.set({ stale: false });
+  }
+
+  /**
+   * React pages, Interact mode: the app runs, and its own state updates (a click, a timer, a fetch) reconcile
+   * against the DOM just like an HMR update, so the edits come off the page (React would otherwise trip over
+   * elements the editor removed or moved) and are replayed on whatever the app shows when editing resumes.
+   */
+  interact(on: boolean): void {
+    if (on) {
+      const log = this.log;
+      if (this.frozen || !log || !this.isVitePage || this.held) return;
+      const frozen = new OpLog(log.base);
+      for (const entry of log.entries) frozen.apply(...entry.ops);
+      undoAll(log);
+      for (const sent of this.sent.reverse()) undoAll(sent);
+      this.sent = [];
+      this.log = this.frozen = frozen;
+      this.set({ hovered: null });
+      return;
+    }
+    const frozen = this.frozen;
+    if (!frozen) return;
+    this.frozen = null;
+    // Sent or discarded meanwhile: nothing to put back.
+    if (this.log === frozen && this.bridge) this.rebase(frozen.entries, frozen.base);
   }
 
   /**
@@ -324,7 +368,7 @@ class Store {
    * the page from source. `attach` then starts a fresh log with nothing to replay.
    */
   discard(): void {
-    this.log = null;
+    this.log = this.frozen = null;
     this.held = this.heldBase = null;
     this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
@@ -337,10 +381,20 @@ class Store {
     const scene = this.scene;
     const surface = this.surface;
     if (!scene || !surface) return;
-    const sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
+    let sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
+    let into = !!sel && surface.isContainer(sel);
+    // A tabs node (mocks) draws one pane, its children: a new widget goes into the shown pane, or next to
+    // the tabs, never in as another pane nobody would see.
+    if (sel?.type === "tabs") {
+      const pane = scene.nodes[shownPane(sel) ?? ""];
+      into = !!pane && surface.isContainer(pane);
+      if (pane && into) sel = pane;
+    } else if (!into && sel?.parent && scene.nodes[sel.parent]?.type === "tabs") {
+      sel = scene.nodes[sel.parent];
+    }
     let parent = scene.rootId;
     let index = scene.nodes[scene.rootId]!.children.length;
-    if (sel && surface.isContainer(sel)) {
+    if (sel && into) {
       parent = sel.id;
       index = sel.children.length;
     } else if (sel?.parent) {

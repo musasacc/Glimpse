@@ -350,6 +350,20 @@ describe("patchJsx: structure", () => {
 `);
   });
 
+  it("leaves an add to the AI when its neighbour can't be placed here", () => {
+    const add = (anchor: Change["anchor"], repeated: string[] = []) =>
+      patchJsx(APP, [{ op: "add", parent: "nav", index: 0, src: nav, anchor, nodes: [node("n", "nav", { tag: "button", props: { text: "Home" } })] }], { file: F, repeated });
+    // Goes first, before an element of another file (a component's): not at the end.
+    expect(add({ before: "src/NavLink.tsx:3:10" }).failed).toHaveLength(1);
+    // Next to a list item from .map() or another repeated element: the AI adds it to that logic.
+    expect(add({ after: maple }, [maple]).failed).toHaveLength(1);
+    expect(add({ before: glazed }, [glazed]).failed).toHaveLength(1);
+    // An `after` from elsewhere still means "at the end".
+    const { after, ok } = add({ after: "src/NavLink.tsx:3:10" });
+    expect(ok).toHaveLength(1);
+    expect(after).toContain('Maple</button>\n        <button>Home</button>\n      </nav>');
+  });
+
   it("opens up a self-closing parent to add a child", () => {
     const code = "const a = (\n  <div className=\"x\" />\n);\n";
     const { after } = patchJsx(

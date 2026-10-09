@@ -3,7 +3,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { InlineConfig, ViteDevServer } from "vite";
+import type { InlineConfig, Plugin, ViteDevServer } from "vite";
 import { glimpseVitePlugin } from "./vite-plugin.js";
 
 type ViteModule = typeof import("vite");
@@ -67,6 +67,18 @@ export async function createReactPreview(opts: ReactPreviewOptions): Promise<Rea
   // Vite 8 moved the HMR websocket options from server.hmr to server.ws (the old key still works, with a warning).
   const major = Number.parseInt(viteVersion, 10) || 0;
   const ws = major >= 8 ? { ws: { server: opts.httpServer } } : { hmr: { server: opts.httpServer } };
+  // The websocket attaches to Glimpse's server, so the project's own HMR address settings (a clientPort for
+  // Docker or Codespaces, a host, port or path) would send the client somewhere nobody listens. Vite merges
+  // them into the inline config, and an undefined there doesn't override, so they are cleared once resolved.
+  const hmrAddress: Plugin = {
+    name: "glimpse:hmr-address",
+    configResolved(resolved) {
+      const server = resolved.server as { ws?: unknown; hmr?: unknown };
+      const options = major >= 8 ? server.ws : server.hmr;
+      if (!options || typeof options !== "object") return;
+      for (const key of ["protocol", "host", "port", "clientPort", "path"]) delete (options as Record<string, unknown>)[key];
+    },
+  };
 
   let config: InlineConfig = {
     root: dir,
@@ -74,7 +86,7 @@ export async function createReactPreview(opts: ReactPreviewOptions): Promise<Rea
     appType: "spa",
     server: { middlewareMode: true, ...ws },
     // Paths relative to the project, as Edit source resolves them.
-    plugins: [glimpseVitePlugin({ root: dir })],
+    plugins: [glimpseVitePlugin({ root: dir }), hmrAddress],
     clearScreen: false,
     logLevel: "warn",
   };

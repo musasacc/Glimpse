@@ -95,7 +95,9 @@ export async function ptyAvailable(): Promise<boolean> {
 function fixSpawnHelper(): void {
   if (process.platform !== "darwin") return;
   try {
-    const root = dirname(dirname(createRequire(import.meta.url).resolve("node-pty")));
+    // Inside the desktop app the package resolves into app.asar, but its helpers run from app.asar.unpacked
+    // (as node-pty itself maps them): fix the real file, not the archive's.
+    const root = dirname(dirname(createRequire(import.meta.url).resolve("node-pty"))).replace(/app\.asar(?=[\\/])/, "app.asar.unpacked");
     for (const helper of [join(root, "build", "Release", "spawn-helper"), join(root, "prebuilds", `darwin-${process.arch}`, "spawn-helper")]) {
       if (existsSync(helper) && (statSync(helper).mode & 0o111) === 0) chmodSync(helper, 0o755);
     }
