@@ -1,7 +1,9 @@
 // Launch the real desktop app and check it end to end:
-//   1. no folder argument → the launcher opens, and its preload API answers (window.glimpse.recent())
+//   1. no folder argument → the home window opens (greeting, composer, folder chip, AI chip) and its preload API
+//      answers (window.glimpse.recent(), aiInfo() without the API key)
 //   2. a folder argument  → a Glimpse server starts for it (.glimpse/server.json), the project window loads the
-//      editor from it, the folder lands in recent projects, and quitting stops the server again.
+//      editor from it, the folder lands in recent projects; closing the project windows brings the home window
+//      back, and quitting stops the servers again.
 //
 //   node scripts/smoke.mjs              run the dev build (dist/, via the electron package)
 //   node scripts/smoke.mjs --packaged   run the unpacked app from release/ (npm run dist -- --dir)
@@ -65,7 +67,7 @@ async function launch(extraArgs) {
   const port = await freePort();
   const args = [...pre, `--remote-debugging-port=${port}`, ...(process.platform === "linux" ? ["--no-sandbox"] : []), ...extraArgs];
   const child = spawn(cmd, args, {
-    env: { ...process.env, GLIMPSE_USER_DATA_DIR: userData, ELECTRON_ENABLE_LOGGING: "1" },
+    env: { ...process.env, GLIMPSE_USER_DATA_DIR: userData, GLIMPSE_CONFIG_DIR: join(work, "config"), ELECTRON_ENABLE_LOGGING: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -146,28 +148,58 @@ const running = [];
 async function main() {
   console.log(`glimpse-desktop smoke test (${values.packaged ? "packaged app" : "dev build"}) in ${work}`);
 
-  step("launch without a folder → launcher");
+  step("launch without a folder → home window");
   const first = await launch([]);
   running.push(first);
-  const launcherPage = await waitFor("the launcher window", async () => (await pages(first)).find((t) => t.url.endsWith("/launcher/index.html")), first);
-  ok(`launcher loaded (${launcherPage.url.replace(/^.*\/dist\//, "dist/")})`);
+  const launcherPage = await waitFor("the home window", async () => (await pages(first)).find((t) => t.url.endsWith("/launcher/index.html")), first);
+  ok(`home loaded (${launcherPage.url.replace(/^.*\/dist\//, "dist/")})`);
   const launcherCdp = await cdp(launcherPage);
   if (launcherCdp) {
     const state = await waitFor(
-      "the launcher to render",
+      "the home window to render",
       () =>
         launcherCdp.evaluate(
-          `(async () => document.querySelector("#version")?.textContent ? { recent: await window.glimpse.recent(), version: document.querySelector("#version").textContent, node: typeof require } : undefined)()`,
+          `(async () => {
+            const $ = (s) => document.querySelector(s);
+            if (!$("#version")?.textContent || $("#ai-label")?.textContent === "Checking AI…") return undefined;
+            return {
+              recent: await window.glimpse.recent(),
+              ai: await window.glimpse.aiInfo(),
+              folder: await window.glimpse.folder(),
+              version: $("#version").textContent,
+              greeting: $("#greeting").textContent,
+              composer: !!$("textarea#prompt") && $("#prompt").placeholder,
+              folderChip: $("#folder-name").textContent,
+              target: $("#target-btn").textContent.trim(),
+              ideas: document.querySelectorAll("#ideas .idea").length,
+              aiLabel: $("#ai-label").textContent,
+              send: !!$("#send"),
+              width: window.innerWidth,
+              node: typeof require,
+            };
+          })()`,
         ),
       first,
     );
     assert(Array.isArray(state.recent), "window.glimpse.recent() didn't return a list");
-    assert(state.node === "undefined", "the launcher page can reach Node's require");
+    assert(state.node === "undefined", "the home page can reach Node's require");
     ok(`preload API works (${state.version}, ${state.recent.length} recent projects); no Node globals in the page`);
+    assert(/^(Up late|Morning|Afternoon|Evening), what are we building\?$/.test(state.greeting), `greeting: ${state.greeting}`);
+    assert(state.composer === "Describe the UI you want…" && state.send, "no composer");
+    assert(state.folderChip === "No folder" && state.folder === null, `folder chip: ${state.folderChip}`);
+    assert(state.target === "Website" && state.ideas === 4, `target ${state.target}, ${state.ideas} ideas`);
+    assert(state.ai && typeof state.ai.label === "string" && state.aiLabel === state.ai.label, `AI chip: ${JSON.stringify(state.ai)}`);
+    assert(!("anthropicApiKey" in state.ai), "aiInfo() exposes the API key");
+    assert(state.width >= 880, `home window is ${state.width}px wide`);
+    ok(`home: "${state.greeting}", composer, folder chip "${state.folderChip}", target ${state.target}, AI chip "${state.aiLabel}" (${state.width}px wide)`);
     if (shots) {
       await sleep(300);
-      await launcherCdp.screenshot(join(shots, "launcher.png"));
-      ok(`screenshot ${join(shots, "launcher.png")}`);
+      await launcherCdp.screenshot(join(shots, "home.png"));
+      ok(`screenshot ${join(shots, "home.png")}`);
+      await launcherCdp.evaluate(`document.querySelector("#ai-chip").click()`);
+      await sleep(400);
+      await launcherCdp.screenshot(join(shots, "home-ai-settings.png"));
+      ok(`screenshot ${join(shots, "home-ai-settings.png")}`);
     }
     launcherCdp.close();
   }
@@ -246,6 +278,22 @@ async function main() {
   assert(info2.pid === info.pid && info2.url !== info.url, `second folder: ${JSON.stringify(info2)}`);
   await waitFor("its window", async () => (await pages(second)).find((t) => t.url.startsWith(info2.url)), second);
   ok(`the running app opened it in a new window with its own server (${info2.url})`);
+
+  step("close the project windows → the home window comes back");
+  for (const url of [info.url, info2.url]) {
+    const page = (await pages(second)).find((t) => t.url.startsWith(url));
+    const c = page && (await cdp(page));
+    if (!c) continue;
+    // The page may go away before it answers.
+    await Promise.race([c.evaluate("window.close(), true").catch(() => undefined), sleep(1500)]);
+    c.close();
+  }
+  if (typeof WebSocket !== "undefined") {
+    await waitFor("the home window", async () => (await pages(second)).find((t) => t.url.endsWith("/launcher/index.html")), second, 20_000);
+    assert(!(await pages(second)).some((t) => t.url.startsWith(info.url) || t.url.startsWith(info2.url)), "a project window is still open");
+    assert(second.child.exitCode === null, "the app quit when its last project window closed");
+    ok("home window shown again after the last project window closed");
+  }
 
   const code2 = await quit(second);
   assert(code2 !== "timeout", "the app didn't quit on request");

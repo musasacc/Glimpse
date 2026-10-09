@@ -1,5 +1,5 @@
-// Glimpse desktop: a launcher with recent projects, and one window per project folder, each showing the
-// Glimpse editor served by an in-process Glimpse server (the glimpse-ui library bundled in app/glimpse).
+// Glimpse desktop: a home window (describe what to build, recent projects), and one window per project folder, each
+// showing the Glimpse editor served by an in-process Glimpse server (the glimpse-ui library bundled in app/glimpse).
 import { existsSync, statSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -18,8 +18,16 @@ import {
   type MenuItemConstructorOptions,
   type WebContents,
 } from "electron";
-import { startGlimpse, VERSION as GLIMPSE_VERSION, withProjectLock } from "../app/glimpse/lib.js";
-import { IPC, type AppInfo, type RecentEntry } from "./api.js";
+import {
+  detectAgents,
+  loadAgentSettings,
+  saveAgentSettings,
+  startGlimpse,
+  VERSION as GLIMPSE_VERSION,
+  withProjectLock,
+} from "../app/glimpse/lib.js";
+import { IPC, type AiInfo, type AppInfo, type FolderChoice, type HomeRequest, type RecentEntry, type SendResult } from "./api.js";
+import { aiInfo, parseRequest, parseSaveAi, postRequest, projectSlug, uniqueFolder } from "./home.js";
 import { chromeScript, desktopPlatform, fullscreenScript, MAC_TRAFFIC_LIGHTS, MCP_SETUP } from "./chrome.js";
 import { canonicalDir, dirKey, folderName } from "./paths.js";
 import { ProjectServers } from "./projects.js";
@@ -72,6 +80,11 @@ const servers = new ProjectServers({
 const projectWindows = new Map<string, BrowserWindow>();
 const opening = new Map<string, Promise<void>>();
 let launcher: BrowserWindow | null = null;
+/** The home composer's folder chip: where the next request is built (null: ask for a new folder on send). */
+let chosenFolder: string | null = null;
+/** Which kind of window closed last: when it was a project, the home window comes back instead of the app quitting. */
+let lastClosed: "home" | "project" | null = null;
+let quitting = false;
 /** Folders asked for before the app was ready (argv, macOS open-file). */
 const queued: string[] = [];
 let ready = false;
@@ -115,31 +128,41 @@ async function start(): Promise<void> {
 }
 
 app.on("window-all-closed", () => {
+  if (!quitting && lastClosed === "project") {
+    lastClosed = null;
+    showLauncher();
+    return;
+  }
   if (!isMac) app.quit();
 });
 
 let shutDown = false;
 app.on("before-quit", (event) => {
-  if (shutDown || servers.size === 0) return;
+  quitting = true;
+  if (shutDown || !servers.active) return;
   event.preventDefault();
   shutDown = true;
   const timeout = new Promise((r) => setTimeout(r, 5000));
   void Promise.race([servers.closeAll(), timeout]).finally(() => app.quit());
 });
 
-// ── Launcher ─────────────────────────────────────────────────────────────────
+// ── Home window ──────────────────────────────────────────────────────────────
 
+/** The home window (the "launcher"): describe what to build, or open a recent project. */
 function showLauncher(): void {
   if (launcher && !launcher.isDestroyed()) {
     if (launcher.isMinimized()) launcher.restore();
     launcher.focus();
     return;
   }
+  const area = screen.getPrimaryDisplay().workAreaSize;
+  const minWidth = Math.min(900, area.width);
+  const minHeight = Math.min(600, area.height);
   const win = new BrowserWindow({
-    width: 760,
-    height: 540,
-    minWidth: 560,
-    minHeight: 440,
+    width: Math.max(minWidth, Math.min(1100, area.width)),
+    height: Math.max(minHeight, Math.min(720, area.height)),
+    minWidth,
+    minHeight,
     title: "Glimpse",
     backgroundColor: "#000000",
     show: false,
@@ -157,6 +180,7 @@ function showLauncher(): void {
   win.once("ready-to-show", () => win.show());
   win.on("closed", () => {
     if (launcher === win) launcher = null;
+    lastClosed = "home";
   });
   lockDown(win.webContents, null);
   void win.loadFile(join(here, "launcher", "index.html"));
@@ -166,7 +190,7 @@ function notifyLauncher(): void {
   if (launcher && !launcher.isDestroyed()) launcher.webContents.send(IPC.recentChanged);
 }
 
-/** IPC is only answered for the launcher page; project windows have no preload and can't reach it anyway. */
+/** IPC is only answered for the home page; project windows have no preload and can't reach it anyway. */
 function registerIpc(): void {
   const fromLauncher = (event: IpcMainInvokeEvent) => !!launcher && !launcher.isDestroyed() && event.sender === launcher.webContents;
   const handle = (channel: string, fn: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown) =>
@@ -180,7 +204,6 @@ function registerIpc(): void {
     recent.withStatus().map((p) => ({ ...p, open: projectWindows.has(dirKey(p.path)) })),
   );
   handle(IPC.openFolder, () => openFolderDialog());
-  handle(IPC.newProject, () => newProjectDialog());
   handle(IPC.openRecent, (_e, path) => {
     // Only folders the user picked before, never an arbitrary path from the page.
     if (typeof path !== "string" || !recent.has(path)) throw new Error("Not a recent project");
@@ -192,6 +215,133 @@ function registerIpc(): void {
     buildMenu();
     notifyLauncher();
   });
+  handle(IPC.folder, (): FolderChoice | null => folderChoice());
+  handle(IPC.pickFolder, (event) => pickFolder(event));
+  handle(IPC.clearFolder, () => {
+    chosenFolder = null;
+  });
+  handle(IPC.send, (event, request) => sendRequest(event, parseRequest(request)));
+  handle(IPC.aiInfo, () => currentAiInfo());
+  handle(IPC.saveAi, async (_e, patch) => {
+    await saveAgentSettings(parseSaveAi(patch));
+    return currentAiInfo();
+  });
+}
+
+// ── Home: building something ─────────────────────────────────────────────────
+
+function folderChoice(): FolderChoice | null {
+  return chosenFolder ? { path: chosenFolder, name: folderName(chosenFolder) } : null;
+}
+
+/** Where Glimpse suggests saving new projects: ~/Documents/Glimpse (created on first use). */
+async function projectsHome(): Promise<string> {
+  const dir = join(app.getPath("documents"), "Glimpse");
+  await mkdir(dir, { recursive: true }).catch(() => undefined);
+  return isDir(dir) ? dir : app.getPath("documents");
+}
+
+/** The composer's folder chip: the folder the next request is built in (an existing project, or any folder). */
+async function pickFolder(event: IpcMainInvokeEvent): Promise<FolderChoice | null> {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  const options: Electron.OpenDialogOptions = {
+    title: "Choose the project folder",
+    buttonLabel: "Choose",
+    defaultPath: chosenFolder ?? (await projectsHome()),
+    properties: ["openDirectory", "createDirectory", "promptToCreate"],
+  };
+  const res = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+  const dir = res.canceled ? undefined : res.filePaths[0];
+  if (!dir) return null;
+  await mkdir(dir, { recursive: true }); // promptToCreate (Windows) may name a folder that doesn't exist yet
+  chosenFolder = canonicalDir(dir);
+  return folderChoice();
+}
+
+/**
+ * A new project (no folder chosen): a save dialog names its folder, suggested from the request
+ * (~/Documents/Glimpse/landing-page). Undefined when cancelled.
+ */
+async function askNewProjectFolder(parent: BrowserWindow | null, text: string): Promise<string | undefined> {
+  const suggested = uniqueFolder(await projectsHome(), projectSlug(text), existsSync);
+  const options: Electron.SaveDialogOptions = {
+    title: "Choose where to save this project",
+    message: "Glimpse creates a folder with this name for your project.",
+    nameFieldLabel: "Project name:",
+    buttonLabel: "Create Project",
+    defaultPath: suggested,
+    properties: ["createDirectory", "showOverwriteConfirmation"],
+  };
+  const res = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+  const dir = res.canceled ? undefined : res.filePath;
+  if (!dir) return undefined;
+  if (existsSync(dir) && !isDir(dir)) {
+    await message(parent, { type: "warning", message: `“${folderName(dir)}” is a file`, detail: "Choose another name for the project folder." });
+    return undefined;
+  }
+  if (isDir(dir)) {
+    const entries = (await readdir(dir)).filter((name) => !/^(\.DS_Store|Thumbs\.db|desktop\.ini|\.glimpse)$/i.test(name));
+    if (entries.length) {
+      const choice = await message(parent, {
+        type: "question",
+        message: `“${folderName(dir)}” already exists`,
+        detail: "Glimpse will build in it, next to the files that are there.",
+        buttons: ["Use This Folder", "Cancel"],
+        defaultId: 0,
+        cancelId: 1,
+      });
+      if (choice.response !== 0) return undefined;
+    }
+  }
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function message(parent: BrowserWindow | null, options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  return parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options);
+}
+
+/**
+ * The home composer's send: build in the chosen folder, or in a new one the user names. Opens the project's window
+ * (starting its Glimpse server) and hands the request to that server, which runs the AI; the editor shows it live.
+ */
+async function sendRequest(event: IpcMainInvokeEvent, request: HomeRequest): Promise<SendResult> {
+  const parent = BrowserWindow.fromWebContents(event.sender);
+  let dir: string | undefined;
+  if (chosenFolder) {
+    if (!isDir(chosenFolder)) {
+      const gone = chosenFolder;
+      chosenFolder = null;
+      return { status: "failed", message: `${gone} can't be found anymore. Choose another folder, or send again to start a new project.` };
+    }
+    dir = chosenFolder;
+  } else {
+    try {
+      dir = await askNewProjectFolder(parent, request.text);
+    } catch (err) {
+      return { status: "failed", message: `Couldn't create the folder: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!dir) return { status: "canceled" };
+  }
+  // Home stays open until the request is handed over, so nothing typed is lost if that fails.
+  await openProject(dir, { closeHome: false });
+  const project = servers.get(dir);
+  if (!project || !projectWindows.has(dirKey(dir))) return { status: "failed", message: `Couldn't open “${folderName(dir)}”.` };
+  try {
+    await postRequest(project.url, request);
+  } catch (err) {
+    return { status: "failed", message: `“${folderName(dir)}” is open, but the request didn't go through: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  chosenFolder = null;
+  if (launcher && !launcher.isDestroyed()) launcher.close();
+  return { status: "sent", folder: dir };
+}
+
+/** What builds requests, without the API key. Detection needs the login shell's PATH (claude, codex). */
+async function currentAiInfo(): Promise<AiInfo> {
+  await Promise.race([shellEnv, new Promise((r) => setTimeout(r, 3000))]);
+  const settings = await loadAgentSettings();
+  return aiInfo(settings, await detectAgents(settings));
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -239,36 +389,8 @@ async function openFolderDialog(): Promise<void> {
   if (!res.canceled && res.filePaths[0]) await openProject(res.filePaths[0]);
 }
 
-async function newProjectDialog(): Promise<void> {
-  const parent = BrowserWindow.getFocusedWindow();
-  const options: Electron.OpenDialogOptions = {
-    title: "New project: choose or create an empty folder",
-    message: "Choose or create an empty folder for the new project.",
-    buttonLabel: "Create Project",
-    defaultPath: app.getPath("documents"),
-    properties: ["openDirectory", "createDirectory", "promptToCreate"],
-  };
-  const res = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
-  const dir = res.canceled ? undefined : res.filePaths[0];
-  if (!dir) return;
-  await mkdir(dir, { recursive: true });
-  const entries = (await readdir(dir)).filter((name) => !/^(\.DS_Store|Thumbs\.db|desktop\.ini|\.glimpse)$/i.test(name));
-  if (entries.length) {
-    const choice = await dialog.showMessageBox({
-      type: "question",
-      message: `“${folderName(dir)}” isn't empty`,
-      detail: "Glimpse will open it as an existing project instead of starting from scratch.",
-      buttons: ["Open Anyway", "Cancel"],
-      defaultId: 0,
-      cancelId: 1,
-    });
-    if (choice.response !== 0) return;
-  }
-  await openProject(dir);
-}
-
 /** Open (or focus) the window for a project folder, starting its Glimpse server if needed. */
-function openProject(dirArg: string): Promise<void> {
+function openProject(dirArg: string, { closeHome = true }: { closeHome?: boolean } = {}): Promise<void> {
   const dir = canonicalDir(dirArg);
   const key = dirKey(dir);
   const existing = projectWindows.get(key);
@@ -284,7 +406,7 @@ function openProject(dirArg: string): Promise<void> {
   }
   const inFlight = opening.get(key);
   if (inFlight) return inFlight;
-  const task = createProjectWindow(dir, key)
+  const task = createProjectWindow(dir, key, closeHome)
     .catch((err: unknown) => {
       dialog.showErrorBox(`Couldn't open “${folderName(dir)}”`, err instanceof Error ? err.message : String(err));
     })
@@ -316,7 +438,7 @@ async function reopenIfStopped(dir: string, win: BrowserWindow): Promise<void> {
   });
 }
 
-async function createProjectWindow(dir: string, key: string): Promise<void> {
+async function createProjectWindow(dir: string, key: string, closeHome = true): Promise<void> {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`The folder ${dir} doesn't exist (anymore).`);
   const project = await servers.open(dir);
 
@@ -346,6 +468,7 @@ async function createProjectWindow(dir: string, key: string): Promise<void> {
   win.on("page-title-updated", (event) => event.preventDefault());
   win.on("closed", () => {
     projectWindows.delete(key);
+    lastClosed = "project";
     void servers.close(dir).catch(() => {});
     notifyLauncher();
   });
@@ -383,8 +506,8 @@ async function createProjectWindow(dir: string, key: string): Promise<void> {
   app.addRecentDocument(dir);
   buildMenu();
   notifyLauncher();
-  // The launcher's job is done once a project is open.
-  if (launcher && !launcher.isDestroyed()) launcher.close();
+  // Home's job is done once a project is open (it comes back when the last project window closes).
+  if (closeHome && launcher && !launcher.isDestroyed()) launcher.close();
 }
 
 function focusSomething(): void {
@@ -475,8 +598,7 @@ function buildMenu(): void {
   }));
   const help: MenuItemConstructorOptions[] = [
     { label: "Documentation", click: () => openExternal(DOCS.readme) },
-    { label: "Connect an Agent", click: () => openExternal(DOCS.agents) },
-    { label: "Copy MCP Command", click: () => copyMcpCommand() },
+    { label: "Use with an External Agent…", click: () => copyMcpCommand() },
     { type: "separator" },
     { label: "Desktop App Guide", click: () => openExternal(DOCS.desktop) },
     { label: "Report an Issue", click: () => openExternal(DOCS.issues) },
@@ -506,9 +628,8 @@ function buildMenu(): void {
               ]
             : [{ label: "No Recent Projects", enabled: false }],
         },
-        { label: "New Project…", accelerator: "CmdOrCtrl+Shift+N", click: () => void newProjectDialog() },
         { type: "separator" },
-        { label: "New Window", accelerator: "CmdOrCtrl+N", click: () => showLauncher() },
+        { label: "New Project…", accelerator: "CmdOrCtrl+N", click: () => showLauncher() },
         { label: "Close Window", accelerator: "CmdOrCtrl+W", role: "close" },
         ...(isMac ? [] : [{ type: "separator" as const }, { role: "quit" as const }]),
       ],

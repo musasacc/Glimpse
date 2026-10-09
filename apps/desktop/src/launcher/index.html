@@ -13,37 +13,92 @@
   </head>
   <body>
     <div class="drag" aria-hidden="true"></div>
-    <main class="launcher">
-      <section class="hero">
-        <img class="mark" src="mark.svg" width="72" height="72" alt="" />
-        <h1>Glimpse</h1>
-        <p class="tagline">See what your AI built. Change it with your hands. Hand it back.</p>
-        <div class="actions">
-          <button id="open-folder" class="btn primary" type="button">
-            <span>Open folder…</span><kbd data-shortcut="O"></kbd>
-          </button>
-          <button id="new-project" class="btn" type="button">
-            <span>New project…</span><kbd data-shortcut="Shift+N"></kbd>
-          </button>
+    <div class="app">
+      <aside class="side" aria-label="Projects">
+        <div class="brand">
+          <img class="brand-mark" src="mark.svg" width="28" height="28" alt="" />
+          <span class="brand-name">Glimpse</span>
         </div>
-        <p class="hint">
-          Open the folder your agent builds in, or start an empty project and describe the UI on Glimpse's home screen.
-        </p>
-      </section>
+        <button id="open-folder" class="side-btn" type="button" title="Open a project folder">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+          <span>Open folder…</span><kbd data-shortcut="O"></kbd>
+        </button>
+        <section class="recent" aria-labelledby="recent-title">
+          <h2 id="recent-title">Recent</h2>
+          <ul id="recent-list" class="recent-list"></ul>
+          <p id="recent-empty" class="empty" hidden>Projects you open or build show up here.</p>
+        </section>
+        <footer class="side-foot">
+          <span id="version"></span>
+          <a href="https://github.com/musasacc/Glimpse#readme" target="_blank" rel="noreferrer">Documentation</a>
+        </footer>
+      </aside>
 
-      <section class="recent" aria-labelledby="recent-title">
-        <h2 id="recent-title">Recent projects</h2>
-        <ul id="recent-list" class="recent-list"></ul>
-        <p id="recent-empty" class="empty" hidden>No recent projects yet.</p>
-      </section>
-    </main>
-    <footer class="footer">
-      <span id="version"></span>
-      <nav>
-        <a href="https://github.com/musasacc/Glimpse/blob/main/docs/agents.md" target="_blank" rel="noreferrer">Connect an agent</a>
-        <a href="https://github.com/musasacc/Glimpse#readme" target="_blank" rel="noreferrer">Documentation</a>
-      </nav>
-    </footer>
+      <main class="home">
+        <svg class="watermark" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+          <defs>
+            <mask id="watermark-gap" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+              <rect width="64" height="64" fill="#fff" />
+              <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="#000" stroke="#000" stroke-width="4.7" stroke-linejoin="round" />
+            </mask>
+          </defs>
+          <rect x="13" y="13" width="30" height="30" rx="7" fill="none" stroke="currentColor" stroke-width="1.2" mask="url(#watermark-gap)" />
+          <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
+        </svg>
+        <h1 id="greeting" class="greeting">What are we building?</h1>
+
+        <div class="composer">
+          <div class="composer-head">
+            <button id="folder-chip" class="ghost" type="button" title="Choose the folder to build in (optional)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
+              <span id="folder-name">No folder</span>
+            </button>
+            <button id="folder-clear" class="clear" type="button" title="Don't use this folder" aria-label="Don't use this folder" hidden>×</button>
+            <span id="folder-path" class="composer-path"></span>
+          </div>
+          <div class="composer-box">
+            <textarea id="prompt" rows="3" placeholder="Describe the UI you want…" aria-label="Describe the UI you want"></textarea>
+            <div class="composer-foot">
+              <button id="ai-chip" class="agent-chip" type="button" title="AI settings…">
+                <span class="agent-dot"></span><span id="ai-label">Checking AI…</span>
+              </button>
+              <div class="spacer"></div>
+              <div id="target-wrap" class="menu-wrap">
+                <button id="target-btn" class="ghost" type="button" aria-haspopup="menu" aria-expanded="false"></button>
+                <div id="target-menu" class="menu" role="menu" hidden></div>
+              </div>
+              <button id="send" class="send-btn" type="button" title="Send (Enter)" aria-label="Send" disabled>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <p id="notice" class="home-notice" role="status" hidden></p>
+
+        <div id="ideas" class="ideas"></div>
+        <p class="hint">Glimpse builds it with the AI on this machine and shows every change live.</p>
+      </main>
+    </div>
+
+    <div id="ai-panel" class="overlay" hidden>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="ai-title">
+        <header>
+          <h2 id="ai-title">AI settings</h2>
+          <p>Choose what builds your UI. Glimpse runs it on this machine and every file it saves shows up live.</p>
+        </header>
+        <div id="ai-options" class="ai-options" role="radiogroup" aria-label="What builds your UI"></div>
+        <div class="ai-key">
+          <span id="ai-key-saved" class="hint" hidden>The key is stored on this machine and never shown again.</span>
+          <input id="ai-key" class="input" type="password" autocomplete="off" spellcheck="false" aria-label="Anthropic API key" placeholder="sk-ant-…" />
+          <button id="ai-key-btn" class="btn" type="button">Save key</button>
+        </div>
+        <p id="ai-error" class="ai-error" role="alert" hidden></p>
+        <footer>
+          <button id="ai-cancel" class="btn" type="button">Cancel</button>
+          <button id="ai-save" class="btn primary" type="button">Save</button>
+        </footer>
+      </div>
+    </div>
     <script src="launcher.js"></script>
   </body>
 </html>

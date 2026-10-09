@@ -28,7 +28,7 @@ export function fullscreenScript(fullscreen: boolean): string {
   return `document.documentElement.toggleAttribute("data-glimpse-fullscreen", ${fullscreen ? "true" : "false"});`;
 }
 
-/** What Help › Copy MCP command puts on the clipboard. */
+/** What Help › Use with an External Agent… puts on the clipboard. */
 export const MCP_SETUP = `# Connect your AI agent to Glimpse (MCP). The agent finds the project you have open in the desktop app.
 
 # Claude Code

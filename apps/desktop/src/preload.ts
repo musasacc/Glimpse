@@ -1,4 +1,4 @@
-// Preload for the launcher window only (sandboxed, context-isolated): exposes exactly the launcher's IPC calls.
+// Preload for the home window only (sandboxed, context-isolated): exposes exactly the home window's IPC calls.
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC, type LauncherApi } from "./api.js";
 
@@ -6,7 +6,6 @@ const api: LauncherApi = {
   info: () => ipcRenderer.invoke(IPC.info),
   recent: () => ipcRenderer.invoke(IPC.recent),
   openFolder: () => ipcRenderer.invoke(IPC.openFolder),
-  newProject: () => ipcRenderer.invoke(IPC.newProject),
   openRecent: (path) => ipcRenderer.invoke(IPC.openRecent, String(path)),
   removeRecent: (path) => ipcRenderer.invoke(IPC.removeRecent, String(path)),
   onRecentChanged(listener) {
@@ -14,6 +13,16 @@ const api: LauncherApi = {
     ipcRenderer.on(IPC.recentChanged, handler);
     return () => void ipcRenderer.removeListener(IPC.recentChanged, handler);
   },
+  folder: () => ipcRenderer.invoke(IPC.folder),
+  pickFolder: () => ipcRenderer.invoke(IPC.pickFolder),
+  clearFolder: () => ipcRenderer.invoke(IPC.clearFolder),
+  send: (request) => ipcRenderer.invoke(IPC.send, { text: String(request?.text ?? ""), target: String(request?.target ?? "") }),
+  aiInfo: () => ipcRenderer.invoke(IPC.aiInfo),
+  saveAi: (patch) =>
+    ipcRenderer.invoke(IPC.saveAi, {
+      ...(patch?.engine !== undefined && { engine: String(patch.engine) }),
+      ...(patch?.anthropicApiKey !== undefined && { anthropicApiKey: patch.anthropicApiKey === null ? null : String(patch.anthropicApiKey) }),
+    }),
 };
 
 contextBridge.exposeInMainWorld("glimpse", api);

@@ -1,46 +1,63 @@
 # The Glimpse desktop app
 
 The desktop app (`apps/desktop`) is Glimpse in its own window: no terminal, no browser tab. It is an Electron app
-that runs the same Glimpse server and editor as `glimpse open`, with a launcher for your recent projects.
+that runs the same Glimpse server and editor as `glimpse open`, and opens to a home screen where you describe what to
+build.
 
 ## How it works
 
 ```
 Glimpse.app
 ├─ main process (dist/main.mjs)
-│   ├─ launcher window ── recent projects, Open folder…, New project…
+│   ├─ home window ── "what are we building?" composer, recent projects, Open folder…
 │   └─ one Glimpse server per project folder (in-process, port 4321 or a free one)
 │        └─ project window ── loads the editor from that server, like a browser would
 └─ app/glimpse/  the glimpse-ui bundle: library, CLI and built editor (copied from packages/cli/dist)
 ```
 
-- **Launcher.** On start (and from **File › New Window**) the app shows a black launcher with **Open folder…**,
-  **New project…** (pick or create an empty folder) and your recent projects. The recent list is a JSON file in the
-  app's user-data folder (`~/Library/Application Support/Glimpse/recent-projects.json` on macOS,
+- **Home.** On start (and from **File › New Project…**, and again when the last project window closes) the app
+  shows its home window, like the editor's Home: a greeting, a composer ("Describe the UI you want…") with a target
+  (Website, React app, Terminal app, Desktop app), suggestion chips, and on the left **Open folder…** and your recent
+  projects. No folder or agent setup comes first.
+- **Where it's saved.** The composer's folder chip reads **No folder** until you pick one. With a folder picked, the
+  request is built there (an existing project keeps its files). With none, sending asks **Choose where to save this
+  project** in a save dialog that suggests a folder named after the request (`~/Documents/Glimpse/landing-page`) and
+  creates it; cancelling changes nothing and keeps your text. The app then opens the project's window and the main
+  process hands the request to that folder's Glimpse server (`POST /api/request`, as the editor's Home does; from
+  the main process there is no Origin header, so the server treats it as a local tool like the CLI). The editor
+  shows the build live.
+- **AI.** The composer's engine chip shows what builds requests (Claude Code, Codex, Claude API, or **Set up AI**),
+  from glimpse-ui's `detectAgents()` and `loadAgentSettings()`. Clicking it opens AI settings (Auto, Claude Code,
+  Codex, Claude API key), saved with `saveAgentSettings` to Glimpse's global settings file; if nothing can build when
+  you send, the settings open first. The key never goes back to the page, only whether one is saved.
+- **Recent projects** are a JSON file in the app's user-data folder
+  (`~/Library/Application Support/Glimpse/recent-projects.json` on macOS,
   `%APPDATA%\Glimpse\recent-projects.json` on Windows, `~/.config/Glimpse/recent-projects.json` on Linux).
 - **Projects.** Opening a folder starts a Glimpse server for it inside the app (`startGlimpse` from `glimpse-ui`) and
   loads the editor in a 1440×900 window titled with the folder name. Each folder gets one window and one server;
   opening it again focuses the window. Closing the window, or quitting, stops its server.
 - **Agents find it.** Like `glimpse open`, the app writes `<project>/.glimpse/server.json` (URL, pid and the token
   that lets local tools run the app in Glimpse's terminal), so `glimpse wait` and the MCP server (`glimpse_open` with
-  that folder) talk to the window you have open. **Help › Copy MCP Command** copies
+  that folder) talk to the window you have open. **Help › Use with an External Agent…** copies
   the setup lines for Claude Code, Codex, Cursor and the rest (they use `npx -y glimpse-ui mcp`, so the agent's
   machine needs Node.js 20+).
 - **Already running elsewhere?** If `glimpse open` already serves the folder, the app shows that server instead of
   starting a second one (two servers on one project would hand out conflicting handoff numbers).
 - **Command line.** `Glimpse /path/to/project` (or dropping a folder on the Dock icon on macOS) opens that folder.
   A second launch hands its folder to the running app (single instance).
-- **Menus.** File (Open Folder…, Open Recent, New Project…, New Window, Close Window), Edit, View (reload, DevTools,
-  zoom, full screen), Window, Help (documentation, connecting an agent, Copy MCP Command).
+- **Menus.** File (Open Folder…, Open Recent, New Project… (the home window), Close Window), Edit, View (reload,
+  DevTools, zoom, full screen), Window, Help (documentation, Use with an External Agent…).
 
 ### Security
 
 Project windows load only the local Glimpse server, with `contextIsolation`, `sandbox` and no Node integration; they
 have no preload, so the page (and the preview of your project inside it) can't reach the app. The preview does share
 the editor's origin, so it can do what the editor can (see "HTTP API" in [agents.md](agents.md)): open projects you
-would also run. The launcher is a local
-page with a strict Content-Security-Policy and a sandboxed preload that exposes six IPC calls; the main process
-answers them only for the launcher and only opens folders the user picked or that are in the recent list.
+would also run. The home window is a local
+page with a strict Content-Security-Policy and a sandboxed preload (`window.glimpse`: recent projects, open/pick
+folder, send, AI info/settings); the main process answers only that page, checks every argument, keeps the chosen
+folder itself (the page can't name a path to build in) and only opens folders the user picked or that are in the
+recent list.
 Navigation away from the server's origin, `window.open` and `target=_blank` links open in the system browser.
 Permission requests are denied except the microphone (talk to an element), the clipboard and full screen, for the
 local server only.
@@ -82,8 +99,8 @@ npm start                           # build and run the app
 | `npm run build` | Copies `packages/cli/dist` to `app/glimpse` (`scripts/prepare.mjs`), bundles `src/` with esbuild into `dist/` |
 | `npm start` | Build, then `electron .` |
 | `npm run typecheck` | `tsc --noEmit` over `src/` and `test/` |
-| `npm test` | Unit tests without Electron: recent-projects store, server lifecycle against the real bundled library |
-| `npm run smoke` | Launches the app for real: launcher, a project window, server start/stop (Linux: `xvfb-run -a npm run smoke`) |
+| `npm test` | Unit tests without Electron: recent-projects store, home logic (AI info, request checks, folder names, a request to a real server), server lifecycle against the real bundled library |
+| `npm run smoke` | Launches the app for real: home window, a project window, home again after it closes, server start/stop (Linux: `xvfb-run -a npm run smoke`) |
 | `npm run dist -- --dir` | Unpacked app in `release/` (fast; what the Desktop workflow builds) |
 | `npm run smoke -- --packaged` | The smoke test against that unpacked app |
 | `npm run dist` | Installers for the current OS in `release/` |
