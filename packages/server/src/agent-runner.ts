@@ -37,8 +37,17 @@ export interface AgentRunnerDeps {
   /** The project folder: where the agent runs and the only place it writes. */
   dir: string;
   broadcast(msg: object): void;
-  /** An external agent is listening (it takes precedence). */
+  /** An external agent is listening right now (it takes precedence). */
   externalWaiting(): boolean;
+  /**
+   * An external agent (MCP, `glimpse wait`) is attached to this session, though perhaps busy with a request between
+   * two waits: "auto" then leaves new requests to it instead of starting a second agent in the same folder.
+   */
+  externalAttached?(): boolean;
+  /** Handoffs no agent has received yet (run when an engine becomes available). */
+  pending?(): Handoff[];
+  /** A run failed or was stopped: give the handoff back (not delivered), with why, so it can be retried or taken by an external agent. */
+  release?(h: Handoff, error: string): void;
   /** The current state of a handoff (it may have been delivered to an external agent or withdrawn meanwhile). */
   handoff(seq: number): Handoff | undefined;
   /** Mark it delivered (to the built-in agent). */
@@ -49,6 +58,10 @@ export interface AgentRunnerDeps {
   prompt(h: Handoff): string;
   /** Absolute path of the handoff's screenshot, if it has one. */
   screenshot(h: Handoff): string | undefined;
+  /** Absolute path of the screenshot of the UI before the human's edits, if it has one. */
+  screenshotBefore?(h: Handoff): string | undefined;
+  /** How long detected engines are cached (ms); tests shorten it. */
+  detectTtlMs?: number;
 }
 
 const DETECT_TTL_MS = 30_000;
@@ -93,36 +106,50 @@ class SignInError extends Error {
   }
 }
 
-/** The options this Codex accepts, from `codex exec --help` (they changed between versions). */
+/** The options this Codex accepts, from `codex exec --help` (they changed between versions). Only answers are cached. */
 const codexHelp = new Map<string, Promise<string>>();
 function readCodexHelp(bin: string): Promise<string> {
   let help = codexHelp.get(bin);
   if (!help) {
-    help = new Promise((resolve) => {
-      execFile(bin, ["exec", "--help"], { timeout: 5000, shell: process.platform === "win32", windowsHide: true }, (_err, stdout, stderr) =>
-        resolve(`${String(stdout)}\n${String(stderr)}`),
-      );
+    const windows = process.platform === "win32";
+    const probe = new Promise<string>((resolve) => {
+      // On Windows the .cmd shim runs through the shell: quote it, or a path with a space ("C:\Users\Jane Doe\…") splits.
+      execFile(windows ? `"${bin}"` : bin, ["exec", "--help"], { timeout: 10_000, shell: windows, windowsHide: true }, (err, stdout, stderr) => {
+        const text = `${String(stdout)}\n${String(stderr)}`;
+        // A failure or a timeout (a cold start) isn't this Codex's answer: ask again next time.
+        if (err || !/--/.test(text)) codexHelp.delete(bin);
+        resolve(text);
+      });
     });
+    help = probe;
     codexHelp.set(bin, help);
   }
   return help;
 }
 
-/** `codex exec` arguments for this Codex, and whether the prompt goes on stdin (Windows: no user text on a shell command line). */
+/** Above this the prompt goes on stdin on every platform (Linux caps one argument at 128 KiB; argv also shows in `ps`). */
+const MAX_PROMPT_ARG_BYTES = 100 * 1024;
+
+/**
+ * `codex exec` arguments for this Codex, and whether the prompt goes on stdin (Windows: no user text on a shell
+ * command line; elsewhere when the prompt is large).
+ */
 export async function codexArgs(bin: string, prompt: string, windows = process.platform === "win32"): Promise<{ args: string[]; stdin: boolean }> {
   const help = await readCodexHelp(bin);
   const args = ["exec"];
   for (const flag of ["--full-auto", "--skip-git-repo-check"]) if (help.includes(flag)) args.push(flag);
-  if (!windows) return { args: [...args, prompt], stdin: false };
+  if (!windows && Buffer.byteLength(prompt) <= MAX_PROMPT_ARG_BYTES) return { args: [...args, prompt], stdin: false };
   // Without a prompt argument (or with "-"), codex exec reads the instructions from stdin.
   if (/stdin/i.test(help) && /\B-\B|`-`|'-'/.test(help)) args.push("-");
   return { args, stdin: true };
 }
 
 /** Who handles a request, given the settings, what's installed and whether an external agent is listening. */
-export function resolveEngine(preferred: AgentEngine, available: DetectedAgents, externalWaiting: boolean): ResolvedEngine {
+export function resolveEngine(preferred: AgentEngine, available: DetectedAgents, externalWaiting: boolean, externalAttached = false): ResolvedEngine {
   // An agent that is listening always gets the request first (it is handed over before Glimpse would start anything).
   if (externalWaiting || preferred === "external") return "external";
+  // One attached to the session but busy (between two waits) gets it on its next wait: "auto" never starts a second agent next to it.
+  if (preferred === "auto" && externalAttached) return "external";
   if (preferred === "auto") return available.claude ? "claude" : available.codex ? "codex" : available.api ? "api" : "none";
   return available[preferred] ? preferred : "none";
 }
@@ -151,17 +178,37 @@ export class AgentRunner {
   private detecting: Promise<Detected> | undefined;
   /** Engines whose sign-in failed lately: "auto" skips them for a while. */
   private signedOut = new Map<"claude" | "codex", number>();
+  private readonly ttl: number;
+  /** Looks again for an engine while requests wait for one (a CLI installed, the login shell's PATH adopted). */
+  private readonly recheck: ReturnType<typeof setInterval>;
 
-  constructor(private readonly deps: AgentRunnerDeps) {}
+  constructor(private readonly deps: AgentRunnerDeps) {
+    this.ttl = deps.detectTtlMs ?? DETECT_TTL_MS;
+    this.recheck = setInterval(() => {
+      const pending = this.deps.pending?.() ?? [];
+      if (!this.closing && !this.current && pending.some((h) => this.runnable(h))) void this.enqueue(pending).catch(() => undefined);
+    }, this.ttl);
+    this.recheck.unref();
+  }
 
   /** Settings and detected engines, cached for a while (a CLI installed meanwhile shows up within 30 s). */
   private async detect(): Promise<Detected> {
-    if (this.detected && Date.now() - this.detected.at < DETECT_TTL_MS) return this.detected;
+    if (this.detected && Date.now() - this.detected.at < this.ttl) return this.detected;
     this.detecting ??= (async () => {
       try {
+        const before = this.detected;
         const settings = await loadAgentSettings();
         const [agents, ollama] = await Promise.all([detectAgents(settings), detectOllama(ollamaUrl(settings))]);
         this.detected = { at: Date.now(), settings, agents, ollama };
+        // An engine became available (or another one): requests that waited for one start now, and the editors hear of it.
+        if (before && !this.closing) {
+          const was = this.resolve(before.settings, before.agents);
+          const now = this.resolve(settings, agents);
+          if (was !== now) {
+            this.infoChanged();
+            if (isBuiltIn(now)) setTimeout(() => void this.enqueue(this.deps.pending?.() ?? []).catch(() => undefined), 0);
+          }
+        }
         return this.detected;
       } finally {
         this.detecting = undefined;
@@ -187,12 +234,12 @@ export class AgentRunner {
         else this.signedOut.delete(engine);
       }
     }
-    return resolveEngine(settings.engine, usable, this.deps.externalWaiting());
+    return resolveEngine(settings.engine, usable, this.deps.externalWaiting(), this.deps.externalAttached?.() ?? false);
   }
 
   async info(): Promise<AgentInfo> {
     const { settings, agents, ollama } = await this.detect();
-    const external = this.deps.externalWaiting();
+    const external = this.deps.externalWaiting() || (this.deps.externalAttached?.() ?? false);
     const run = this.current;
     return {
       engine: this.resolve(settings, agents),
@@ -222,7 +269,10 @@ export class AgentRunner {
     return r ? { seq: r.seq, engine: r.engine, startedAt: r.startedAt, output: [...r.output] } : null;
   }
 
-  /** A new handoff: run it with the built-in agent, unless an external agent took it or nothing can run it (it then waits). */
+  /**
+   * A new handoff: run it with the built-in agent, unless an external agent took it or nothing can run it (it then
+   * waits). One whose run failed or was stopped only runs again when retried (`retry`).
+   */
   async enqueue(handoffs: Handoff | Handoff[]): Promise<void> {
     const list = (Array.isArray(handoffs) ? handoffs : [handoffs]).filter((h) => this.runnable(h) && !this.queue.includes(h.seq) && this.current?.seq !== h.seq);
     if (list.length === 0 || this.closing) return;
@@ -234,7 +284,7 @@ export class AgentRunner {
   }
 
   private runnable(h: Handoff): boolean {
-    return !h.delivered && !h.cancelled && h.kind !== "source";
+    return !h.delivered && !h.cancelled && h.kind !== "source" && h.runError === undefined;
   }
 
   /** Stop the run in progress (the next queued one starts). False when nothing runs. */
@@ -248,6 +298,7 @@ export class AgentRunner {
   /** Glimpse is closing: drop the queue, stop the run and wait for it to end. */
   async close(): Promise<void> {
     this.closing = true;
+    clearInterval(this.recheck);
     this.queue = [];
     const run = this.current;
     if (run) {
@@ -312,13 +363,18 @@ export class AgentRunner {
       : settings.api.provider === "anthropic" ? this.runAnthropic(run, h, prompt, settings, model!)
       : this.runOpenAiCompatible(run, h, prompt, settings, model!);
     let fallback: BuiltInEngine | undefined;
+    /** Why the run didn't finish: the handoff then goes back to waiting, so the human's edits aren't lost. */
+    let failed: string | undefined;
     work
       .then((summary) => {
         if (run.stopped) throw new StoppedError();
         this.emit(run, "done", summary ? oneLine(summary) : undefined);
       })
       .catch(async (err: unknown) => {
-        if (run.stopped || err instanceof StoppedError) return this.emit(run, "error", "Stopped");
+        if (run.stopped || err instanceof StoppedError) {
+          failed = "Stopped";
+          return this.emit(run, "error", "Stopped");
+        }
         if (err instanceof SignInError) {
           this.signedOut.set(err.engine, Date.now());
           // "Auto" picked an engine that isn't signed in: hand the same request to the next one.
@@ -331,13 +387,15 @@ export class AgentRunner {
             }
           }
         }
-        this.emit(run, "error", describeError(err));
+        failed = describeError(err);
+        this.emit(run, "error", failed);
       })
       .finally(() => {
         this.deps.roundEnd();
         this.current = undefined;
         finish();
         if (fallback && !this.closing) return this.start(h, fallback, settings);
+        if (failed !== undefined && !this.closing) this.deps.release?.(h, failed);
         this.infoChanged();
         this.pump();
       });
@@ -360,6 +418,8 @@ export class AgentRunner {
 
   /** Run a CLI in the project folder with the prompt on stdin; resolves with its exit code. */
   private spawnCli(run: Run, bin: string, args: string[], prompt: string | undefined, onLine: (line: string, stream: "out" | "err") => void): Promise<number | null> {
+    // Stopped while getting ready (Codex's option probe takes seconds): nothing may start after that.
+    if (run.stopped) return Promise.reject(new StoppedError());
     const isWindows = process.platform === "win32";
     const env = baseEnv();
     // Started from inside a Claude Code session (MCP glimpse_open): the nested CLI is a session of its own.
@@ -477,6 +537,7 @@ export class AgentRunner {
     const bin = findAgentBinary("codex");
     if (!bin) throw new Error("Codex (the codex command) isn't installed");
     const { args, stdin } = await codexArgs(bin, prompt);
+    if (run.stopped) throw new StoppedError();
     let windowStart = 0;
     let inWindow = 0;
     let dropped = false;
@@ -543,14 +604,28 @@ export class AgentRunner {
     return shot ? await readFile(shot).catch(() => null) : null;
   }
 
+  /** The handoff's pictures for an API engine: the edited version, and the one before the edits when there is one. */
+  private async screenshots(h: Handoff): Promise<{ after: Buffer; before: Buffer | null } | null> {
+    const after = await this.screenshotPng(h);
+    if (!after) return null;
+    const shot = this.deps.screenshotBefore?.(h);
+    const before = shot ? await readFile(shot).catch(() => null) : null;
+    return { after, before };
+  }
+
   private async runAnthropic(run: Run, h: Handoff, prompt: string, settings: AgentSettings, model: string): Promise<string | undefined> {
     const apiKey = resolveApiKey(settings, "anthropic");
     if (!apiKey) throw new Error("No Anthropic API key: add one in Glimpse's AI settings");
     const client = new Anthropic({ apiKey });
     const tools = this.projectTools(h);
     const content: Anthropic.Beta.BetaContentBlockParam[] = [];
-    const png = await this.screenshotPng(h);
-    if (png) content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } });
+    const image = (png: Buffer): Anthropic.Beta.BetaContentBlockParam => ({ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } });
+    const shots = await this.screenshots(h);
+    if (shots?.before) {
+      content.push({ type: "text", text: BEFORE_LABEL }, image(shots.before), { type: "text", text: AFTER_LABEL }, image(shots.after));
+    } else if (shots) {
+      content.push(image(shots.after));
+    }
     content.push({ type: "text", text: prompt });
     const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
     // Haiku takes adaptive thinking but no effort setting.
@@ -638,13 +713,15 @@ export class AgentRunner {
       function: { name: t.name, description: t.description, parameters: t.schema },
     }));
     // Most local models can't see images: Ollama gets the text only.
-    const png = provider === "ollama" ? null : await this.screenshotPng(h);
+    const shots = provider === "ollama" ? null : await this.screenshots(h);
+    const image = (png: Buffer): OpenAI.Chat.Completions.ChatCompletionContentPart => ({ type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } });
+    const userContent: OpenAI.Chat.Completions.ChatCompletionContentPart[] | string =
+      shots?.before ? [{ type: "text", text: prompt }, { type: "text", text: BEFORE_LABEL }, image(shots.before), { type: "text", text: AFTER_LABEL }, image(shots.after)]
+      : shots ? [{ type: "text", text: prompt }, image(shots.after)]
+      : prompt;
     const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
       { role: "system", content: API_SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: png ? [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } }] : prompt,
-      },
+      { role: "user", content: userContent },
     ];
     const reasoning = (provider === "openai" && /^(o\d|gpt-5)/i.test(model)) || (provider === "gemini" && /gemini-(2\.5|[3-9])/i.test(model));
     let lastText = "";
@@ -749,6 +826,9 @@ export function apiInfo(settings: AgentSettings, ollama: OllamaStatus): AgentApi
     ollama: { baseUrl: ollamaUrl(settings), running: ollama.running, models: [...ollama.models] },
   };
 }
+
+const BEFORE_LABEL = "Before: the UI before the human's edits (screenshot):";
+const AFTER_LABEL = "After: the human's edited version (screenshot; numbered markers, if any, match the change list):";
 
 const API_SYSTEM_PROMPT = [
   "You build and change user interfaces for Glimpse, a visual editor that previews the project folder live.",

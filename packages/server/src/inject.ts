@@ -210,8 +210,12 @@ export const CLIENT_SCRIPT = String.raw`(() => {
     }
   }
 
+  // Saves can come quickly: the morph of an older fetch that resolves late must not undo a newer one.
+  let updates = 0;
   async function updateHtml() {
+    const mine = ++updates;
     const doc = parse(await load());
+    if (mine !== updates) return; // a newer update is on its way
     if (!served || scriptsOf(served) !== scriptsOf(doc)) return location.reload();
     const changed = new Set();
     const count = { n: 0 };

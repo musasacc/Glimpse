@@ -3,6 +3,7 @@ import * as I from "./icons";
 import { applyProjectState } from "./live";
 import { useStore } from "./store";
 import "./react.css";
+import { apiFetch } from "./session";
 
 /**
  * Why the React preview can't run (e.g. Vite isn't installed yet), shown in
@@ -18,7 +19,7 @@ export function PreviewError({ compact = false }: { compact?: boolean }) {
   const check = async () => {
     setChecking(true);
     try {
-      const res = await fetch("/api/session");
+      const res = await apiFetch("/api/session");
       if (res.ok) applyProjectState(await res.json());
     } catch {
       // server not reachable: the live connection catches up once it is back

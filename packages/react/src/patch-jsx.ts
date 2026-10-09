@@ -3,7 +3,7 @@ import { join, normalize, resolve, sep } from "node:path";
 import MagicString from "magic-string";
 import { createTwoFilesPatch } from "diff";
 import type * as t from "@babel/types";
-import type { Change, SceneNode } from "@glimpse/core";
+import { MOVED_ANCHOR, reordersInOrder, type Change, type SceneNode } from "@glimpse/core";
 import { indexElements, JSX_FILE, parseModule, SRC_ATTR, type JsxElementInfo } from "./jsx-ast.js";
 
 export interface FilePatch {
@@ -207,7 +207,17 @@ export function patchJsx(code: string, changes: Change[], options: string | Patc
     ok.push(c);
   }
 
+  // Elements reordered in this batch: an anchor among them is looked up at its old place (see MOVED_ANCHOR).
+  // Then none of that parent's reorders is written (half of them would leave a wrong order): the AI does them all.
+  const movedEls = new Set(changes.flatMap((c) => (c.op === "reorder" ? [find(c.src)?.el].filter((e): e is t.JSXElement => !!e) : [])));
+  const blocked = new Set<unknown>();
   for (const c of changes) {
+    const info = c.op === "reorder" ? find(c.src) : undefined;
+    if (!info) continue;
+    const a = [find(c.anchor?.before), find(c.anchor?.after)].find((x) => x && x.el !== info.el && x.parent === info.parent);
+    if (a && movedEls.has(a.el)) blocked.add(info.parent);
+  }
+  for (const c of reordersInOrder(changes)) {
     if (c.op === "delete") continue;
     const info = c.op === "add" ? undefined : find(c.src);
     try {
@@ -236,6 +246,11 @@ export function patchJsx(code: string, changes: Change[], options: string | Patc
         case "reorder": {
           if (!info || !isJsxParent(info.parent)) throw new Error("not a child element");
           const sibling = (x: JsxElementInfo | undefined) => (x && x.el !== info.el && x.parent === info.parent ? x : undefined);
+          if (blocked.has(info.parent)) {
+            c.reason = MOVED_ANCHOR;
+            failed.push(c);
+            continue;
+          }
           const target = insertionPoint(code, sibling(find(c.anchor?.before)), sibling(find(c.anchor?.after)));
           if (!target || gone(target.pos)) throw new Error("no anchor among its siblings");
           const [start, end] = lineRange(code, info.el.start!, info.el.end!);

@@ -5,6 +5,7 @@ import { followMoves, followOps, isVitePage, repeatedSources, sameEdit, undoAll 
 import { shownPane } from "./scene-geometry";
 import { domSurface, type Surface } from "./surface";
 import { engineLabel, RunFeed, type AgentInfo, type AgentRun, type AgentRunMessage, type Engine } from "./agent";
+import { apiFetch } from "./session";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -24,6 +25,8 @@ export interface ActivityItem {
   at: number;
   kind: "ai-file" | "ai-status" | "handoff" | "info" | "warn";
   text: string;
+  /** A failed or stopped run of the built-in AI: the handoff (seq) the row offers to run again. */
+  retry?: number;
 }
 
 export type View = "home" | "editor" | "history";
@@ -39,6 +42,8 @@ export interface HandoffSummary {
   cancelled?: boolean;
   /** A screenshot of the edited page went with it (newer servers). */
   screenshot?: boolean;
+  /** The built-in AI's run of it failed or was stopped (why); it waits again and can be retried. */
+  runError?: string;
 }
 
 export interface ProjectInfo {
@@ -659,7 +664,7 @@ class Store {
 
   async refreshHandoffs(): Promise<void> {
     try {
-      const res = await fetch("/api/handoffs");
+      const res = await apiFetch("/api/handoffs");
       const body = (await res.json()) as { handoffs: HandoffSummary[] };
       this.set({ handoffs: body.handoffs });
     } catch {
@@ -716,6 +721,7 @@ class Store {
     const current = this.state.agentRun;
     switch (msg.event) {
       case "start":
+        this.clearRetry(msg.seq);
         this.runFeed.reset();
         this.activity("ai-status", `${engineLabel(msg.engine, this.state.agentInfo)} is building…`);
         this.set({ agentRun: { seq: msg.seq, engine: msg.engine, startedAt: msg.at ?? new Date().toISOString() } });
@@ -729,9 +735,10 @@ class Store {
       case "error": {
         this.runFeed.flush();
         const text = msg.text?.trim();
+        // A run that didn't finish leaves its request waiting (nothing the human sent is lost): offer to run it again.
         if (msg.event === "done") this.activity("handoff", "Done");
-        else if (text === "Stopped") this.activity("info", "Stopped");
-        else this.activity("warn", text || `${engineLabel(msg.engine, this.state.agentInfo)} stopped with an error`);
+        else if (text === "Stopped") this.activityRow({ kind: "info", text: "Stopped. Your request is kept", retry: msg.seq });
+        else this.activityRow({ kind: "warn", text: text || `${engineLabel(msg.engine, this.state.agentInfo)} stopped with an error`, retry: msg.seq });
         // An older run's end doesn't end a newer one.
         if (!current || current.seq <= msg.seq) this.set({ agentRun: null });
         break;
@@ -752,6 +759,17 @@ class Store {
     if (saved) this.setAgentInfo(saved);
     this.set({ aiSettingsOpen: false });
     if (saved && saved.engine !== "none") then?.();
+  }
+
+  /** Add one row with extras (a Retry action) to the activity feed. */
+  activityRow(row: Omit<ActivityItem, "id" | "at">): void {
+    this.set({ activity: [{ ...row, id: ++this.activitySeq, at: Date.now() }, ...this.state.activity].slice(0, 200) });
+  }
+
+  /** The row's Retry was used (or its request ran meanwhile): drop the action. */
+  clearRetry(seq: number): void {
+    if (!this.state.activity.some((a) => a.retry === seq)) return;
+    this.set({ activity: this.state.activity.map((a) => (a.retry === seq ? { ...a, retry: undefined } : a)) });
   }
 
   /** Add rows to the activity feed (several at once re-render once), newest last. */

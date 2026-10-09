@@ -93,7 +93,7 @@ describe("terminal", () => {
   it("sizes the app by the editor in use, not by whichever resized last", async () => {
     const s = await open({ "index.html": "<p>Hi</p>" });
     const connect = async () => {
-      const ws = new WebSocket(`${s.url.replace("http", "ws")}/__glimpse/ws`, { origin: s.url });
+      const ws = new WebSocket(`${s.url.replace("http", "ws")}/__glimpse/ws?session=${s.session}`, { origin: s.url });
       await new Promise((ok) => ws.once("message", ok)); // hello
       return ws;
     };

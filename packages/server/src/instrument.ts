@@ -33,7 +33,8 @@ export function instrumentHtml(html: string, file: string): string {
   const htmlEl = doc.childNodes.find((n): n is Element => "tagName" in n && n.tagName === "html");
   const body = htmlEl?.childNodes.find((n): n is Element => "tagName" in n && n.tagName === "body");
   if (!body) return html;
-  const name = file.split("\\").join("/");
+  // Escaped for the attribute: a file named `a"b.html` must not end the attribute (the browser decodes it back).
+  const name = file.split("\\").join("/").replace(/[&"<>]/g, (c) => `&#${c.charCodeAt(0)};`);
   const tag = (el: Element) => {
     const loc = el.sourceCodeLocation!;
     const start = loc.startTag!;

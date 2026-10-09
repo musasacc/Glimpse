@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Target } from "@glimpse/core";
-import { findRunningServer, openBrowser, startServer, withProjectLock, type Handoff, type ServerInfo } from "@glimpse/server";
+import { findRunningServer, openBrowser, startServer, withProjectLock, writeServerInfo, type Handoff, type ServerInfo } from "@glimpse/server";
 import { runStdio } from "@glimpse/mcp";
 import { VERSION } from "./lib.js";
 
@@ -89,16 +89,29 @@ async function open(args: string[]): Promise<void> {
   const wanted = values.port ? intArg("--port", values.port, 0, 65535) : 4321;
   const infoFile = join(dir, ".glimpse", "server.json");
   // Under the project's lock, so the MCP server or the desktop app opening it at the same moment waits and reuses this one.
-  const srv = await withProjectLock(dir, async () => {
+  const opened = await withProjectLock(dir, async () => {
+    // A Glimpse already shows this project (the desktop app, another `glimpse open`, the MCP server): use that one.
+    // A second server would watch and version the same folder and overwrite the first one's server.json and handoffs.
+    const running = await findRunningServer(dir);
+    if (running) return { running };
     const srv = await startServer({ ...base, port: wanted }).catch((err: NodeJS.ErrnoException) => {
       if (err.code === "EADDRINUSE" && !values.port) return startServer({ ...base, port: 0 });
       throw err;
     });
-    await mkdir(dirname(infoFile), { recursive: true });
-    // The token lets local tools ask this server to run commands; keep the file private to this user.
-    await writeFile(infoFile, JSON.stringify({ url: srv.url, pid: process.pid, token: srv.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
-    return srv;
+    // The token lets local tools ask this server to run commands; the file is private to this user.
+    await writeServerInfo(dir, { url: srv.url, pid: process.pid, token: srv.token });
+    return { srv };
   });
+
+  if (opened.running) {
+    const { running } = opened;
+    const lines = ["", `  ◉ glimpse  ${running.url}`, `    project  ${dir}`, "", "  Glimpse is already open for this project; using that one."];
+    if (command) lines.push(`  ${await runInRunning(running, command)}`);
+    process.stdout.write([...lines, ""].join("\n") + "\n");
+    if (!values["no-browser"]) openBrowser(running.url);
+    return;
+  }
+  const srv = opened.srv!;
 
   process.stdout.write(
     [
@@ -119,12 +132,30 @@ async function open(args: string[]): Promise<void> {
   const shutdown = async () => {
     if (stopping) process.exit(1); // a second Ctrl+C: don't wait any longer
     stopping = true;
-    await rm(infoFile, { force: true });
+    // Only our own server.json: another Glimpse may have written its own since (this one's was taken over).
+    const info = await readFile(infoFile, "utf8").then((t) => JSON.parse(t) as Partial<ServerInfo>, () => null);
+    if (info?.pid === process.pid) await rm(infoFile, { force: true });
     await srv.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+}
+
+/** Ask a Glimpse that was already running to run `command` in its terminal (token from its server.json). */
+async function runInRunning(info: ServerInfo, command: string): Promise<string> {
+  if (!info.token) return `Couldn't run ${command}: that Glimpse left no token in .glimpse/server.json.`;
+  try {
+    const res = await fetch(`${info.url}/api/terminal/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-glimpse-token": info.token },
+      body: JSON.stringify({ command }),
+    });
+    await apiJson(res);
+    return `Running ${command} in its terminal.`;
+  } catch (err) {
+    return `Couldn't run ${command}: ${err instanceof Error ? err.message : String(err)}`;
+  }
 }
 
 async function mcp(args: string[]): Promise<void> {

@@ -6,6 +6,7 @@ import { sceneMode } from "./scene-mode";
 import { store } from "./store";
 import { Modal } from "./Modal";
 import "./react.css";
+import { apiFetch } from "./session";
 
 interface Preview {
   files: { file: string; diff: string }[];
@@ -36,7 +37,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
     // A scene mock sends the edited scene along: Glimpse writes it into the scene file.
     sceneMode
       .writes(
-        fetch("/api/patch/preview", {
+        apiFetch("/api/patch/preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ changeList: list, repeated, ...sceneMode.body() }),
@@ -70,7 +71,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
         try {
           body = await store.writingSource(async () => {
             const res = await sceneMode.writes(
-              fetch("/api/patch/apply", {
+              apiFetch("/api/patch/apply", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ changeList: list, repeated, planId: preview.planId, ...sceneMode.body() }),
@@ -92,7 +93,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
       if (toAi) {
         const { after: screenshot, before: screenshotBefore } = shot.current ?? { after: null, before: null };
         const res = await sceneMode.writes(
-          fetch("/api/handoff", {
+          apiFetch("/api/handoff", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -150,6 +151,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
                 <li key={i}>
                   <span className="op">{c.op}</span> {describeChange(c)}
                   {c.src && repeats.has(c.src) && <span className="repeat-note">used in {repeats.get(c.src)} places → sent to AI</span>}
+                  {c.reason && <span className="repeat-note">{c.reason}</span>}
                 </li>
               ))}
             </ol>

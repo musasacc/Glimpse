@@ -1,9 +1,9 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { copyFile, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
-import { dirname, extname, join, normalize, posix, relative, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, normalize, posix, relative, resolve, sep } from "node:path";
 import type { Duplex } from "node:stream";
 import { watch, type FSWatcher } from "chokidar";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
@@ -58,6 +58,13 @@ export interface Handoff {
   delivered: boolean;
   /** Withdrawn before any agent received it (its variants job was chosen or discarded). */
   cancelled?: boolean;
+  /** Who received it: Glimpse's built-in agent, or an external one (`glimpse wait`, the MCP server). */
+  handledBy?: "built-in" | "external";
+  /**
+   * The built-in agent's run of it failed or was stopped (why): it is waiting again, for an external agent or a
+   * Retry (POST /api/handoffs/<seq>/retry), but the built-in agent doesn't start it again on its own.
+   */
+  runError?: string;
 }
 
 export interface HandoffSummary {
@@ -70,6 +77,8 @@ export interface HandoffSummary {
   cancelled?: boolean;
   /** A screenshot of the human's edited version went with it (`GET /api/handoffs/<seq>/screenshot`). */
   screenshot?: boolean;
+  /** Why the built-in agent's run of it failed or stopped; it can be retried. */
+  runError?: string;
 }
 
 export interface ServerOptions {
@@ -85,6 +94,13 @@ export interface ServerOptions {
    * Started right away in Glimpse's terminal, and used instead of meta.command from the scene file.
    */
   command?: string;
+  /**
+   * How long an external agent (MCP, `glimpse wait`) counts as attached after its last wait, so "auto" doesn't start
+   * a second agent while it works on a request (ms, default 3 minutes).
+   */
+  externalPresenceMs?: number;
+  /** How long the built-in agent caches which engines are installed (ms, default 30 s). For tests. */
+  agentDetectMs?: number;
 }
 
 export interface GlimpseServer {
@@ -99,6 +115,12 @@ export interface GlimpseServer {
    * it never goes to the browser.
    */
   token: string;
+  /**
+   * The editor's per-session secret: put into the editor's page (never into the previewed app's), and required as
+   * the x-glimpse-session header on a browser's API requests and as ?session= on the editor's websocket. Local tools
+   * (no Origin, no Sec-Fetch-Site) don't need it.
+   */
+  session: string;
   /** The real app, run in Glimpse's terminal next to its mock (terminal UIs and native GUIs). */
   terminal: TerminalSession;
   /** Run `command` in the terminal (stopping what runs there) and use it for restarts from now on. */
@@ -165,6 +187,8 @@ const MIME: Record<string, string> = {
   ".vtt": "text/vtt; charset=utf-8",
 };
 
+/** An external agent counts as attached this long after its last wait (it may be working on what it got). */
+const EXTERNAL_PRESENCE_MS = 3 * 60_000;
 /** Saves in the project are recorded as (part of) an AI round once they have been quiet this long, */
 const AI_ROUND_QUIET_MS = 1500;
 /** or once they have kept coming this long (say, a log file the app writes every second). */
@@ -206,12 +230,15 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   const project = detectProject(dir, { target: opts.target, entry: opts.entry });
   const stateDir = join(dir, ".glimpse");
   await mkdir(join(stateDir, "handoffs"), { recursive: true });
+  // Glimpse's state (the token in server.json, versions of every file, screenshots) never goes into the user's repo.
+  await writeFile(join(stateDir, ".gitignore"), "# Glimpse's own state: never commit it.\n*\n", { flag: "wx" }).catch(() => undefined);
 
   const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff | null) => void }>();
   const sockets = new Set<WebSocket>();
   /** The live client in previewed pages (the page, compare and variant frames): it only acts on file changes. */
   const previewSockets = new Set<WebSocket>();
   const token = randomBytes(32).toString("base64url");
+  const editorSession = randomBytes(24).toString("base64url");
   /** Set once listening (the port may be picked by the OS). */
   let port = 0;
   let closing = false;
@@ -244,11 +271,16 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     dir,
     broadcast: (msg) => broadcast(msg),
     externalWaiting: () => externalWaiting(),
+    externalAttached: () => externalAttached(),
+    pending: () => pendingHandoffs(),
+    release: (h, error) => releaseHandoff(h, error),
     handoff: (seq) => handoffs.find((h) => h.seq === seq),
     claim: (h) => markDelivered(h),
     roundEnd: () => endAiRound(),
     prompt: (h) => builtInPrompt(h),
     screenshot: (h) => (h.screenshot ? join(stateDir, "handoffs", `${h.seq}.png`) : undefined),
+    screenshotBefore: (h) => (h.screenshot && h.screenshotBefore ? join(stateDir, "handoffs", `${h.seq}-before.png`) : undefined),
+    ...(opts.agentDetectMs !== undefined && { detectTtlMs: opts.agentDetectMs }),
   });
   const host = opts.host ?? "127.0.0.1";
 
@@ -321,6 +353,18 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     const site = req.headers["sec-fetch-site"];
     if (site === undefined || site === "same-origin" || site === "none") return true;
     return devOrigin !== undefined && req.headers.origin === devOrigin;
+  }
+
+  /** A browser sent it (local tools send neither header). */
+  function fromBrowser(req: IncomingMessage): boolean {
+    return req.headers.origin !== undefined || req.headers["sec-fetch-site"] !== undefined;
+  }
+
+  function sessionOk(value: unknown): boolean {
+    if (typeof value !== "string") return false;
+    const a = Buffer.from(value);
+    const b = Buffer.from(editorSession);
+    return a.length === b.length && timingSafeEqual(a, b);
   }
 
   function tokenOk(req: IncomingMessage): boolean {
@@ -621,9 +665,24 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     // (static preview, the project's Vite, variants, root-absolute fallback) would otherwise read it: the
     // previewed app runs at this origin and must not get hold of it.
     if (STATE_PATH.test(path)) return send(res, 404, { error: "Not found" });
+    // Windows 8.3 short names ("GLIMPS~1" for .glimpse, "ENV~1" for .env) would get around both checks.
+    if (hasShortName(path)) return send(res, 404, { error: "Not found" });
     // Neither are the project's dotfiles (.git/config, .env and .npmrc hold secrets). Vite applies its own fs.deny to /@fs/.
     if ((!api || projectPage) && !/^\/(preview\/)?@fs\//.test(path) && hiddenPath(path)) return send(res, 404, { error: "Not found" });
     if (projectPage) return serveFromProject(req, res, path);
+    // The previewed page shares the editor's origin and can hide its Referer (referrerPolicy "no-referrer"): a
+    // browser's API calls also need the editor's session secret, which only the editor's own page carries.
+    // Version thumbnails are plain <img> tags.
+    if (api && fromBrowser(req) && !sessionOk(req.headers["x-glimpse-session"]) && !(method === "GET" && /^\/api\/history\/[^/]+\/thumb$/.test(path))) {
+      send(res, 403, { error: "This request needs the Glimpse editor's session: reload the editor." });
+      return;
+    }
+
+    // The editor's dev server (GLIMPSE_DEV_ORIGIN) serves its own index.html, without the session: it asks here.
+    if (path === "/__glimpse/session" && method === "GET") {
+      if (devOrigin === undefined) return send(res, 404, { error: "Not found" });
+      return send(res, 200, { session: editorSession });
+    }
 
     if (path === "/__glimpse/client.js") {
       res.writeHead(200, { "content-type": MIME[".js"]!, "cache-control": "no-store" });
@@ -668,6 +727,13 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 
     if (path === "/api/agent/stop" && req.method === "POST") {
       runner.stop();
+      send(res, 200, { ok: true });
+      return;
+    }
+
+    // An external agent says it is done with this session (the MCP server exiting): "auto" may run requests again.
+    if (path === "/api/agent/detach" && req.method === "POST") {
+      detachExternal();
       send(res, 200, { ok: true });
       return;
     }
@@ -760,7 +826,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       } else {
         prompt = changeListToPrompt(changeList);
       }
-      const h = await addHandoff({ kind: body.kind, changeList, prompt }, { screenshot, screenshotBefore });
+      // "source" handoffs are for the record: they never wake an agent.
+      const h = await addHandoff({ kind: body.kind, changeList, prompt }, { screenshot, screenshotBefore, notify: body.kind !== "source" });
       if (h.kind === "ai") {
         const n = h.changeList.changes.length;
         await takeSnapshot("handoff", `Sent ${n} change${n === 1 ? "" : "s"} to the AI`);
@@ -881,6 +948,24 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       return;
     }
 
+    const retryMatch = path.match(/^\/api\/handoffs\/(\d+)\/retry$/);
+    if (retryMatch && req.method === "POST") {
+      const h = handoffs.find((x) => x.seq === Number(retryMatch[1]));
+      if (!h || h.cancelled || h.kind === "source" || (h.delivered && h.runError === undefined)) {
+        return send(res, 404, { error: "No failed or waiting request with that number" });
+      }
+      if (runner.state()?.seq === h.seq) return send(res, 409, { error: "That request is running right now" });
+      h.runError = undefined;
+      h.delivered = false;
+      h.handledBy = undefined;
+      void persist(h).catch(() => {});
+      const taken = offer(h);
+      broadcast({ type: taken ? "handoff-delivered" : "handoff-requeued", seq: h.seq });
+      if (!taken) await runner.enqueue(h);
+      send(res, 200, { ok: true, delivered: h.delivered, engine: (await runner.info()).engine });
+      return;
+    }
+
     const requeueMatch = path.match(/^\/api\/handoffs\/(\d+)\/requeue$/);
     if (requeueMatch && req.method === "POST") {
       const ok = requeueHandoff(Number(requeueMatch[1]));
@@ -941,7 +1026,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       return serveFromProject(req, res, path, from);
     }
 
-    await serveEditor(path, res);
+    await serveEditor(path, req, res);
   }
 
   /**
@@ -1263,6 +1348,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (!file) return send(res, 403, { error: "Forbidden" });
     try {
       if ((await stat(file)).isDirectory()) file = join(file, "index.html");
+      if (!(await confined(dir, file))) return send(res, 404, { error: `Not found: ${rel}` });
       await sendLive(res, file, relative(dir, file).split(sep).join("/"));
     } catch {
       send(res, 404, { error: `Not found: ${rel}` });
@@ -1292,7 +1378,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
     // Never versioned (dependencies, build output, huge media): use the live file so the page still renders.
     const live = /(^|\/)(\.git|\.glimpse)(\/|$)/i.test(file) ? null : safeJoin(dir, file);
-    if (live && (isIgnored(file) || (await fileSize(live)) > MAX_FILE_BYTES)) {
+    if (live && (isIgnored(file) || (await fileSize(live)) > MAX_FILE_BYTES) && (await confined(dir, live))) {
       res.writeHead(200, { "content-type": type, "cache-control": "no-store" });
       res.end(await readFile(live));
       return;
@@ -1322,6 +1408,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       if (!file) return send(res, 403, { error: "Forbidden" });
       if (await isDir(file)) file = join(file, "index.html");
       if (!(await isFile(file))) continue;
+      if (!(await confined(root, file))) return send(res, 404, { error: `Not found: ${clean}` });
       await sendLive(res, file, relative(root, file).split(sep).join("/"));
       return;
     }
@@ -1343,7 +1430,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     res.end(data);
   }
 
-  async function serveEditor(path: string, res: ServerResponse): Promise<void> {
+  async function serveEditor(path: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!opts.editorDir) {
       res.writeHead(200, { "content-type": MIME[".html"]! });
       res.end(`<!doctype html><title>Glimpse</title><body style="background:#000;color:#fafafa;font-family:system-ui;margin:0">
@@ -1358,7 +1445,16 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       "content-type": MIME[ext] ?? "application/octet-stream",
       "cache-control": ext === ".html" ? "no-store" : "public, max-age=31536000, immutable",
     });
-    res.end(await readFile(target));
+    let body = await readFile(target);
+    // The session goes only into a page opened as a window (a navigation): not to a fetch() or a frame of the
+    // previewed app asking for the editor's HTML.
+    const dest = req.headers["sec-fetch-dest"];
+    if (ext === ".html" && (dest === undefined || dest === "document")) {
+      const meta = `<meta name="glimpse-session" content="${editorSession}">`;
+      const html = body.toString("utf8");
+      body = Buffer.from(/<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (m) => `${m}${meta}`) : meta + html);
+    }
+    res.end(body);
   }
 
   /** Snapshot the project (the editor hears about it from the history); failures are logged, never fatal. */
@@ -1410,13 +1506,60 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   /** The built-in agent took it: the same bookkeeping as an external agent taking it. */
   function markDelivered(h: Handoff): void {
     h.delivered = true;
+    h.handledBy = "built-in";
+    h.runError = undefined;
     persist(h).catch((err: unknown) => console.warn(`glimpse: couldn't save handoff #${h.seq} (${err instanceof Error ? err.message : String(err)})`));
     broadcast({ type: "handoff-delivered", seq: h.seq });
+  }
+
+  /**
+   * The built-in agent's run failed or was stopped: the human's edits must not be lost. The handoff waits again (an
+   * external agent that waits gets it now, or on its next wait); the editor offers to retry it.
+   */
+  function releaseHandoff(h: Handoff, error: string): void {
+    if (h.cancelled || closing) return;
+    h.delivered = false;
+    h.handledBy = undefined;
+    h.runError = error;
+    const taken = offer(h);
+    void persist(h).catch(() => {});
+    broadcast({ type: taken ? "handoff-delivered" : "handoff-requeued", seq: h.seq, ...(!taken && { error }) });
   }
 
   /** An external agent listens, or did a moment ago (agents poll in chunks, so it is between two polls). */
   function externalWaiting(): boolean {
     return waiters.size > 0 || lastWaiting;
+  }
+
+  /* An external agent that waited lately is attached to this session, even while it works on what it got. */
+  const presenceMs = opts.externalPresenceMs ?? EXTERNAL_PRESENCE_MS;
+  let lastExternalAt = 0;
+  let presenceTimer: ReturnType<typeof setTimeout> | undefined;
+  function externalAttached(): boolean {
+    return waiters.size > 0 || (lastExternalAt > 0 && Date.now() - lastExternalAt < presenceMs);
+  }
+
+  /** An external agent waits (or just got a handoff): it stays attached for `presenceMs` from now. */
+  function touchExternal(): void {
+    lastExternalAt = Date.now();
+    clearTimeout(presenceTimer);
+    presenceTimer = setTimeout(presenceEnded, presenceMs);
+    presenceTimer.unref();
+  }
+
+  function detachExternal(): void {
+    if (lastExternalAt === 0) return;
+    lastExternalAt = 0;
+    clearTimeout(presenceTimer);
+    presenceEnded();
+  }
+
+  /** The external agent hasn't waited for a long while (or detached): what waits may run with the built-in agent. */
+  function presenceEnded(): void {
+    presenceTimer = undefined;
+    if (closing || externalAttached()) return;
+    runner.infoChanged();
+    void runner.enqueue(pendingHandoffs()).catch(() => undefined);
   }
 
   /** What the built-in agent is told: where it runs, then the handoff itself, without the "wait for the human" step. */
@@ -1445,6 +1588,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (!waiter) return false;
     waiters.delete(waiter);
     handoff.delivered = true;
+    handoff.handledBy = "external";
+    handoff.runError = undefined;
+    touchExternal();
     waiter.resolve(handoff);
     agentChanged();
     return true;
@@ -1471,6 +1617,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     const h = handoffs.find((x) => x.seq === seq);
     if (!h || !h.delivered || h.cancelled || h.kind === "source") return false;
     h.delivered = false;
+    h.handledBy = undefined;
     broadcast({ type: offer(h) ? "handoff-delivered" : "handoff-requeued", seq: h.seq });
     void persist(h).catch(() => {});
     return true;
@@ -1483,13 +1630,18 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   function takeHandoff(after: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<{ handoff: Handoff; fresh: boolean } | null> {
     if (signal?.aborted || closing) return Promise.resolve(null);
     endAiRound();
-    // "source" handoffs are informational and never wake an agent; withdrawn ones are gone.
+    touchExternal();
+    // "source" handoffs are informational and never wake an agent; withdrawn ones are gone. With `after`, one the
+    // built-in agent already handled isn't handed out again (it would be applied twice).
+    const wanted = (h: Handoff) => h.kind !== "source" && !h.cancelled;
     const ready =
-      after === undefined ? handoffs.find((h) => !h.delivered) : handoffs.find((h) => h.seq > after && h.kind !== "source" && !h.cancelled);
+      after === undefined ? handoffs.find((h) => !h.delivered && wanted(h)) : handoffs.find((h) => h.seq > after && wanted(h) && h.handledBy !== "built-in");
     if (ready) {
       const fresh = !ready.delivered;
       if (fresh) {
         ready.delivered = true;
+        ready.handledBy = "external";
+        ready.runError = undefined;
         persist(ready).catch((err: unknown) => console.warn(`glimpse: couldn't save handoff #${ready.seq} (${err instanceof Error ? err.message : String(err)})`));
         broadcast({ type: "handoff-delivered", seq: ready.seq });
       }
@@ -1501,6 +1653,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         resolve: (h: Handoff | null) => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", stop);
+          touchExternal();
           if (h) broadcast({ type: "handoff-delivered", seq: h.seq });
           resolvePromise(h && { handoff: h, fresh: true });
         },
@@ -1508,6 +1661,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       const stop = () => {
         clearTimeout(timer);
         signal?.removeEventListener("abort", stop);
+        if (waiters.has(waiter)) touchExternal();
         waiters.delete(waiter);
         agentChanged();
         resolvePromise(null);
@@ -1610,20 +1764,29 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   // Browsers always send Origin on websockets: only the editor's own pages may connect (term-input types into a local process).
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   server.on("upgrade", (req, socket, head) => {
+    // Node detaches upgrade sockets from the server's error handling: a reset connection must not be an unhandled 'error'.
+    socket.on("error", () => socket.destroy());
     if (!hostAllowed(req) || !originAllowed(req)) return refuseUpgrade(socket, "403 Forbidden");
     // Vite's HMR websocket for the React preview: its own upgrade listener answers it.
     if (reactPreview?.isViteUpgrade(req)) return;
     const url = new URL(req.url ?? "/", "http://localhost");
     if (url.pathname !== "/__glimpse/ws") return socket.destroy();
+    // The editor's socket types into the real app: a browser must show the editor's session (see sessionOk).
+    if (url.searchParams.get("role") !== "preview" && fromBrowser(req) && !sessionOk(url.searchParams.get("session"))) {
+      return refuseUpgrade(socket, "403 Forbidden");
+    }
     if (url.searchParams.get("role") === "preview") {
       // No hello, terminal catch-up, scenes or snapshots: just the file changes it reloads or morphs on.
       wss.handleUpgrade(req, socket, head, (ws) => {
+        // An oversized or malformed message (over maxPayload, bad frames) is an 'error': never let it take Glimpse down.
+        ws.on("error", () => ws.terminate());
         ws.on("close", () => previewSockets.delete(ws));
         previewSockets.add(ws);
       });
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.on("error", () => ws.terminate());
       ws.on("message", (raw) => void onClientMessage(ws, raw));
       ws.on("close", () => {
         sockets.delete(ws);
@@ -1742,6 +1905,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     project,
     server,
     token,
+    session: editorSession,
     terminal,
     run,
     status,
@@ -1759,6 +1923,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         waiters.delete(w);
         w.resolve(null);
       }
+      clearTimeout(presenceTimer);
       // The built-in agent and the app first, so they can't outlive Glimpse.
       await runner.close();
       unbridge();
@@ -1817,6 +1982,7 @@ function summarize(h: Handoff): HandoffSummary {
     delivered: h.delivered,
     ...(h.cancelled && { cancelled: true }),
     ...(h.screenshot && { screenshot: true }),
+    ...(h.runError !== undefined && !h.delivered && { runError: h.runError }),
   };
 }
 
@@ -1947,6 +2113,30 @@ function hiddenPath(path: string): boolean {
     else if (!deps && part.startsWith(".") && part !== "." && part !== ".well-known") return true;
   }
   return false;
+}
+
+/**
+ * Whether `file` (inside `rootDir` by its path) really is inside it once symlinks are resolved, and isn't Glimpse's
+ * state or a dotfile there: a committed symlink (`up -> ../../..`, `notes -> .env`) must not serve what it points
+ * at. Paths through node_modules may lead elsewhere (pnpm and workspaces link packages).
+ */
+async function confined(rootDir: string, file: string): Promise<boolean> {
+  const lexical = relative(resolve(rootDir), file).split(sep);
+  if (lexical.includes("node_modules")) return true;
+  try {
+    const [root, real] = await Promise.all([realpath(rootDir), realpath(file)]);
+    const back = relative(root, real);
+    if (back === "" || back === ".." || back.startsWith(`..${sep}`) || isAbsolute(back)) return false;
+    const rel = back.split(sep).join("/");
+    return !STATE_PATH.test(rel) && !hiddenPath(rel);
+  } catch {
+    return false;
+  }
+}
+
+/** A path with a Windows 8.3 short-name segment ("GLIMPS~1"), on Windows (where such names resolve). */
+export function hasShortName(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && path.split(/[/\\]/).some((part) => /~\d/.test(part));
 }
 
 /** Join `rel` onto `root`, refusing anything that escapes `root`. */

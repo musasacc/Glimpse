@@ -185,6 +185,7 @@ describe("live agent messages", () => {
     vi.stubGlobal("location", { protocol: "http:", host: "localhost:4321" });
     vi.stubGlobal("fetch", fetchMock);
     fetchMock.mockClear();
+    FakeSocket.last = null;
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -195,6 +196,8 @@ describe("live agent messages", () => {
     const { store } = await import("./store");
     const { connectLive } = await import("./live");
     const stop = connectLive();
+    // The socket opens once the session secret is known (asynchronously).
+    for (let i = 0; i < 100 && !FakeSocket.last; i++) await Promise.resolve();
     return { store, socket: FakeSocket.last!, stop };
   }
   const rows = (store: { state: { activity: { kind: string; text: string }[] } }) => store.state.activity.map((a) => `${a.kind}: ${a.text}`).reverse();
@@ -208,7 +211,8 @@ describe("live agent messages", () => {
     const { currentEngine } = await import("./store");
     expect(currentEngine(store.state)).toBe("external");
     // It asks once whether the server has the agent API after all; a 404 changes nothing.
-    expect(fetchMock).toHaveBeenCalledWith("/api/agent");
+    for (let i = 0; i < 100 && !fetchMock.mock.calls.some((c) => c[0] === "/api/agent"); i++) await Promise.resolve();
+    expect(fetchMock.mock.calls.map((c) => c[0])).toContain("/api/agent");
     await vi.runAllTimersAsync();
     expect(store.state.agentInfo).toBeNull();
     stop();
@@ -218,7 +222,7 @@ describe("live agent messages", () => {
     const { store, socket, stop } = await connect();
     socket.receive({ type: "hello", project, agentWaiting: false, entryExists: true, agentInfo: INFO, agentRun: null });
     expect(store.state.agentInfo?.engine).toBe("claude");
-    expect(fetchMock).not.toHaveBeenCalledWith("/api/agent");
+    expect(fetchMock.mock.calls.map((c) => c[0])).not.toContain("/api/agent");
 
     socket.receive({ type: "agent-info", info: { ...INFO, engine: "codex" } });
     expect(store.state.agentInfo?.engine).toBe("codex");
@@ -247,11 +251,15 @@ describe("live agent messages", () => {
     socket.receive({ type: "agent-run", event: "error", seq: 2, engine: "codex" });
     expect(rows(store)).toEqual([
       "ai-status: Codex is building…",
-      "info: Stopped",
+      "info: Stopped. Your request is kept",
       "ai-status: Codex is building…",
       "info: half a line",
       "warn: Codex stopped with an error",
     ]);
+    // Both offer to run their request again; a new run of it takes the offer away.
+    expect(store.state.activity.filter((a) => a.retry !== undefined).map((a) => a.retry)).toEqual([2, 1]);
+    socket.receive({ type: "agent-run", event: "start", seq: 1, engine: "codex" });
+    expect(store.state.activity.filter((a) => a.retry !== undefined).map((a) => a.retry)).toEqual([2]);
     stop();
   });
 
@@ -266,6 +274,18 @@ describe("live agent messages", () => {
     // It ended while we were away.
     socket.receive({ ...hello, agentInfo: INFO, agentRun: null });
     expect(store.state.agentRun).toBeNull();
+    stop();
+  });
+
+  it("refreshes the handoff list on every (re)connect", async () => {
+    const { socket, stop } = await connect();
+    const asked = () => fetchMock.mock.calls.filter((c) => c[0] === "/api/handoffs").length;
+    socket.receive({ type: "hello", project, agentInfo: INFO });
+    for (let i = 0; i < 100 && asked() < 1; i++) await Promise.resolve();
+    expect(asked()).toBe(1);
+    socket.receive({ type: "hello", project, agentInfo: INFO });
+    for (let i = 0; i < 100 && asked() < 2; i++) await Promise.resolve();
+    expect(asked()).toBe(2);
     stop();
   });
 

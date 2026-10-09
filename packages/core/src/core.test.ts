@@ -267,6 +267,18 @@ describe("anchors", () => {
     const reorder = changes.find((c) => c.op === "reorder")!;
     expect(reorder.anchor).toEqual({ before: "index.html:10:5" });
   });
+
+  it("anchors reorders only to siblings that stay where they were", () => {
+    const log = new OpLog(fixture());
+    // b1 b2 b3 → b3 b2 b1: b3 and b2 move; both go before b1, which stays.
+    log.apply({ op: "reorder", node: "b3", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 0 } });
+    log.apply({ op: "reorder", node: "b2", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 1 } });
+    const reorders = buildChangeList(log).changes.filter((c) => c.op === "reorder");
+    expect(reorders.map((c) => [c.op === "reorder" && c.node, c.anchor])).toEqual([
+      ["b3", { before: "index.html:10:5" }],
+      ["b2", { before: "index.html:10:5" }],
+    ]);
+  });
 });
 
 describe("atomic steps", () => {

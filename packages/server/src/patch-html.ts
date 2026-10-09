@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join, normalize, sep } from "node:path";
 import MagicString from "magic-string";
 import { createTwoFilesPatch } from "diff";
-import type { Change, SceneNode } from "@glimpse/core";
+import { MOVED_ANCHOR, reordersInOrder, type Change, type SceneNode } from "@glimpse/core";
 import { htmlCharset } from "./charset.js";
 import { parseWithLocations, walkElements, type Element } from "./instrument.js";
 
@@ -24,6 +24,7 @@ export interface PatchPlan {
 
 /** Ops that are pure editor state and never touch code. */
 const EDITOR_ONLY = new Set(["setLocked"]);
+
 
 /**
  * Work out how to write `changes` into the project's HTML files. Nothing is
@@ -130,7 +131,18 @@ export function patchHtml(html: string, changes: Change[]): { after: string; ok:
     return e;
   };
 
+  // Elements reordered in this batch: an anchor among them is looked up at its old place, so a move next to one
+  // would land in the wrong spot (the editor anchors to siblings that stay; older lists may not).
+  // Then none of that parent's reorders is written (half of them would leave a wrong order): the AI does them all.
+  const movedEls = new Set(changes.flatMap((c) => (c.op === "reorder" ? [find(c.src)].filter((e): e is Element => !!e) : [])));
+  const anchorOf = (c: Change, el: Element) => [find(c.anchor?.before), find(c.anchor?.after)].find((a) => a && a !== el);
+  const blocked = new Set<unknown>();
   for (const c of changes) {
+    const el = c.op === "reorder" ? find(c.src) : undefined;
+    const a = el && anchorOf(c, el);
+    if (el && a && movedEls.has(a)) blocked.add(el.parentNode);
+  }
+  for (const c of reordersInOrder(changes)) {
     const el = c.op === "add" ? undefined : find(c.src);
     try {
       switch (c.op) {
@@ -169,6 +181,11 @@ export function patchHtml(html: string, changes: Change[]): { after: string; ok:
         }
         case "reorder": {
           if (!el) throw new Error("element not found");
+          if (blocked.has(el.parentNode)) {
+            c.reason = MOVED_ANCHOR;
+            failed.push(c);
+            continue;
+          }
           const target = insertionPoint(html, c.anchor, find, el);
           if (target === null) throw new Error("no anchor");
           const [start, end] = lineRange(html, el);

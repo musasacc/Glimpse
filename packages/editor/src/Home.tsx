@@ -5,6 +5,7 @@ import { engineLabel, isBuiltIn, stopAgent } from "./agent";
 import { Mark } from "./Logo";
 import { PreviewError } from "./PreviewError";
 import { isEnter } from "./platform";
+import { apiFetch } from "./session";
 
 type Target = "html" | "react" | "tui" | "native";
 
@@ -64,7 +65,7 @@ export function Home() {
     setBusy(true);
     setNotice(null);
     try {
-      const res = await fetch("/api/request", {
+      const res = await apiFetch("/api/request", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: t, target: tgt }),

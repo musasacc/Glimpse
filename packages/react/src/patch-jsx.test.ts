@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Change, SceneNode } from "@glimpse/core";
+import { createScene, diffScenes, MOVED_ANCHOR, OpLog, type Change, type Scene, type SceneNode } from "@glimpse/core";
 import { instrumentJsx } from "./instrument-jsx.js";
 import { isJsxChange, mergePatchPlans, patchJsx, planJsxPatch } from "./patch-jsx.js";
 
@@ -386,6 +386,34 @@ describe("patchJsx: structure", () => {
     expect(after).toContain(
       '<nav className="buttons">\n        <button className="btn" style={{ color: "red" }}>Maple</button>\n        <button className="btn">Glazed</button>\n        <button className="btn">Chocolate</button>\n      </nav>',
     );
+  });
+
+  it("reverses a list (A B C → C B A) in the right order", () => {
+    const base: Scene = createScene("react");
+    base.nodes.nav = node("nav", "root", { tag: "nav", children: ["g", "c", "m"], source: { file: F, line: 7, col: 7 } });
+    base.nodes.root!.children.push("nav");
+    ["g", "c", "m"].forEach((id, i) => {
+      base.nodes[id] = node(id, "nav", { tag: "button", layout: { x: i * 100, y: 0, w: 100, h: 40 }, source: { file: F, line: 8 + i, col: 9 } });
+    });
+    const log = new OpLog(base);
+    log.apply({ op: "reorder", node: "m", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 0 } });
+    log.apply({ op: "reorder", node: "c", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 1 } });
+    const { after, ok, failed } = patch(...diffScenes(log.base, log.scene));
+    expect(failed).toEqual([]);
+    expect(ok).toHaveLength(2);
+    expect(after).toContain(
+      '<nav className="buttons">\n        <button className="btn" style={{ color: "red" }}>Maple</button>\n        <button className="btn">Chocolate</button>\n        <button className="btn">Glazed</button>\n      </nav>',
+    );
+  });
+
+  it("leaves reorders anchored to another moved element to the AI, never writing a wrong order", () => {
+    const { after, ok, failed } = patch(
+      { op: "reorder", node: "m", src: maple, from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 0 }, anchor: { before: choc } },
+      { op: "reorder", node: "c", src: choc, from: { parent: "nav", index: 1 }, to: { parent: "nav", index: 1 }, anchor: { after: maple, before: glazed } },
+    );
+    expect(ok).toEqual([]);
+    expect(failed.map((c) => c.reason)).toEqual([MOVED_ANCHOR, MOVED_ANCHOR]);
+    expect(after).toBe(APP);
   });
 
   it("only reorders among siblings of the same JSX parent", () => {

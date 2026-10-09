@@ -1,5 +1,5 @@
 import { existsSync, statSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { canonicalDir, dirKey } from "./paths.js";
 
@@ -140,6 +140,8 @@ export class ProjectServers {
       // The token lets local tools (MCP) ask the server to run commands; keep the file private to this user.
       const data = { url: server.url, pid: this.pid, ...(server.token && { token: server.token }) };
       await writeFile(info, JSON.stringify(data, null, 2), { mode: 0o600 });
+      // Also when an older Glimpse left the file readable to others (mode only applies to a new file).
+      await chmod(info, 0o600).catch(() => undefined);
     } catch {
       // A read-only folder still works in the app; agents just can't discover it.
     }

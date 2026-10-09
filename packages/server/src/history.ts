@@ -28,6 +28,18 @@ export function isIgnored(rel: string): boolean {
   });
 }
 
+/**
+ * Files that hold secrets (environment files with keys, private keys, package-registry and login tokens): never
+ * copied into the version history, which lives in the project folder where `git add -A` or a zip would pick it up.
+ * Example env files are fine. Lower case.
+ */
+const SECRET_FILE = /^(\.env(?!\.(example|sample|template|dist)$)(\..*)?|\.npmrc|\.yarnrc\.yml|\.pypirc|\.netrc|_netrc|\.htpasswd|.+\.(pem|key|p12|pfx|jks|keystore)|id_(rsa|dsa|ecdsa|ed25519)(_sk)?)$/;
+
+/** Whether a file name (not a path) looks like it holds secrets (see SECRET_FILE). */
+export function isSecretFile(name: string): boolean {
+  return SECRET_FILE.test(name.toLowerCase().replace(/[. ]+$/, ""));
+}
+
 /** Bigger files (videos, datasets) aren't versioned. */
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /** Keeps a snapshot cheap even when Glimpse is pointed at a huge folder. */
@@ -494,6 +506,7 @@ export class History {
         // Symlinks are skipped: they could loop, or point outside the project.
         if (entry.isDirectory()) await walk(join(abs, entry.name), path);
         else if (entry.isFile()) {
+          if (isSecretFile(entry.name)) continue;
           const sha = await this.hashFile(join(abs, entry.name), path);
           if (sha) {
             files[path] = sha;

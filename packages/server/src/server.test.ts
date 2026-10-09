@@ -269,14 +269,14 @@ describe("server", () => {
     expect(await raw("GET", "/api/history", { host: `evil.example:${srv.port}` })).toBe(403);
     expect(await raw("GET", "/preview/", { host: `evil.example:${srv.port}` })).toBe(403);
     // The editor itself, and local tools.
-    expect(await raw("GET", "/api/history", { "sec-fetch-site": "same-origin" })).toBe(200);
-    expect(await raw("POST", "/api/status", { ...json, origin: srv.url, "sec-fetch-site": "same-origin" }, '{"message":"hi"}')).toBe(200);
+    expect(await raw("GET", "/api/history", { "sec-fetch-site": "same-origin", "x-glimpse-session": srv.session })).toBe(200);
+    expect(await raw("POST", "/api/status", { ...json, origin: srv.url, "sec-fetch-site": "same-origin", "x-glimpse-session": srv.session }, '{"message":"hi"}')).toBe(200);
     expect(await raw("GET", "/api/session", { host: `localhost:${srv.port}` })).toBe(200);
     expect((await fetch(`${srv.url}/api/session`)).status).toBe(200);
 
     const opened = (origin?: string) =>
       new Promise<boolean>((ok) => {
-        const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws`, origin ? { origin } : {});
+        const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws?session=${srv.session}`, origin ? { origin } : {});
         ws.once("open", () => (ws.close(), ok(true)));
         ws.once("error", () => ok(false));
       });

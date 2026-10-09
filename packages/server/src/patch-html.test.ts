@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Change } from "@glimpse/core";
+import { createScene, diffScenes, MOVED_ANCHOR, OpLog, type Change, type Scene } from "@glimpse/core";
 import { instrumentHtml } from "./instrument.js";
 import { patchHtml } from "./patch-html.js";
 
@@ -36,6 +36,11 @@ describe("instrumentHtml", () => {
 
   it("uses forward slashes for nested files on every OS", () => {
     expect(instrumentHtml("<body><p>x</p></body>", "pages\\about.html")).toContain('data-glimpse-src="pages/about.html:1:7"');
+  });
+
+  it("escapes the file name in the attribute", () => {
+    const out = instrumentHtml("<body><p>x</p></body>", 'a"b<c>&.html');
+    expect(out).toContain('<p data-glimpse-src="a&#34;b&#60;c&#62;&#38;.html:1:7">x</p>');
   });
 });
 
@@ -112,6 +117,38 @@ describe("patchHtml", () => {
     expect(after).toContain(
       '<nav class="buttons">\n      <button class="btn" style="color: red">Maple</button>\n      <button class="btn">Glazed</button>\n      <button class="btn">Chocolate</button>\n    </nav>',
     );
+  });
+
+  it("reverses a list (A B C → C B A) in the right order", () => {
+    const base: Scene = createScene("html");
+    base.nodes.nav = { id: "nav", type: "nav", tag: "nav", parent: "root", children: ["g", "c", "m"], layout: { x: 0, y: 0, w: 300, h: 40 }, style: {}, props: {}, source: { file: "index.html", line: 5, col: 5 } };
+    base.nodes.root!.children.push("nav");
+    ["g", "c", "m"].forEach((id, i) => {
+      base.nodes[id] = { id, type: "button", tag: "button", parent: "nav", children: [], layout: { x: i * 100, y: 0, w: 100, h: 40 }, style: {}, props: {}, source: { file: "index.html", line: 6 + i, col: 7 } };
+    });
+    const log = new OpLog(base);
+    log.apply({ op: "reorder", node: "m", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 0 } });
+    log.apply({ op: "reorder", node: "c", from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 1 } });
+    expect(log.scene.nodes.nav!.children).toEqual(["m", "c", "g"]);
+    const changes = diffScenes(log.base, log.scene);
+    const { after, ok, failed } = patchHtml(PAGE, changes);
+    expect(failed).toEqual([]);
+    expect(ok).toHaveLength(2);
+    expect(after).toContain(
+      '<nav class="buttons">\n      <button class="btn" style="color: red">Maple</button>\n      <button class="btn">Chocolate</button>\n      <button class="btn">Glazed</button>\n    </nav>',
+    );
+  });
+
+  it("leaves reorders anchored to another moved element to the AI, never writing a wrong order", () => {
+    // Anchors to neighbours that move too (as older editors sent them): C before B, B after C and before A.
+    const { after, ok, failed } = patch(
+      { op: "reorder", node: "m", src: maple, from: { parent: "nav", index: 2 }, to: { parent: "nav", index: 0 }, anchor: { before: choc } },
+      { op: "reorder", node: "c", src: choc, from: { parent: "nav", index: 1 }, to: { parent: "nav", index: 1 }, anchor: { after: maple, before: glazed } },
+    );
+    expect(ok).toEqual([]);
+    expect(failed).toHaveLength(2);
+    expect(failed.every((c) => c.reason === MOVED_ANCHOR)).toBe(true);
+    expect(after).toBe(PAGE);
   });
 
   it("keeps Windows line endings", () => {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sameDir, servesProject, startServer, withProjectLock } from "./index.js";
@@ -63,6 +63,33 @@ describe("withProjectLock", () => {
     const t0 = Date.now();
     expect(await withProjectLock(root, async () => "ran")).toBe("ran");
     expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it("never takes the lock from a live holder that is still at work, however long it takes", async () => {
+    const order: string[] = [];
+    const run = (name: string, ms: number) =>
+      withProjectLock(
+        root,
+        async () => {
+          order.push(`${name} in`);
+          await new Promise((r) => setTimeout(r, ms));
+          order.push(`${name} out`);
+        },
+        300,
+      );
+    const a = run("a", 1200);
+    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([a, run("b", 10)]);
+    expect(order).toEqual(["a in", "a out", "b in", "b out"]);
+  });
+
+  it("takes over a lock of a live process that hasn't touched it for long (a reused pid)", async () => {
+    await mkdir(join(root, ".glimpse"), { recursive: true });
+    const lock = join(root, ".glimpse", "server.lock");
+    await writeFile(lock, String(process.pid));
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lock, old, old);
+    expect(await withProjectLock(root, async () => "ran", 5000)).toBe("ran");
   });
 
   it("releases the lock when the opener fails", async () => {

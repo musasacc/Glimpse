@@ -270,4 +270,13 @@ describe("terminal protocol", () => {
     await handleTerminalMessage(term, { type: "term-restart" }, (m) => replies.push(m));
     expect(replies).toEqual([{ type: "term-error", message: "Nothing to restart: the terminal was never started" }]);
   });
+
+  it("says so when an input message is too long instead of dropping it silently", async () => {
+    const term = new TerminalSession();
+    const replies: TerminalServerMessage[] = [];
+    expect(await handleTerminalMessage(term, { type: "term-input", data: "x".repeat(100_000) }, (m) => replies.push(m))).toBe(true);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ type: "term-error" });
+    expect((replies[0] as { message: string }).message).toMatch(/too long/);
+  });
 });

@@ -506,7 +506,8 @@ export type TerminalClientMessage =
   | { type: "term-restart" }
   | { type: "term-stop" };
 
-const MAX_INPUT = 64 * 1024;
+/** The longest term-input message (characters); the editor splits longer pastes. */
+export const MAX_INPUT = 64 * 1024;
 
 /** Forward a session's events as protocol messages (e.g. to every editor socket). Returns an unsubscribe function. */
 export function bridgeTerminal(session: TerminalSession, send: (msg: TerminalServerMessage) => void): () => void {
@@ -543,7 +544,13 @@ export async function handleTerminalMessage(session: TerminalSession, msg: unkno
   const m = msg as Record<string, unknown>;
   switch (m.type) {
     case "term-input":
-      if (typeof m.data === "string" && m.data.length <= MAX_INPUT) session.write(m.data);
+      if (typeof m.data !== "string") return true;
+      // The editor sends long pastes in pieces; one this big came from elsewhere: say so rather than drop it silently.
+      if (m.data.length > MAX_INPUT) {
+        reply?.({ type: "term-error", message: `That input was too long for one message (${m.data.length} characters, at most ${MAX_INPUT}): nothing was typed.` });
+        return true;
+      }
+      session.write(m.data);
       return true;
     case "term-resize":
       if (Number.isInteger(m.cols) && Number.isInteger(m.rows)) session.resize(m.cols as number, m.rows as number);

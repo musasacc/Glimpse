@@ -5,6 +5,7 @@
  */
 
 export type Engine = "claude" | "codex" | "api" | "external" | "none";
+import { apiFetch } from "./session";
 export type Preferred = "auto" | "claude" | "codex" | "api" | "external";
 export type ApiProvider = "anthropic" | "openai" | "gemini" | "openrouter" | "ollama";
 export type KeyProvider = Exclude<ApiProvider, "ollama">;
@@ -312,7 +313,7 @@ async function json(res: Response): Promise<unknown> {
 /** GET /api/agent; null when the server can't run the AI itself (older server) or isn't reachable. */
 export async function getAgentInfo(): Promise<AgentInfo | null> {
   try {
-    const res = await fetch("/api/agent");
+    const res = await apiFetch("/api/agent");
     if (!res.ok) return null;
     return normalizeAgentInfo(await json(res));
   } catch {
@@ -322,7 +323,7 @@ export async function getAgentInfo(): Promise<AgentInfo | null> {
 
 /** Change the AI settings (engine, provider, keys, model, behavior). Throws the server's error. */
 export async function saveAgentSettings(body: SettingsPatch): Promise<AgentInfo> {
-  const res = await fetch("/api/agent/settings", {
+  const res = await apiFetch("/api/agent/settings", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -337,9 +338,17 @@ export async function saveAgentSettings(body: SettingsPatch): Promise<AgentInfo>
   return info;
 }
 
+/** Run a request again whose built-in run failed or was stopped (it waits for an AI meanwhile). Throws the server's error. */
+export async function retryHandoff(seq: number): Promise<{ delivered: boolean; engine?: string }> {
+  const res = await apiFetch(`/api/handoffs/${seq}/retry`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const out = (await json(res)) as { delivered?: boolean; engine?: string; error?: string } | null;
+  if (!res.ok) throw new Error(out?.error || res.statusText || `HTTP ${res.status}`);
+  return { delivered: !!out?.delivered, ...(out?.engine && { engine: out.engine }) };
+}
+
 /** Stop the running AI. */
 export async function stopAgent(): Promise<void> {
-  const res = await fetch("/api/agent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  const res = await apiFetch("/api/agent/stop", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
   if (!res.ok) {
     const out = await json(res);
     const error = out && typeof out === "object" && typeof (out as { error?: unknown }).error === "string" ? (out as { error: string }).error : "";

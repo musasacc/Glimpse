@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { NodeType, Op, SceneNode } from "@glimpse/core";
 import { canUngroup, ungroupSelection } from "./arrange";
 import { NoteInspector, SelectionInspector } from "./EditTools";
+import { retryHandoff } from "./agent";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { loop, useLoopLive } from "./loop";
@@ -305,10 +306,34 @@ export function Activity() {
         <div key={a.id} className={`act ${a.kind}`}>
           <span className="k" />
           <span dangerouslySetInnerHTML={{ __html: inlineCode(a.text) }} />
+          {a.retry !== undefined && <RetryButton seq={a.retry} />}
           <time>{new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time>
         </div>
       ))}
     </div>
+  );
+}
+
+/** Runs a failed or stopped request again. */
+function RetryButton({ seq }: { seq: number }) {
+  const [busy, setBusy] = useState(false);
+  const retry = async () => {
+    setBusy(true);
+    try {
+      const r = await retryHandoff(seq);
+      store.clearRetry(seq);
+      if (!r.delivered && r.engine === "none") store.activity("info", "Request kept: it runs once an AI is set up (AI settings)");
+      else if (r.delivered) store.activity("handoff", "Handed the request to your AI");
+    } catch (err) {
+      store.activity("warn", `Couldn't retry: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button className="btn act-retry" disabled={busy} onClick={() => void retry()} title="Run this request again">
+      Retry
+    </button>
   );
 }
 

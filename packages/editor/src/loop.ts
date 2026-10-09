@@ -3,6 +3,7 @@ import type { Change } from "@glimpse/core";
 import { capturePreview, captureUrl, drawMarkers, within } from "./capture";
 import { marksFor, pageToView } from "./markers";
 import { DEVICE_WIDTH, store } from "./store";
+import { apiFetch } from "./session";
 
 /**
  * The version loop: snapshots of the project files (the timeline), viewing and
@@ -268,7 +269,7 @@ class Loop {
       if (!dataUrl || !this.snapshot(s.id)) return;
       // An AI round that grew while we captured needs a new picture.
       if (this.snapshot(s.id)!.at !== s.at) return void (outdated = true);
-      const res = await fetch(`/api/history/${enc(s.id)}/thumb`, {
+      const res = await apiFetch(`/api/history/${enc(s.id)}/thumb`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ dataUrl }),
@@ -528,7 +529,7 @@ export function enc(id: string): string {
  * plainly rather than as a parse error.
  */
 export async function api<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(
+  const res = await apiFetch(
     path,
     body === undefined ? undefined : { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
   );

@@ -4,6 +4,7 @@ import * as L from "./loop-icons";
 import { ago } from "./Sidebar";
 import { store, useStore } from "./store";
 import "./loop.css";
+import { apiFetch } from "./session";
 
 interface FullHandoff {
   seq: number;
@@ -31,7 +32,7 @@ export function HistoryView() {
   useEffect(() => {
     if (selected === null) return setOpen(null);
     let cancelled = false;
-    fetch(`/api/handoffs/${selected}`)
+    apiFetch(`/api/handoffs/${selected}`)
       .then((r) => r.json())
       .then((h: FullHandoff) => !cancelled && setOpen(h))
       .catch(() => {});
@@ -96,15 +97,25 @@ export function HistoryView() {
 
 /** The picture that went with a handoff; if the server can't serve it, it just stays hidden. */
 function Screenshot({ seq }: { seq: number }) {
-  const [failed, setFailed] = useState(false);
-  useEffect(() => setFailed(false), [seq]);
-  if (failed) return null;
-  return (
-    <img
-      className="history-shot"
-      src={`/api/handoffs/${seq}/screenshot`}
-      alt="Screenshot of the edited page sent with this handoff"
-      onError={() => setFailed(true)}
-    />
-  );
+  // Fetched with the editor's session (an <img> can't send it), shown from a blob URL.
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let url: string | null = null;
+    let cancelled = false;
+    setSrc(null);
+    apiFetch(`/api/handoffs/${seq}/screenshot`)
+      .then(async (r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (!blob || cancelled) return;
+        url = URL.createObjectURL(blob);
+        setSrc(url);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [seq]);
+  if (!src) return null;
+  return <img className="history-shot" src={src} alt="Screenshot of the edited page sent with this handoff" onError={() => setSrc(null)} />;
 }

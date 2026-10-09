@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Target } from "@glimpse/core";
-import { findRunningServer, openBrowser, startServer, withProjectLock, type GlimpseServer, type Handoff, type ServerInfo } from "@glimpse/server";
+import { findRunningServer, openBrowser, servesProject, startServer, withProjectLock, writeServerInfo, type GlimpseServer, type Handoff } from "@glimpse/server";
 import { registerSceneTools } from "./scene-tool.js";
 
 export { registerSceneTools, sceneExamplesText, type SceneToolOptions } from "./scene-tool.js";
@@ -72,10 +72,18 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
   const mcp = new McpServer({ name: "glimpse", version: VERSION }, { instructions: AGENT_GUIDE });
   registerSceneTools(mcp, { defaultDir: () => current });
 
-  async function ensure(dirArg?: string, target?: Target, entry?: string, command?: string): Promise<{ project: Project; opened: boolean }> {
+  async function ensure(
+    dirArg?: string,
+    target?: Target,
+    entry?: string,
+    command?: string,
+    how: { recheck?: boolean } = {},
+  ): Promise<{ project: Project; opened: boolean }> {
     const dir = resolve(dirArg ?? current ?? process.cwd());
     const known = projects.get(dir);
-    if (known) {
+    // A Glimpse started elsewhere may have stopped or moved to another port (the desktop window was reopened).
+    if (known && !known.own && how.recheck && !(await servesProject(known.url, dir, 1500))) forget(known);
+    else if (known) {
       current = dir;
       return { project: known, opened: false };
     }
@@ -103,9 +111,8 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
         if (err.code === "EADDRINUSE") return startServer({ ...base, port: 0 });
         throw err;
       });
-      await mkdir(dirname(infoFile), { recursive: true });
-      // The token lets other local tools ask this server to run commands; keep the file private to this user.
-      await writeFile(infoFile, JSON.stringify({ url: own.url, pid: process.pid, token: own.token } satisfies ServerInfo, null, 2), { mode: 0o600 });
+      // The token lets other local tools ask this server to run commands; the file is private to this user.
+      await writeServerInfo(dir, { url: own.url, pid: process.pid, token: own.token });
       const project = { dir, url: own.url, own };
       projects.set(dir, project);
       current = dir;
@@ -114,13 +121,33 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     });
   }
 
-  const api = async <T>(p: Project, path: string, body?: unknown, signal?: AbortSignal): Promise<T> => {
-    const res = await fetch(`${p.url}${path}`, body === undefined ? { signal } : {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
+  /** Drop a Glimpse started elsewhere that stopped answering: the next call finds the current one (or starts one). */
+  function forget(p: Project): void {
+    if (projects.get(p.dir) === p) projects.delete(p.dir);
+  }
+
+  const api = async <T>(project: Project, path: string, body?: unknown, signal?: AbortSignal): Promise<T> => {
+    // The project may have been looked up again since the caller got it.
+    let p = project.own ? project : (projects.get(project.dir) ?? project);
+    const call = (q: Project) =>
+      fetch(`${q.url}${path}`, body === undefined ? { signal } : {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+      });
+    let res: Response;
+    try {
+      res = await call(p);
+    } catch (err) {
+      // A Glimpse started elsewhere stopped (or moved to another port): find it again once, then retry.
+      if (p.own || signal?.aborted) throw err;
+      forget(p);
+      const again = (await ensure(p.dir)).project;
+      if (again.url === p.url) throw err;
+      p = again;
+      res = await call(p);
+    }
     const json = (await res.json().catch(() => null)) as (T & { error?: unknown }) | null;
     if (!res.ok || json === null) {
       throw new Error(`Glimpse at ${p.url} refused ${path}: ${json && typeof json.error === "string" ? json.error : `HTTP ${res.status}`}`);
@@ -209,7 +236,7 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     },
     async ({ dir, target, entry, command }) => {
       type Session = { project: { target: string; entry: string }; entryExists: boolean; previewError?: string | null };
-      let { project, opened } = await ensure(dir, target, entry, command);
+      let { project, opened } = await ensure(dir, target, entry, command, { recheck: true });
       let session = await api<Session>(project, "/api/session");
       const entryKey = (e: string) => relative(project.dir, resolve(project.dir, e)).split(sep).join("/");
       const differs = (s: Session) =>
@@ -352,6 +379,7 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       projects.delete(key);
       if (current === key) current = undefined;
       if (p.own) await shutdown(p);
+      else await detach(p);
       return text(p.own ? "Closed." : "Detached (that Glimpse was started elsewhere and keeps running).");
     },
   );
@@ -367,10 +395,13 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     }
   };
 
+  /** Tell a Glimpse started elsewhere that this agent is gone, so it may run requests itself again. */
+  const detach = (p: Project) => fetch(`${p.url}/api/agent/detach`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}", signal: AbortSignal.timeout(1000) }).then(() => undefined, () => undefined);
+
   return {
     mcp,
     async close() {
-      for (const p of projects.values()) if (p.own) await shutdown(p);
+      for (const p of projects.values()) await (p.own ? shutdown(p) : detach(p));
       projects.clear();
       await mcp.close();
     },

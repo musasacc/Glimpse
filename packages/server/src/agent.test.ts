@@ -5,7 +5,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { claudeArgs, createProjectTools, resolveEngine, withInstructions } from "./agent-runner.js";
+import { claudeArgs, codexArgs, createProjectTools, resolveEngine, withInstructions } from "./agent-runner.js";
 import {
   clearOllamaCache,
   detectAgents,
@@ -22,7 +22,7 @@ import { startServer, type GlimpseServer } from "./index.js";
 
 const isWindows = process.platform === "win32";
 const API_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"];
-const ENV_KEYS = ["GLIMPSE_CONFIG_DIR", "GLIMPSE_AGENT_CLAUDE_BIN", "GLIMPSE_AGENT_CODEX_BIN", ...API_ENV, "FAKE_MODE", "FAKE_LOG"];
+const ENV_KEYS = ["GLIMPSE_CONFIG_DIR", "GLIMPSE_AGENT_CLAUDE_BIN", "GLIMPSE_AGENT_CODEX_BIN", ...API_ENV, "FAKE_MODE", "FAKE_LOG", "FAKE_HELP"];
 
 /** The settings with nothing chosen, plus `over`. */
 const settings = (over: Record<string, unknown> = {}, api: Record<string, unknown> = {}) => ({
@@ -51,6 +51,7 @@ beforeEach(async () => {
   process.env.FAKE_LOG = join(tmp, "fake.log");
   for (const k of API_ENV) delete process.env[k];
   delete process.env.FAKE_MODE;
+  delete process.env.FAKE_HELP;
   clearOllamaCache();
 });
 
@@ -116,6 +117,18 @@ async function fakeCodex(): Promise<string> {
     `const fs = require("fs");
 const args = process.argv.slice(2);
 if (args[0] === "exec" && args[1] === "--help") {
+  if (process.env.FAKE_HELP === "fail-once") {
+    const marker = process.env.FAKE_LOG + ".help";
+    if (!fs.existsSync(marker)) {
+      fs.writeFileSync(marker, "1");
+      process.exit(1);
+    }
+  }
+  if (process.env.FAKE_HELP === "slow") {
+    setTimeout(() => {}, 1500);
+    const until = Date.now() + 1500;
+    while (Date.now() < until);
+  }
   console.log("Run Codex non-interactively\\n\\nUsage: codex exec [OPTIONS] [PROMPT]\\n\\nArguments:\\n  [PROMPT]  Initial instructions. If not provided as an argument (or if \\\`-\\\` is used), instructions are read from stdin\\n\\nOptions:\\n      --full-auto  Low-friction sandboxed automatic execution");
   process.exit(0);
 }
@@ -174,6 +187,11 @@ async function editor(): Promise<{ messages: { type: string; [k: string]: unknow
   await until((m) => m.type === "hello");
   return { messages, until, close: () => ws.close() };
 }
+
+const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const png = (tag: string) => Buffer.concat([PNG_SIG, Buffer.from(tag)]);
+const pngUrl = (tag: string) => `data:image/png;base64,${png(tag).toString("base64")}`;
+const editsList = { version: 1, target: "html", createdAt: new Date().toISOString(), changes: [] };
 
 function alive(pid: number): boolean {
   try {
@@ -352,6 +370,9 @@ describe("built-in agent", () => {
     while (pids.some(alive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
     expect(pids.some(alive)).toBe(false);
     expect(((await (await fetch(`${srv.url}/api/agent`)).json()) as { running: unknown }).running).toBeNull();
+    // The stopped request isn't lost: it waits again (not run again by itself), for a Retry or an external agent.
+    const { handoffs } = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: { delivered: boolean; runError?: string }[] };
+    expect(handoffs[0]).toMatchObject({ delivered: false, runError: "Stopped" });
     ed.close();
   }, 20_000);
 
@@ -415,6 +436,138 @@ describe("built-in agent", () => {
     expect(await (await post("/api/agent/settings", { anthropicApiKey: null })).json()).toMatchObject({ available: { api: false } });
     expect(await (await post("/api/agent/stop", {})).json()).toEqual({ ok: true });
     ed.close();
+  }, 20_000);
+});
+
+describe("built-in agent and the human's requests", () => {
+  const handoffList = async () =>
+    ((await (await fetch(`${srv!.url}/api/handoffs`)).json()) as { handoffs: { seq: number; delivered: boolean; runError?: string }[] }).handoffs;
+
+  it("keeps a request whose run failed, and runs it again on Retry", async () => {
+    await fakeClaude();
+    process.env.FAKE_MODE = "fail";
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    const { seq } = (await (await post("/api/request", { text: "Make a page" })).json()) as { seq: number };
+    await ed.until((m) => m.type === "agent-run" && m.event === "error");
+    await ed.until((m) => m.type === "handoff-requeued" && m.seq === seq);
+    expect((await handoffList())[0]).toMatchObject({ seq, delivered: false, runError: "Something broke" });
+    // It isn't run again by itself (a settings save or the engine check would loop on the same error).
+    await post("/api/agent/settings", { quality: "fast" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(ed.messages.filter((m) => m.type === "agent-run" && m.event === "start")).toHaveLength(1);
+
+    delete process.env.FAKE_MODE;
+    const retry = await post(`/api/handoffs/${seq}/retry`, {});
+    expect(retry.status).toBe(200);
+    const done = await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    expect(done).toMatchObject({ seq, engine: "claude" });
+    expect((await handoffList())[0]).toMatchObject({ seq, delivered: true });
+    expect((await handoffList())[0]!.runError).toBeUndefined();
+    expect((await post(`/api/handoffs/${seq}/retry`, {})).status).toBe(404);
+    ed.close();
+  }, 20_000);
+
+  it("lets an external agent take a request whose built-in run failed", async () => {
+    await fakeClaude();
+    process.env.FAKE_MODE = "fail";
+    srv = await startServer({ dir, port: 0, externalPresenceMs: 200 });
+    const ed = await editor();
+    const { seq } = (await (await post("/api/request", { text: "Make a page" })).json()) as { seq: number };
+    await ed.until((m) => m.type === "handoff-requeued" && m.seq === seq);
+    expect((await srv.nextHandoff(undefined, 1000))?.seq).toBe(seq);
+    ed.close();
+  }, 20_000);
+
+  it("doesn't start a second agent while an attached external agent works, until it goes quiet", async () => {
+    await fakeClaude();
+    srv = await startServer({ dir, port: 0, externalPresenceMs: 1500 });
+    const ed = await editor();
+    // The external agent waited and got #1; it is busy with it now (no wait open).
+    const first = srv.nextHandoff(undefined, 5000);
+    await post("/api/request", { text: "First, for the external agent" });
+    expect((await first)?.request?.text).toBe("First, for the external agent");
+    await post("/api/request", { text: "Second, while it works" });
+    await new Promise((r) => setTimeout(r, 500));
+    expect(ed.messages.some((m) => m.type === "agent-run")).toBe(false);
+    expect(await (await fetch(`${srv.url}/api/agent`)).json()).toMatchObject({ engine: "external", available: { external: true } });
+    // Its next wait gets #2.
+    expect((await srv.nextHandoff(undefined, 1000))?.request?.text).toBe("Second, while it works");
+
+    // Once it hasn't waited for a while, "auto" runs what waits itself.
+    await post("/api/request", { text: "Third, nobody listens any more" });
+    const start = await ed.until((m) => m.type === "agent-run" && m.event === "start", 8000);
+    expect(start).toMatchObject({ engine: "claude" });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    ed.close();
+  }, 20_000);
+
+  it("runs requests itself again as soon as the external agent detaches", async () => {
+    await fakeClaude();
+    srv = await startServer({ dir, port: 0, externalPresenceMs: 60_000 });
+    const ed = await editor();
+    expect(await srv.nextHandoff(undefined, 100)).toBeNull();
+    await post("/api/request", { text: "Waits for the external agent" });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(ed.messages.some((m) => m.type === "agent-run")).toBe(false);
+    expect((await post("/api/agent/detach", {})).status).toBe(200);
+    expect(await ed.until((m) => m.type === "agent-run" && m.event === "done")).toMatchObject({ engine: "claude" });
+    ed.close();
+  }, 20_000);
+
+  it("never hands a request the built-in agent handled to `glimpse wait --after`", async () => {
+    await fakeClaude();
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "Built in" });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    expect(await srv.nextHandoff(0, 300)).toBeNull();
+    const res = (await (await fetch(`${srv.url}/api/handoff/next?after=0&timeout=0`)).json()) as { status: string };
+    expect(res.status).toBe("editing");
+    ed.close();
+  }, 20_000);
+
+  it("starts a waiting request once an engine shows up", async () => {
+    srv = await startServer({ dir, port: 0, agentDetectMs: 300 });
+    const ed = await editor();
+    const res = (await (await post("/api/request", { text: "Nobody can run me yet" })).json()) as { delivered: boolean };
+    expect(res.delivered).toBe(false);
+    await fakeClaude(); // installed while Glimpse runs
+    expect(await ed.until((m) => m.type === "agent-run" && m.event === "done", 8000)).toMatchObject({ engine: "claude" });
+    ed.close();
+  }, 20_000);
+
+  it("never offers an Edit source record to an agent", async () => {
+    srv = await startServer({ dir, port: 0 });
+    const changeList = { version: 1, target: "html", createdAt: new Date().toISOString(), changes: [] };
+    const res = (await (await post("/api/handoff", { kind: "source", changeList })).json()) as { delivered: boolean };
+    expect(res.delivered).toBe(true);
+    expect(await srv.nextHandoff(undefined, 300)).toBeNull();
+  }, 20_000);
+
+  it.skipIf(isWindows)("stops Codex while it is still being probed for its options", async () => {
+    await fakeCodex();
+    process.env.FAKE_HELP = "slow";
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "Make a page" });
+    await ed.until((m) => m.type === "agent-run" && m.event === "start");
+    await post("/api/agent/stop", {});
+    expect(await ed.until((m) => m.type === "agent-run" && m.event === "error")).toMatchObject({ text: "Stopped" });
+    await new Promise((r) => setTimeout(r, 2500));
+    // Codex never ran: it would have logged and written the page.
+    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
+    expect(await readFile(join(dir, "index.html"), "utf8")).toContain("<p>Hi</p>");
+    ed.close();
+  }, 20_000);
+
+  it("asks Codex for its options again after a failed probe, and passes a large prompt on stdin", async () => {
+    const bin = await fakeCodex();
+    process.env.FAKE_HELP = "fail-once";
+    expect((await codexArgs(bin, "small", false)).args).toEqual(["exec", "small"]);
+    expect((await codexArgs(bin, "small", false)).args).toEqual(["exec", "--full-auto", "small"]);
+    const big = "x".repeat(200 * 1024);
+    expect(await codexArgs(bin, big, false)).toEqual({ args: ["exec", "--full-auto", "-"], stdin: true });
   }, 20_000);
 });
 
@@ -524,6 +677,21 @@ describe("API engine", () => {
     await ed.until((m) => m.type === "agent-run" && m.event === "done");
     expect(requests[1]!.body).toMatchObject({ model: "claude-haiku-5-5", thinking: { type: "adaptive" } });
     expect(requests[1]!.body.output_config).toBeUndefined();
+    ed.close();
+  }, 20_000);
+
+  it("shows the model the screenshots before and after the human's edits", async () => {
+    reply = () => ({ status: 200, events: message("end_turn", [["text", { type: "text", text: "" }, [{ type: "text_delta", text: "Done." }]]]) });
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/handoff", { kind: "ai", changeList: editsList, screenshot: pngUrl("after"), screenshotBefore: pngUrl("before") });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    const content = (requests[0]!.body.messages as { content: { type: string; text?: string; source?: { data: string } }[] }[])[0]!.content;
+    expect(content.map((c) => c.type)).toEqual(["text", "image", "text", "image", "text"]);
+    expect(content[0]!.text).toMatch(/^Before/);
+    expect(content[1]!.source!.data).toBe(png("before").toString("base64"));
+    expect(content[2]!.text).toMatch(/^After/);
+    expect(content[3]!.source!.data).toBe(png("after").toString("base64"));
     ed.close();
   }, 20_000);
 
@@ -859,6 +1027,23 @@ describe("OpenAI-compatible engine", () => {
     expect(msgs.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool"]);
     expect(msgs[2]!.tool_calls).toHaveLength(1);
     expect(msgs[3]).toMatchObject({ tool_call_id: "call_1", content: "Wrote index.html" });
+    ed.close();
+  }, 20_000);
+
+  it("shows the model the screenshots before and after the human's edits", async () => {
+    process.env.OPENAI_BASE_URL = `${fake.url}/v1`;
+    await saveAgentSettings({ engine: "api", api: { provider: "openai", keys: { openai: "sk-openai-test" } } });
+    reply = () => doneTurn;
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/handoff", { kind: "ai", changeList: editsList, screenshot: pngUrl("after"), screenshotBefore: pngUrl("before") });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    const user = (requests[0]!.body.messages as { role: string; content: { type: string; text?: string; image_url?: { url: string } }[] }[])[1]!;
+    expect(user.content.map((c) => c.type)).toEqual(["text", "text", "image_url", "text", "image_url"]);
+    expect(user.content[1]!.text).toMatch(/^Before/);
+    expect(user.content[2]!.image_url!.url).toBe(pngUrl("before"));
+    expect(user.content[3]!.text).toMatch(/^After/);
+    expect(user.content[4]!.image_url!.url).toBe(pngUrl("after"));
     ed.close();
   }, 20_000);
 

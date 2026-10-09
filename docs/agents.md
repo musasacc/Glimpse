@@ -106,7 +106,8 @@ Screenshots (open them to see what the human means):
 numbered, saved as `.glimpse/handoffs/<seq>.png` (the handoff's `screenshot` field), and a clean PNG of the same view
 before the edits, `.glimpse/handoffs/<seq>-before.png` (`screenshotBefore`; from the latest version in the timeline,
 or the unedited mock; React pages have none). The prompt ends with both absolute paths, the built-in API engine gets
-the marked picture as an image, and the MCP tools return both as image blocks (marked one first).
+both pictures as images, labelled before and after (Ollama gets text only), and the MCP tools return both as image
+blocks (marked one first).
 
 **Variants.** A `variants` handoff names a job (`v1`, `v2`, …), the element (`label`, `src`) and a count of 2–4.
 Write variant *k* into `.glimpse/variants/<id>/<k>/`, mirroring the project's relative paths
@@ -144,9 +145,18 @@ app) writes `{ url, pid, token }` into `<project>/.glimpse/server.json`; the tok
 
 The previewed project itself runs at the editor's origin (the editor needs to reach into its page), so it is
 trusted like code you run with its own dev server. Glimpse keeps its pages' own requests away from the API (a request
-whose `Referer` is a preview, version or variant page gets the project's file for a `GET` and 403 otherwise) and never
-serves the project's dotfiles (`.git/`, `.env`, `.npmrc`, …) or `.glimpse/`, but a page that sets out to can still
-script the editor's window. Open projects you would also run.
+whose `Referer` is a preview, version or variant page gets the project's file for a `GET` and 403 otherwise; a
+browser's `/api/` calls also need the `x-glimpse-session` header, and the editor's websocket `?session=`, a per-session
+secret only the editor's own page gets) and never serves the project's dotfiles (`.git/`, `.env`, `.npmrc`, …),
+`.glimpse/` or anything a symlink leads to outside the project, but a page that sets out to can still script the
+editor's window. Open projects you would also run.
+
+An external agent that waited (`glimpse wait`, the MCP server) counts as attached for 3 minutes after its last wait:
+with the engine on "auto", Glimpse leaves new requests to it instead of starting its built-in agent next to it.
+`POST /api/agent/detach` (sent by the MCP server when it closes) ends that early. `glimpse wait --after <n>` never
+returns a handoff the built-in agent already handled. A built-in run that fails or is stopped puts its handoff back
+(`delivered: false`, `runError`): an external agent's next wait gets it, or the editor's Retry
+(`POST /api/handoffs/<seq>/retry`) runs it again.
 
 | Route | Body → response |
 |---|---|

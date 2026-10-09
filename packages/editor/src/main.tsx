@@ -1,3 +1,5 @@
+// First: reads the session secret from the page before anything else runs (see session.ts).
+import "./session";
 import "./desktop";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

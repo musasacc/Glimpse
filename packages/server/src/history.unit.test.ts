@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { History, isIgnored, MAX_FILE_BYTES, MAX_FILES, writablePath, type Snapshot } from "./history.js";
+import { History, isIgnored, isSecretFile, MAX_FILE_BYTES, MAX_FILES, writablePath, type Snapshot } from "./history.js";
 
 let dir: string;
 let history: History;
@@ -39,6 +39,25 @@ describe("what the history ignores", () => {
     }
     for (const p of ["index.html", "src/app.tsx", ".env", ".github/workflows/ci.yml", "gitignore.md", "distance.css", "a~b.txt"]) {
       expect(isIgnored(p), p).toBe(false);
+    }
+  });
+
+  it("never copies files that hold secrets into the history", async () => {
+    for (const name of [".env", ".env.local", ".ENV.production", ".npmrc", "server.pem", "tls.key", "id_rsa", "id_ed25519", "cert.p12", ".netrc"]) {
+      expect(isSecretFile(name), name).toBe(true);
+    }
+    for (const name of [".env.example", ".env.sample", "index.html", "keyboard.js", "id_card.png", "monkey.css", "env.ts"]) {
+      expect(isSecretFile(name), name).toBe(false);
+    }
+    await put("index.html", "<p>hi</p>");
+    await put(".env", "API_KEY=secret");
+    await put("config/.env.local", "TOKEN=secret");
+    await put("certs/server.pem", "-----BEGIN PRIVATE KEY-----");
+    await put(".env.example", "API_KEY=");
+    const { snapshot } = await history.snapshot("manual", "x");
+    expect(Object.keys(snapshot.files).sort()).toEqual([".env.example", "index.html"]);
+    for (const name of await readdir(join(dir, ".glimpse", "history", "objects"))) {
+      expect(await readFile(join(dir, ".glimpse", "history", "objects", name), "utf8")).not.toContain("secret");
     }
   });
 

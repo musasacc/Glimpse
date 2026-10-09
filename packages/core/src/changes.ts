@@ -25,6 +25,8 @@ export type Change = Op & {
   place?: string;
   /** The number of its marker on the annotated screenshot. */
   mark?: number;
+  /** Why Edit source left it to the AI, when it could have been written but wasn't safe to (set by the source patchers). */
+  reason?: string;
 };
 
 export interface ChangeList {
@@ -36,6 +38,19 @@ export interface ChangeList {
   /** The preview the boxes were measured in (CSS px; cells for a terminal UI). */
   viewport?: { width: number; height: number };
   changes: Change[];
+}
+
+/** Why a reorder next to another moved element goes to the AI. */
+export const MOVED_ANCHOR = "Its neighbour moves too, so Glimpse can't place it safely in the code: the AI does it.";
+
+/**
+ * The changes with the reorders among them sorted by their final index: moves that land in the same spot
+ * (before the same sibling) then come out in the order the human made. Other changes keep their places.
+ */
+export function reordersInOrder(changes: Change[]): Change[] {
+  const reorders = changes.filter((c) => c.op === "reorder").sort((a, b) => (a.op === "reorder" && b.op === "reorder" ? a.to.index - b.to.index : 0));
+  let k = 0;
+  return changes.map((c) => (c.op === "reorder" ? reorders[k++]! : c));
 }
 
 export interface ChangeListOptions {
@@ -107,12 +122,16 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = [], measure?: 
   }
 
   // Reordered / reparented base nodes.
-  for (const id of movedInTree(base, final)) {
+  const moved = movedInTree(base, final);
+  // Anchors are siblings that stay where they were: a neighbour that moves too would be looked up at its old place
+  // in the source (A B C → C B A would come out as B A C).
+  const movedSet = new Set(moved);
+  for (const id of moved) {
     const b = base.nodes[id]!;
     const f = final.nodes[id]!;
     // Into a new parent (group) or out of a removed one (ungroup), the move is part
     // of a structural change the AI does as a whole; neighbours alone can't place it.
-    const anchor = base.nodes[f.parent!] && final.nodes[b.parent!] ? anchorOf(final, f) : undefined;
+    const anchor = base.nodes[f.parent!] && final.nodes[b.parent!] ? anchorOf(final, f, movedSet) : undefined;
     reorders.push(
       withMeta(final, f, {
         op: "reorder",
@@ -250,12 +269,12 @@ function withMeta<T extends Op>(scene: Scene, n: SceneNode, op: T, intent?: stri
   };
 }
 
-/** Nearest siblings (that exist in source) before and after `n` in the final tree. */
-function anchorOf(scene: Scene, n: SceneNode): Change["anchor"] {
+/** Nearest siblings (that exist in source, and aren't in `skip`) before and after `n` in the final tree. */
+function anchorOf(scene: Scene, n: SceneNode, skip?: ReadonlySet<string>): Change["anchor"] {
   if (n.parent === null) return undefined;
   const siblings = getNode(scene, n.parent).children;
   const i = siblings.indexOf(n.id);
-  const withSource = (ids: string[]) => ids.map((id) => scene.nodes[id]?.source).find((s) => s !== undefined);
+  const withSource = (ids: string[]) => ids.filter((id) => !skip?.has(id)).map((id) => scene.nodes[id]?.source).find((s) => s !== undefined);
   const after = formatSource(withSource(siblings.slice(0, i).reverse()));
   const before = formatSource(withSource(siblings.slice(i + 1)));
   return { ...(after ? { after } : {}), ...(before ? { before } : {}) };

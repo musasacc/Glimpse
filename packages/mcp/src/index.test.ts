@@ -91,6 +91,32 @@ describe("glimpse MCP", () => {
     }
   }, 30_000);
 
+  it("finds a Glimpse started elsewhere again after it restarted on another port, and detaches on close", async () => {
+    const { dir, call } = await setup();
+    const info = (url: string, token: string) => writeFile(join(dir, ".glimpse", "server.json"), JSON.stringify({ url, pid: process.pid + 1, token }));
+    let srv = await startServer({ dir, port: 0 });
+    try {
+      await info(srv.url, srv.token);
+      expect(await call("glimpse_open", { dir })).toContain(`open at ${srv.url} `);
+      expect(await call("glimpse_status", { dir, message: "one" })).toBe("Posted.");
+      // The desktop window was closed and opened again: the old port is gone, a new Glimpse runs.
+      await srv.close();
+      srv = await startServer({ dir, port: 0 });
+      await info(srv.url, srv.token);
+      expect(await call("glimpse_status", { dir, message: "two" })).toBe("Posted.");
+      expect(await call("glimpse_open", { dir })).toContain(`open at ${srv.url} `);
+      // Waiting attached this agent; closing tells that Glimpse it is gone.
+      await call("glimpse_wait_for_done", { dir, timeout_sec: 5 }).catch(() => undefined);
+      expect(((await (await fetch(`${srv.url}/api/agent`)).json()) as { available: { external: boolean } }).available.external).toBe(true);
+      expect(await call("glimpse_close", { dir })).toContain("Detached");
+      await expect
+        .poll(async () => ((await (await fetch(`${srv.url}/api/agent`)).json()) as { available: { external: boolean } }).available.external, { timeout: 5000 })
+        .toBe(false);
+    } finally {
+      await srv.close();
+    }
+  }, 30_000);
+
   it("opens a project and hands the human's request to the agent", async () => {
     const { dir, call } = await setup();
     const opened = await call("glimpse_open", { dir });

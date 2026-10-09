@@ -186,15 +186,18 @@ async function renderFolder(): Promise<void> {
 async function send(): Promise<void> {
   const text = prompt.value.trim();
   if (!text || busy) return;
+  // Busy before anything is awaited (the AI info can take seconds while the shell environment loads): a second
+  // Enter or click meanwhile must not send the request twice.
+  setBusy(true);
   say("");
   const info = await api.aiInfo().catch(() => null);
   renderAi(info);
   // Nothing can run it yet: set the AI up first, and the request goes out once that's saved.
   if (info && info.engine === "none") {
+    setBusy(false);
     openAiPanel(() => void send());
     return;
   }
-  setBusy(true);
   try {
     const res = await api.send({ text, target });
     if (res.status === "sent") {

@@ -15,10 +15,12 @@ import {
   type SceneTheme,
 } from "@glimpse/core";
 import { followOps } from "./hmr";
+import { chunkInput } from "./term-input";
 import { onLive, sendLive, type LiveMessage } from "./live";
 import { absBox, DEFAULT_CELL, hostTheme, isSceneContainer, isSceneTarget, measureCell, placeWidget, type Cell, type SceneTarget } from "./scene-geometry";
 import { store } from "./store";
 import type { Surface } from "./surface";
+import { apiFetch } from "./session";
 
 /**
  * Scene mode: editing the mock of a terminal UI or native GUI that the agent
@@ -202,7 +204,7 @@ class SceneMode {
   async reload(): Promise<void> {
     const seq = ++this.loadSeq;
     try {
-      const res = await fetch("/api/scene");
+      const res = await apiFetch("/api/scene");
       const body = (await res.json()) as ScenePayload & { error?: string };
       if (seq !== this.loadSeq || !this.state.active) return;
       if (!res.ok) throw new Error(body.error ?? res.statusText);
@@ -429,7 +431,8 @@ class SceneMode {
   }
 
   input(data: string): void {
-    sendLive({ type: "term-input", data });
+    // A long paste goes in pieces: the server takes at most 64K characters per message (and 1 MB per websocket frame).
+    for (const piece of chunkInput(data)) sendLive({ type: "term-input", data: piece });
   }
 
   /** The terminal pane's size. `focus`: this window is the one the human is using now, so its size wins. */

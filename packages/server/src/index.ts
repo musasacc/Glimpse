@@ -21,7 +21,7 @@ export { API_PROVIDERS, KEY_PROVIDERS, PROVIDERS, QUALITIES, type ApiProvider, t
 export { type AgentApiInfo, type AgentInfo, type AgentRunEvent, type AgentRunState, type BuiltInEngine, type ResolvedEngine } from "./agent-types.js";
 export { injectClient } from "./inject.js";
 export { openBrowser } from "./browser.js";
-export { findRunningServer, projectDirKey, sameDir, servesProject, withProjectLock, type ServerInfo } from "./running.js";
+export { findRunningServer, projectDirKey, sameDir, servesProject, withProjectLock, writeServerInfo, type ServerInfo } from "./running.js";
 export { planPatch, type PatchPlan } from "./patch-html.js";
 export { History, type PublicSnapshot, type Snapshot, type SnapshotKind } from "./history.js";
 export { type VariantJob } from "./variants.js";

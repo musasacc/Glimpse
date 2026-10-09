@@ -20,6 +20,7 @@ import { SceneCanvas } from "./SceneCanvas";
 import { SceneToolbar } from "./SceneToolbar";
 import { isSceneTarget } from "./scene-geometry";
 import { sceneMode } from "./scene-mode";
+import { apiFetch } from "./session";
 
 export function App() {
   const state = useStore();
@@ -218,7 +219,7 @@ function SendDialog({ list: opened, onClose }: { list: ChangeList; onClose: () =
       const { after: screenshot, before: screenshotBefore } = await handoffScreenshots(changeList.changes);
       // A scene mock: Glimpse writes the edited scene into its file first, so the agent only changes the code.
       const res = await sceneMode.writes(
-        fetch("/api/handoff", {
+        apiFetch("/api/handoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({

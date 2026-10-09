@@ -1,5 +1,6 @@
 import { getAgentInfo, normalizeAgentInfo, normalizeAgentRun, normalizeRunMessage } from "./agent";
 import { loop } from "./loop";
+import { openLiveSocket } from "./session";
 import { store, type ProjectInfo } from "./store";
 
 /** A message from the Glimpse server's websocket. */
@@ -54,7 +55,19 @@ export function connectLive(): () => void {
 
   const open = () => {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = socket = new WebSocket(`${proto}//${location.host}/__glimpse/ws`);
+    void openLiveSocket(`${proto}//${location.host}/__glimpse/ws`).then(
+      (w) => {
+        if (closed) return w.close();
+        attach(w);
+      },
+      () => {
+        if (!closed) retry = setTimeout(open, 1000);
+      },
+    );
+  };
+
+  const attach = (w: WebSocket) => {
+    ws = socket = w;
     ws.onopen = () => store.set({ connected: true });
     ws.onclose = () => {
       store.set({ connected: false });
@@ -76,6 +89,8 @@ export function connectLive(): () => void {
           if (!info) void getAgentInfo().then((i) => i && store.setAgentInfo(i));
           // Start on the editor when there is already a page to edit.
           if (first && msg.entryExists !== false) store.set({ view: "editor" });
+          // Requests and handoffs sent, delivered or given back while we were away.
+          void store.refreshHandoffs();
           break;
         }
         case "agent":
@@ -99,6 +114,10 @@ export function connectLive(): () => void {
           store.set({ reloadKey: store.state.reloadKey + 1 });
           break;
         case "handoff-delivered":
+          // An agent took it (an external one, after a failed run): nothing left to retry.
+          if (typeof msg.seq === "number") store.clearRetry(msg.seq);
+          void store.refreshHandoffs();
+          break;
         case "handoff-requeued":
           void store.refreshHandoffs();
           break;
