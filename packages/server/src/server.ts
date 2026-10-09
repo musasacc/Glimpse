@@ -106,7 +106,12 @@ export interface GlimpseServer {
    * With `afterSeq`, the first handoff newer than it; without, the oldest one
    * no agent has received yet (so requests sent while no agent listened are queued).
    */
-  nextHandoff(afterSeq: number | undefined, timeoutMs: number): Promise<Handoff | null>;
+  nextHandoff(afterSeq: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Handoff | null>;
+  /**
+   * Count a handoff that was handed out as not delivered again, because it never reached the agent
+   * (e.g. its tool call was cancelled). False when there is no such delivered handoff.
+   */
+  requeueHandoff(seq: number): boolean;
   /** Broadcast a full reload of the preview. */
   reload(): void;
   /** Save a version of the project's files now (a "manual" snapshot), unless nothing changed since the latest one. */
@@ -198,7 +203,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   const stateDir = join(dir, ".glimpse");
   await mkdir(join(stateDir, "handoffs"), { recursive: true });
 
-  const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff) => void; stop: () => void }>();
+  const waiters = new Set<{ after: number | undefined; resolve: (h: Handoff | null) => void }>();
   const sockets = new Set<WebSocket>();
   /** The live client in previewed pages (the page, compare and variant frames): it only acts on file changes. */
   const previewSockets = new Set<WebSocket>();
@@ -802,9 +807,22 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       // If the agent disconnects mid-wait, stop waiting so nothing is delivered to a dead request.
       const cancel = new AbortController();
       res.on("close", () => cancel.abort());
-      const h = await nextHandoff(after, timeout, cancel.signal);
-      if (cancel.signal.aborted) return;
-      send(res, 200, h ? { status: "ready", handoff: h } : { status: "editing" });
+      const got = await takeHandoff(after, timeout, cancel.signal);
+      if (cancel.signal.aborted) {
+        // The agent hung up just as something arrived: keep it for the agent's next wait.
+        if (got?.fresh) requeueHandoff(got.handoff.seq);
+        return;
+      }
+      // Likewise if the answer never makes it out.
+      if (got?.fresh) res.once("close", () => void (res.writableFinished || requeueHandoff(got.handoff.seq)));
+      send(res, 200, got ? { status: "ready", handoff: got.handoff } : { status: "editing" });
+      return;
+    }
+
+    const requeueMatch = path.match(/^\/api\/handoffs\/(\d+)\/requeue$/);
+    if (requeueMatch && req.method === "POST") {
+      const ok = requeueHandoff(Number(requeueMatch[1]));
+      send(res, ok ? 200 : 404, ok ? { ok } : { error: "No delivered handoff with that number" });
       return;
     }
 
@@ -1056,6 +1074,11 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/variants" && req.method === "POST") {
+      if (project.target === "react") {
+        // A variant cell would load the raw component file: there is no Vite-backed variant preview yet.
+        send(res, 400, { error: "Variants aren't available for React projects yet." });
+        return;
+      }
       const body = (await readJson(req)) as { src?: unknown; label?: unknown; count?: unknown; hint?: unknown };
       const label = typeof body.label === "string" ? body.label.trim() : "";
       const count = Number(body.count);
@@ -1306,57 +1329,81 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       handoff.prompt += `\n\nScreenshot of the human's edited version: ${file.split(sep).join("/")}`;
     }
     handoffs.push(handoff);
-    const waiter = notify ? [...waiters].find((w) => w.after === undefined || handoff.seq > w.after) : undefined;
-    if (waiter) {
-      waiters.delete(waiter);
-      handoff.delivered = true;
-      waiter.resolve(handoff);
-      agentChanged();
-    }
+    if (notify) offer(handoff);
     await persist(handoff);
     broadcast({ type: "handoff", ...summarize(handoff) });
     return handoff;
   }
 
-  // One write at a time: a handoff is saved when added and again when delivered, and two writes of one file at
-  // once can leave it mixed. latest.json is always the newest handoff, never an older one delivered later.
+  /** Hand an undelivered handoff to a waiting agent, if one is listening for it. */
+  function offer(handoff: Handoff): boolean {
+    const waiter = [...waiters].find((w) => w.after === undefined || handoff.seq > w.after);
+    if (!waiter) return false;
+    waiters.delete(waiter);
+    handoff.delivered = true;
+    waiter.resolve(handoff);
+    agentChanged();
+    return true;
+  }
+
+  // Handoff files are written one at a time, so an older write can't land after a newer one.
   let persistQueue: Promise<unknown> = Promise.resolve();
   function persist(h: Handoff): Promise<void> {
     const run = persistQueue.then(async () => {
-      const json = JSON.stringify(h, null, 2);
-      await writeFile(join(stateDir, "handoffs", `${h.seq}.json`), json);
-      if (h.seq === handoffs.at(-1)?.seq) await writeFile(join(stateDir, "latest.json"), json);
+      await writeFile(join(stateDir, "handoffs", `${h.seq}.json`), JSON.stringify(h, null, 2));
+      // latest.json is the newest thing the human sent, not whatever was delivered last.
+      const newest = handoffs.at(-1);
+      if (newest) await writeFile(join(stateDir, "latest.json"), JSON.stringify(newest, null, 2));
     });
     persistQueue = run.catch(() => undefined);
     return run;
   }
 
-  function nextHandoff(after: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Handoff | null> {
+  /**
+   * A handoff given to an agent never reached it (its request was cancelled or timed out on the
+   * client): count it as not delivered again, so the agent's next wait gets it.
+   */
+  function requeueHandoff(seq: number): boolean {
+    const h = handoffs.find((x) => x.seq === seq);
+    if (!h || !h.delivered || h.cancelled || h.kind === "source") return false;
+    h.delivered = false;
+    broadcast({ type: offer(h) ? "handoff-delivered" : "handoff-requeued", seq: h.seq });
+    void persist(h).catch(() => {});
+    return true;
+  }
+
+  /**
+   * The next handoff for an agent, or null on timeout or when `signal` aborts. `fresh` is set when
+   * this call is what marked it delivered (so it can be requeued if the agent never got it).
+   */
+  function takeHandoff(after: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<{ handoff: Handoff; fresh: boolean } | null> {
     if (signal?.aborted || closing) return Promise.resolve(null);
     endAiRound();
     // "source" handoffs are informational and never wake an agent; withdrawn ones are gone.
     const ready =
       after === undefined ? handoffs.find((h) => !h.delivered) : handoffs.find((h) => h.seq > after && h.kind !== "source" && !h.cancelled);
     if (ready) {
-      if (!ready.delivered) {
+      const fresh = !ready.delivered;
+      if (fresh) {
         ready.delivered = true;
         persist(ready).catch((err: unknown) => console.warn(`glimpse: couldn't save handoff #${ready.seq} (${err instanceof Error ? err.message : String(err)})`));
         broadcast({ type: "handoff-delivered", seq: ready.seq });
       }
-      return Promise.resolve(ready);
+      return Promise.resolve({ handoff: ready, fresh });
     }
     return new Promise((resolvePromise) => {
       const waiter = {
         after,
-        resolve: (h: Handoff) => {
+        resolve: (h: Handoff | null) => {
           clearTimeout(timer);
-          broadcast({ type: "handoff-delivered", seq: h.seq });
-          resolvePromise(h);
+          signal?.removeEventListener("abort", stop);
+          if (h) broadcast({ type: "handoff-delivered", seq: h.seq });
+          resolvePromise(h && { handoff: h, fresh: true });
         },
-        stop: () => stop(),
       };
       const stop = () => {
         clearTimeout(timer);
+        signal?.removeEventListener("abort", stop);
         waiters.delete(waiter);
         agentChanged();
         resolvePromise(null);
@@ -1366,6 +1413,17 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       waiters.add(waiter);
       agentChanged();
     });
+  }
+
+  /** Like takeHandoff, but a handoff that arrives just as `signal` aborts goes back in the queue. */
+  async function nextHandoff(after: number | undefined, timeoutMs: number, signal?: AbortSignal): Promise<Handoff | null> {
+    const got = await takeHandoff(after, timeoutMs, signal);
+    if (!got) return null;
+    if (signal?.aborted) {
+      if (got.fresh) requeueHandoff(got.handoff.seq);
+      return null;
+    }
+    return got.handoff;
   }
 
   /** Let the editor know whether an agent is currently listening. */
@@ -1550,7 +1608,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     terminal,
     run,
     status,
-    nextHandoff: (after, timeoutMs) => nextHandoff(after, timeoutMs),
+    nextHandoff: (after, timeoutMs, signal) => nextHandoff(after, timeoutMs, signal),
+    requeueHandoff,
     reload: () => broadcast({ type: "reload" }),
     async snapshot(label) {
       const { snapshot } = await history.snapshot("manual", label?.trim() || DEFAULT_MANUAL_LABEL);
@@ -1558,6 +1617,11 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     },
     async close() {
       closing = true;
+      // Agents long-polling /api/handoff/next would hold the server open for up to minutes: answer them now.
+      for (const w of [...waiters]) {
+        waiters.delete(w);
+        w.resolve(null);
+      }
       // The app first, so it can't outlive Glimpse.
       unbridge();
       clearTimeout(restartTimer);
@@ -1571,12 +1635,12 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       await variants.idle();
       await Promise.all([refreshQueue, sceneQueue, handoffQueue, persistQueue]);
       await closeReactPreview();
-      // Agents long-polling /api/handoff/next get their answer ("editing") now instead of holding the server open.
-      for (const w of [...waiters]) w.stop();
       const closed = new Promise<void>((ok) => server.close(() => ok()));
       server.closeIdleConnections();
       const force = setTimeout(() => server.closeAllConnections(), 1000);
-      await closed.finally(() => clearTimeout(force));
+      force.unref();
+      await closed;
+      clearTimeout(force);
     },
   };
 }

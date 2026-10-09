@@ -2,19 +2,27 @@ import { realpathSync } from "node:fs";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
+/** What `glimpse open`, the MCP server and the desktop app write into <project>/.glimpse/server.json. */
+export interface ServerInfo {
+  url: string;
+  pid: number;
+  token?: string;
+}
+
+/** Key for comparing project folders: canonical (symlinks resolved), and case-insensitive where the file system usually is. */
+export function projectDirKey(dir: string, platform: NodeJS.Platform = process.platform): string {
+  let p = resolve(dir);
+  try {
+    p = realpathSync.native(p);
+  } catch {
+    // keep the resolved path
+  }
+  return platform === "win32" || platform === "darwin" ? p.toLowerCase() : p;
+}
+
 /** Whether two paths name the same folder: symlinks resolved, and case-insensitive on macOS and Windows. */
 export function sameDir(a: string, b: string, platform: NodeJS.Platform = process.platform): boolean {
-  const canon = (p: string) => {
-    const abs = resolve(p);
-    let out: string;
-    try {
-      out = realpathSync.native(abs);
-    } catch {
-      out = abs;
-    }
-    return platform === "win32" || platform === "darwin" ? out.toLowerCase() : out;
-  };
-  return canon(a) === canon(b);
+  return projectDirKey(a, platform) === projectDirKey(b, platform);
 }
 
 /**
@@ -30,6 +38,21 @@ export async function servesProject(url: string, dir: string, timeoutMs = 3000):
   } catch {
     return false;
   }
+}
+
+/**
+ * The Glimpse that `<dir>/.glimpse/server.json` describes, if it still answers and still serves this
+ * project (see servesProject); null when the file is missing, unreadable, or points at another Glimpse.
+ */
+export async function findRunningServer(dir: string, opts: { timeoutMs?: number } = {}): Promise<ServerInfo | null> {
+  let info: Partial<ServerInfo>;
+  try {
+    info = JSON.parse(await readFile(join(dir, ".glimpse", "server.json"), "utf8")) as Partial<ServerInfo>;
+  } catch {
+    return null;
+  }
+  if (!info || typeof info.url !== "string" || !(await servesProject(info.url, dir, opts.timeoutMs))) return null;
+  return { url: info.url, pid: typeof info.pid === "number" ? info.pid : 0, ...(typeof info.token === "string" && { token: info.token }) };
 }
 
 /**

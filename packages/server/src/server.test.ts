@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { request as httpRequest } from "node:http";
 import { WebSocket } from "ws";
 import type { ChangeList } from "@glimpse/core";
-import { startServer, type GlimpseServer } from "./index.js";
+import { findRunningServer, startServer, type GlimpseServer } from "./index.js";
 
 let dir: string;
 let srv: GlimpseServer;
@@ -152,6 +152,86 @@ describe("server", () => {
     const list = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: { kind: string }[] };
     expect(list.handoffs[0]!.kind).toBe("source");
     expect(await srv.nextHandoff(undefined, 50)).toBeNull();
+  });
+
+  it("never hands a request to an agent wait that was cancelled", async () => {
+    const send = (text: string) =>
+      fetch(`${srv.url}/api/request`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+    // In process: the abort stops the wait, and what the human sends next stays queued.
+    const ac = new AbortController();
+    const waiting = srv.nextHandoff(undefined, 10_000, ac.signal);
+    ac.abort();
+    expect(await waiting).toBeNull();
+    await send("first");
+    // Over HTTP: the agent hangs up mid-wait.
+    const hangUp = new AbortController();
+    const polling = fetch(`${srv.url}/api/handoff/next?after=1&timeout=10`, { signal: hangUp.signal }).catch(() => null);
+    await new Promise((r) => setTimeout(r, 100));
+    hangUp.abort();
+    await polling;
+    await new Promise((r) => setTimeout(r, 100));
+    await send("second");
+    expect((await srv.nextHandoff(undefined, 1000))?.request?.text).toBe("first");
+    expect((await srv.nextHandoff(undefined, 1000))?.request?.text).toBe("second");
+  });
+
+  it("puts a handoff the agent never received back in the queue", async () => {
+    await fetch(`${srv.url}/api/request`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "five buttons" }) });
+    const h = await srv.nextHandoff(undefined, 1000);
+    expect(h?.seq).toBe(1);
+    expect(await srv.nextHandoff(undefined, 10)).toBeNull();
+    // e.g. the MCP tool call it was returned to had been cancelled
+    const res = await fetch(`${srv.url}/api/handoffs/1/requeue`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    expect(res.status).toBe(200);
+    const list = (await (await fetch(`${srv.url}/api/handoffs`)).json()) as { handoffs: { delivered: boolean }[] };
+    expect(list.handoffs[0]!.delivered).toBe(false);
+    expect((await srv.nextHandoff(undefined, 1000))?.seq).toBe(1);
+    // Nothing else to requeue: unknown handoffs, and ones never handed out.
+    expect(srv.requeueHandoff(7)).toBe(false);
+    // A waiting agent gets a requeued handoff right away.
+    const waiting = srv.nextHandoff(undefined, 5000);
+    expect(srv.requeueHandoff(1)).toBe(true);
+    expect((await waiting)?.seq).toBe(1);
+  });
+
+  it("keeps latest.json on the newest handoff when an older one is delivered", async () => {
+    for (const text of ["older", "newer"]) {
+      await fetch(`${srv.url}/api/request`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+    }
+    expect((await srv.nextHandoff(undefined, 1000))?.request?.text).toBe("older");
+    await new Promise((r) => setTimeout(r, 100));
+    const latest = JSON.parse(await readFile(join(dir, ".glimpse", "latest.json"), "utf8")) as { seq: number; delivered: boolean };
+    expect(latest.seq).toBe(2);
+    const first = JSON.parse(await readFile(join(dir, ".glimpse", "handoffs", "1.json"), "utf8")) as { delivered: boolean };
+    expect(first.delivered).toBe(true);
+  });
+
+  it("closes promptly while an agent is long-polling", async () => {
+    const polling = fetch(`${srv.url}/api/handoff/next?timeout=60`).then((r) => r.json());
+    const inProcess = srv.nextHandoff(undefined, 60_000);
+    await new Promise((r) => setTimeout(r, 100));
+    const t0 = Date.now();
+    await srv.close();
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(await polling).toEqual({ status: "editing" });
+    expect(await inProcess).toBeNull();
+    srv = await startServer({ dir, port: 0 });
+  });
+
+  it("only reports a running Glimpse for the folder it serves", async () => {
+    const other = await mkdtemp(join(tmpdir(), "glimpse-other-"));
+    try {
+      await mkdir(join(other, ".glimpse"), { recursive: true });
+      // A crashed Glimpse for `other` left this behind, and this project's Glimpse took its port since.
+      await writeFile(join(other, ".glimpse", "server.json"), JSON.stringify({ url: srv.url, pid: 1, token: "stale" }));
+      expect(await findRunningServer(other)).toBeNull();
+      await mkdir(join(dir, ".glimpse"), { recursive: true });
+      await writeFile(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: srv.url, pid: 1, token: srv.token }));
+      expect(await findRunningServer(dir)).toEqual({ url: srv.url, pid: 1, token: srv.token });
+      expect(await findRunningServer(join(dir, "nope"))).toBeNull();
+    } finally {
+      await rm(other, { recursive: true, force: true });
+    }
   });
 
   it("reports 'editing' when nothing was sent before the timeout", async () => {

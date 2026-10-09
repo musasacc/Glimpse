@@ -547,6 +547,17 @@ describe("serializeSceneFile", () => {
     expect(out.root.children[0]!.props).toEqual({ items: [], checked: "maybe", value: "abc", selected: 2 });
   });
 
+  it("keeps numeric-looking strings that don't read back as the same number", () => {
+    const parsed = parseSceneFile(
+      json({
+        target: "tui",
+        root: { type: "root", layout: { x: 0, y: 0, w: 80, h: 24 }, children: [{ id: "i", type: "input", layout: { x: 0, y: 0, w: 9, h: 1 }, props: { value: "007", min: "1.50", max: "Infinity", step: "0.5" } }] },
+      }),
+    );
+    const out = JSON.parse(serializeSceneFile(parsed.scene, "nested")) as { root: { children: { props: unknown }[] } };
+    expect(out.root.children[0]!.props).toEqual({ value: "007", min: "1.50", max: "Infinity", step: 0.5 });
+  });
+
   it("breaks long lines and is stable", () => {
     const parsed = parseSceneFile(NESTED);
     const scene: Scene = parsed.scene;

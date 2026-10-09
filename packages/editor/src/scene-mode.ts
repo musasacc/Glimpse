@@ -2,15 +2,18 @@ import { useSyncExternalStore } from "react";
 import {
   applyOp,
   cloneScene,
+  followRenumbered,
   OpLog,
   rebaseOps,
   Scrollback,
   type LogEntry,
+  type Op,
   type Scene,
   type SceneFileExtras,
   type SceneNode,
   type SceneTheme,
 } from "@glimpse/core";
+import { followOps } from "./hmr";
 import { onLive, sendLive, type LiveMessage } from "./live";
 import { absBox, DEFAULT_CELL, hostTheme, isSceneContainer, isSceneTarget, measureCell, placeWidget, type Cell, type SceneTarget } from "./scene-geometry";
 import { store } from "./store";
@@ -90,6 +93,9 @@ const TERM_BUFFER = 512 * 1024;
 
 const DOCK_KEY = "glimpse.dock";
 
+/** How long after Glimpse writes the scene file its file event can still come in (the watcher waits for writes to settle). */
+const OWN_ECHO_MS = 10_000;
+
 class SceneMode {
   state: SceneState = {
     active: false,
@@ -108,8 +114,12 @@ class SceneMode {
   };
   /** Version (content hash) of the scene file the op log's base came from; null when it didn't exist. */
   version: string | null = null;
-  /** Versions Glimpse wrote itself (Edit source, Send to AI): their file events are echoes, not news. */
-  private own = new Set<string>();
+  /**
+   * Versions Glimpse wrote itself (Edit source, Send to AI), with when: their file events are echoes, not news.
+   * Each is an echo once, and only shortly after the write: the agent writing the same content later (say,
+   * reverting to it) is news.
+   */
+  private own = new Map<string, number>();
   /** Requests that may write the scene file are in flight: scene messages wait for them. */
   private writing = 0;
   private queued: ScenePayload[] = [];
@@ -226,12 +236,22 @@ class SceneMode {
     this.set({ ...fresh, ...theme, status: "ready", invalid: null, errors: p.errors ?? [], extras });
   }
 
-  /** Start a new op log on `base` and replay `entries` on it, re-targeted by node id. */
+  /**
+   * Start a new op log on `base` and replay `entries` on it, re-targeted by node id (following widgets
+   * without an id in the file that the agent's change renumbered).
+   */
   private adopt(base: Scene, entries: readonly LogEntry[]): void {
+    const before = store.log?.base;
+    const { moved, ambiguous } = before && entries.length ? followRenumbered(before, base) : { moved: new Map<string, string>(), ambiguous: new Set<string>() };
     const log = new OpLog(base);
     let dropped = 0;
     for (const entry of entries) {
-      const ops = rebaseOps(log.scene, entry.ops);
+      let ops: Op[] | null;
+      try {
+        ops = rebaseOps(log.scene, followOps(entry.ops, moved, log.scene));
+      } catch {
+        ops = null;
+      }
       if (!ops) {
         dropped++;
         continue;
@@ -244,6 +264,8 @@ class SceneMode {
     }
     store.log = log;
     if (dropped) store.activity("warn", `${dropped} of your edits no longer fit the scene after the AI's change and were dropped`);
+    if (entries.some((e) => e.ops.some((op) => "node" in op && ambiguous.has(op.node))))
+      store.activity("warn", "The AI's change renumbered widgets that have no id in the scene file: check that your edits are still on the right ones");
     const nodes = log.scene.nodes;
     const multi = store.state.multi.filter((id) => nodes[id]);
     const selected = store.state.selected && nodes[store.state.selected] ? store.state.selected : (multi[0] ?? null);
@@ -295,7 +317,10 @@ class SceneMode {
 
   /** The scene file changed on disk. */
   private onScene(p: ScenePayload): void {
-    if (p.exists && !p.invalid && p.version && (this.own.has(p.version) || p.version === this.version)) {
+    const ownAt = p.version ? this.own.get(p.version) : undefined;
+    if (p.version) this.own.delete(p.version);
+    const echo = ownAt !== undefined && Date.now() - ownAt < OWN_ECHO_MS;
+    if (p.exists && !p.invalid && p.version && (echo || p.version === this.version)) {
       // Our own write coming back (or no change): the edits on screen already match it.
       if (this.state.invalid) this.set({ invalid: null });
       this.set({ errors: p.errors ?? [] });
@@ -336,7 +361,7 @@ class SceneMode {
       this.writing--;
       if (written) {
         this.version = written;
-        this.own.add(written);
+        this.own.set(written, Date.now());
       }
       if (this.writing === 0) {
         const queued = this.queued.splice(0);

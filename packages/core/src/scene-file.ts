@@ -749,7 +749,8 @@ function propsOut(props: Record<string, string>): Record<string, ScenePropValue>
       out[k] = lines.some((l) => l.includes("\t")) ? lines.map((l) => l.split("\t")) : lines;
     } else if (BOOLEAN_PROPS.includes(k) && (v === "true" || v === "false")) {
       out[k] = v === "true";
-    } else if (NUMBER_PROPS.includes(k) && /^-?\d+(\.\d+)?$/.test(v)) {
+    } else if (NUMBER_PROPS.includes(k) && Number.isFinite(Number(v)) && String(Number(v)) === v) {
+      // Only what reads back the same ("007" and "1.50" stay strings).
       out[k] = Number(v);
     } else {
       out[k] = v;

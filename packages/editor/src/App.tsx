@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { describeChange, type ChangeList } from "@glimpse/core";
 import { Canvas, handleKey, type Mode } from "./Canvas";
 import { Activity, Inspector } from "./Panels";
@@ -192,17 +192,24 @@ function useCompactToolbar(ref: React.RefObject<HTMLElement | null>): boolean {
   return compact;
 }
 
-function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }) {
+function SendDialog({ list: opened, onClose }: { list: ChangeList; onClose: () => void }) {
   const state = useStore();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The AI may save while this is open: its change is replayed under the edits, so list them as they are now
+  // (what is sent and what becomes the new base must be the same).
+  const log = store.log;
+  const entries = log?.entries.length;
+  const list = useMemo(() => store.changeList() ?? opened, [log, entries, opened]);
 
   const send = async () => {
     setBusy(true);
     setError(null);
     try {
-      const changeList = { ...list, ...(note.trim() ? { note: note.trim() } : {}) };
+      const current = store.changeList() ?? list;
+      if (current.changes.length === 0) throw new Error("Nothing to send right now: your edits no longer differ from the page (the AI's latest change may include them).");
+      const changeList = { ...current, ...(note.trim() ? { note: note.trim() } : {}) };
       // A picture of the edited page helps the agent see what was meant (best effort, ≤ 3 s).
       const screenshot = await handoffScreenshot();
       // A scene mock: Glimpse writes the edited scene into its file first, so the agent only changes the code.

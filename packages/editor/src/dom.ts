@@ -85,7 +85,11 @@ export class DomBridge {
     }
     const props: Record<string, string> = {};
     for (const attr of Array.from(el.attributes)) {
-      if (attr.name !== "style" && attr.name !== SRC_ATTR) props[attr.name] = attr.value;
+      if (attr.name === "class") {
+        // Without the live client's highlight of what the AI just changed: it must not reach the source.
+        const cls = attr.value.replace(/(^|\s)__glimpse[\w-]*/g, "").trim();
+        if (cls) props.class = cls;
+      } else if (attr.name !== "style" && attr.name !== SRC_ATTR) props[attr.name] = attr.value;
     }
     const text = ownText(el);
     if (text) props.text = text;
@@ -211,9 +215,13 @@ export class DomBridge {
         return;
       }
       case "setHidden": {
-        const el = this.els.get(op.node) as HTMLElement;
-        el.style.visibility = op.to ? "hidden" : "";
-        tidyStyle(el);
+        // The way Edit source writes it (the hidden attribute, which takes the element out of the layout),
+        // so the preview looks like the result; showing it again keeps a hidden attribute the page had.
+        const el = this.els.get(op.node)!;
+        const p = this.pristineOf(el);
+        p.hidden ??= el.hasAttribute("hidden");
+        if (op.to) el.setAttribute("hidden", "");
+        else if (!p.hidden) el.removeAttribute("hidden");
         return;
       }
       case "reorder": {
@@ -432,4 +440,6 @@ type Pristine = {
   text?: { nodes: Text[]; values: string[]; text: string; added?: Text };
   style?: Map<string, { value: string; priority: string }>;
   size?: { width: string; height: string; w: number; h: number };
+  /** The page's own hidden attribute, before Hide. */
+  hidden?: boolean;
 };

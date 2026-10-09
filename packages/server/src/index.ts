@@ -2,7 +2,7 @@ export { startServer, type GlimpseServer, type Handoff, type HandoffKind, type H
 export { detectProject, SCENE_FILE, type ProjectInfo } from "./detect.js";
 export { injectClient } from "./inject.js";
 export { openBrowser } from "./browser.js";
-export { sameDir, servesProject, withProjectLock } from "./running.js";
+export { findRunningServer, projectDirKey, sameDir, servesProject, withProjectLock, type ServerInfo } from "./running.js";
 export { planPatch, type PatchPlan } from "./patch-html.js";
 export { History, type PublicSnapshot, type Snapshot, type SnapshotKind } from "./history.js";
 export { type VariantJob } from "./variants.js";

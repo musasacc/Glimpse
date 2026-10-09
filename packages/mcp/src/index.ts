@@ -1,11 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import type { Target } from "@glimpse/core";
-import { openBrowser, servesProject, startServer, withProjectLock, type GlimpseServer, type Handoff } from "@glimpse/server";
+import { findRunningServer, openBrowser, startServer, withProjectLock, type GlimpseServer, type Handoff, type ServerInfo } from "@glimpse/server";
 import { registerSceneTools } from "./scene-tool.js";
 
 export { registerSceneTools, sceneExamplesText, type SceneToolOptions } from "./scene-tool.js";
@@ -42,12 +42,11 @@ interface Project {
   token?: string;
 }
 
-/** What `glimpse open`, the MCP server and the desktop app write into <project>/.glimpse/server.json. */
-interface ServerInfo {
-  url: string;
-  pid: number;
-  token?: string;
-}
+/**
+ * How long glimpse_wait_for_done waits by default: under the 60 s that MCP clients commonly allow a
+ * tool call, so the call returns "still editing" instead of being cut off.
+ */
+const DEFAULT_WAIT_SEC = 45;
 
 const AGENT_GUIDE = `How to work with Glimpse:
 1. glimpse_open your project once. The human sees your UI in Glimpse and every file you save appears live.
@@ -90,19 +89,13 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       }
       // Reuse a Glimpse that is already running for this project (e.g. `glimpse open`).
       const infoFile = join(dir, ".glimpse", "server.json");
-      if (existsSync(infoFile)) {
-        try {
-          const info = JSON.parse(await readFile(infoFile, "utf8")) as ServerInfo;
-          // Not a Glimpse for another project that took the port of one that was killed.
-          if (await servesProject(info.url, dir)) {
-            const project: Project = { dir, url: info.url, ...(typeof info.token === "string" && { token: info.token }) };
-            projects.set(dir, project);
-            current = dir;
-            return { project, opened: true };
-          }
-        } catch {
-          // stale file; start our own below
-        }
+      // Only one that still serves this folder: a crashed Glimpse's file may point at another project's server.
+      const info = existsSync(infoFile) ? await findRunningServer(dir) : null;
+      if (info) {
+        const project: Project = { dir, url: info.url, ...(info.token !== undefined && { token: info.token }) };
+        projects.set(dir, project);
+        current = dir;
+        return { project, opened: true };
       }
       if (!existsSync(dir)) await mkdir(dir, { recursive: true });
       const base = { dir, target, entry, command, editorDir: opts.editorDir };
@@ -121,11 +114,12 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     });
   }
 
-  const api = async <T>(p: Project, path: string, body?: unknown): Promise<T> => {
-    const res = await fetch(`${p.url}${path}`, body === undefined ? undefined : {
+  const api = async <T>(p: Project, path: string, body?: unknown, signal?: AbortSignal): Promise<T> => {
+    const res = await fetch(`${p.url}${path}`, body === undefined ? { signal } : {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
     const json = (await res.json().catch(() => null)) as (T & { error?: unknown }) | null;
     if (!res.ok || json === null) {
@@ -205,16 +199,31 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
       },
     },
     async ({ dir, target, entry, command }) => {
-      const { project, opened } = await ensure(dir, target, entry, command);
+      type Session = { project: { target: string; entry: string }; entryExists: boolean; previewError?: string | null };
+      let { project, opened } = await ensure(dir, target, entry, command);
+      let session = await api<Session>(project, "/api/session");
+      const entryKey = (e: string) => relative(project.dir, resolve(project.dir, e)).split(sep).join("/");
+      const differs = (s: Session) =>
+        (target !== undefined && target !== s.project.target) || (entry !== undefined && entryKey(entry) !== entryKey(s.project.entry));
+      let notApplied: string | undefined;
+      if (differs(session)) {
+        if (project.own && !opened) {
+          // A Glimpse this agent started earlier with other settings: start it over with these.
+          projects.delete(project.dir);
+          await shutdown(project);
+          ({ project, opened } = await ensure(dir, target, entry, command));
+          session = await api<Session>(project, "/api/session");
+        } else if (!project.own) {
+          const which = [target !== undefined && "target", entry !== undefined && "entry"].filter(Boolean);
+          notApplied = `That Glimpse was already running (started elsewhere), so the ${which.join(" and ")} you passed ${which.length > 1 ? "weren't" : "wasn't"} applied. Stop it and call glimpse_open again to change ${which.length > 1 ? "them" : "it"}.`;
+        }
+      }
       const run = command?.trim();
       // A server this call just started got the command already; one that was running needs to be told.
       const ran = run ? (opened && project.own ? `Running \`${run}\` in Glimpse's terminal.` : await runIn(project, run)) : undefined;
-      const session = await api<{ project: { target: string; entry: string }; entryExists: boolean; previewError?: string | null }>(
-        project,
-        "/api/session",
-      );
       const { target: kind, entry: file } = session.project;
       const lines = [`Glimpse is open at ${project.url} (project ${project.dir}, ${kind}, entry ${file}).`];
+      if (notApplied) lines.push(notApplied);
       if (kind === "tui" || kind === "native") lines.push(await sceneStatus(project));
       else if (session.previewError) lines.push(`The preview can't run yet: ${session.previewError}`);
       else lines.push(session.entryExists ? "The human can now see and edit it." : `${file} doesn't exist yet; create it and it appears live.`);
@@ -228,27 +237,53 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
     "glimpse_wait_for_done",
     {
       title: "Wait for the human",
-      description:
-        "Block until the human sends something from Glimpse: a build request, or their visual edits (as numbered instructions with file:line:col). Returns 'still editing' after the timeout; then call it again.",
+      description: `Block until the human sends something from Glimpse: a build request, or their visual edits (as numbered instructions with file:line:col). Returns 'still editing' after the timeout (default ${DEFAULT_WAIT_SEC} s, under common tool-call timeouts); then call it again.`,
       inputSchema: {
         dir: dirParam,
-        timeout_sec: z.number().int().min(5).max(600).optional().describe("How long to wait (default 240)"),
+        timeout_sec: z
+          .number()
+          .int()
+          .min(5)
+          .max(600)
+          .optional()
+          .describe(`How long to wait (default ${DEFAULT_WAIT_SEC}). Keep it under your client's tool-call timeout.`),
       },
     },
-    async ({ dir, timeout_sec }) => {
+    async ({ dir, timeout_sec }, { signal }) => {
       const { project } = await ensure(dir);
-      const timeout = timeout_sec ?? 240;
+      const timeout = timeout_sec ?? DEFAULT_WAIT_SEC;
       const deadline = Date.now() + timeout * 1000;
-      while (Date.now() < deadline) {
+      while (Date.now() < deadline && !signal.aborted) {
         const chunk = Math.max(1, Math.min(60, Math.ceil((deadline - Date.now()) / 1000)));
-        const body = project.own
-          ? await project.own.nextHandoff(undefined, chunk * 1000).then((h) => (h ? { status: "ready", handoff: h } : { status: "editing" }))
-          : await api<{ status: string; handoff?: Handoff }>(project, `/api/handoff/next?timeout=${chunk}`);
-        if (body.status === "ready" && body.handoff) return handoffResult(project, body.handoff);
+        // Cancelling the tool call (the client's timeout, or the user pressing Esc) stops the wait, so
+        // nothing the human sends meanwhile is handed to a call nobody reads.
+        const handoff = project.own
+          ? await project.own.nextHandoff(undefined, chunk * 1000, signal)
+          : await api<{ status: string; handoff?: Handoff }>(project, `/api/handoff/next?timeout=${chunk}`, undefined, signal).then(
+              (body) => (body.status === "ready" ? (body.handoff ?? null) : null),
+              (err: unknown) => {
+                if (signal.aborted) return null;
+                throw err;
+              },
+            );
+        if (!handoff) continue;
+        const result = await handoffResult(project, handoff);
+        if (signal.aborted) {
+          // Cancelled while the reply was being put together: the client won't read it, so the next wait gets it.
+          await requeue(project, handoff.seq);
+          break;
+        }
+        return result;
       }
       return text("Still editing: the human hasn't sent anything yet. Call glimpse_wait_for_done again.");
     },
   );
+
+  /** Put a handoff the agent never received back in the queue. */
+  async function requeue(p: Project, seq: number): Promise<void> {
+    if (p.own) p.own.requeueHandoff(seq);
+    else await api(p, `/api/handoffs/${seq}/requeue`, {}).catch(() => {});
+  }
 
   mcp.registerTool(
     "glimpse_get_changes",

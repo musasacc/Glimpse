@@ -1,4 +1,4 @@
-import { deleteOp, formatSource, type Op, type OpLog, type Scene, type SceneNode } from "@glimpse/core";
+import { deleteOp, formatSource, type Change, type Op, type OpLog, type Scene, type SceneNode } from "@glimpse/core";
 
 /**
  * React projects: the preview is the app running on the project's own Vite,
@@ -217,4 +217,12 @@ function hash(s: string): string {
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** The op is (part of) the edit a change describes: same kind, same element (or same note). */
+export function sameEdit(c: Change, op: Op): boolean {
+  if (c.op !== op.op) return false;
+  if ("id" in op) return "id" in c && c.id === op.id;
+  if ("node" in op) return "node" in c && c.node === op.node && (!("key" in op) || ("key" in c && c.key === op.key));
+  return "nodes" in c && c.nodes[0]?.id === op.nodes[0]?.id;
 }

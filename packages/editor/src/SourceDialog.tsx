@@ -63,6 +63,8 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
         // React renders from its own record of the page: our edits come off before the files change, and the
         // update Vite sends for them shows the written source (see Store.takeOffEdits).
         const react = store.isVitePage;
+        // Not sending the rest: those edits stay on the page, unsent, once the files have the others.
+        const keep = !toAi && preview.needsAi.length > 0 ? store.editsFor(preview.needsAi) : undefined;
         if (react) store.takeOffEdits();
         let body: { files?: string[]; applied?: number; backup?: string; error?: string };
         try {
@@ -77,7 +79,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
             const body = (await res.json()) as { files?: string[]; applied?: number; backup?: string; error?: string };
             if (!res.ok) throw new Error(body.error ?? res.statusText);
             return body;
-          });
+          }, keep);
         } catch (e) {
           if (react) store.putBackEdits(); // nothing was written: show the edits again
           throw e;
@@ -146,7 +148,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
             </ol>
             <label className="check">
               <input type="checkbox" checked={sendRest} onChange={(e) => setSendRest(e.target.checked)} />
-              Send these {preview.needsAi.length} to your AI
+              Send these {preview.needsAi.length} to your AI{!sendRest && " (unchecked: they stay as unsent edits)"}
             </label>
           </div>
         )}
