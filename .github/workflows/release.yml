@@ -153,7 +153,13 @@ jobs:
 
       - name: Build installers
         working-directory: apps/desktop
-        run: npm run dist -- --publish never
+        run: |
+          # Without a Developer ID, sign the Mac app ad-hoc: macOS then offers "Open Anyway" instead of calling it
+          # damaged. Ad-hoc signatures have no team ID, so the hardened runtime's library validation would refuse
+          # Electron's own frameworks; it only matters for notarization, which needs a real certificate anyway.
+          extra=()
+          if [ "$RUNNER_OS" = "macOS" ] && [ -z "${CSC_LINK:-}" ]; then extra=(-c.mac.identity=- -c.mac.hardenedRuntime=false); fi
+          npm run dist -- --publish never "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ runner.os }}

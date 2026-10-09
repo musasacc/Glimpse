@@ -105,8 +105,9 @@ its own copy into electron-builder's cache.
 
 Until signing secrets are set up (below), the installers are unsigned, so each OS asks once:
 
-- **macOS:** the first time, right-click Glimpse in Applications and choose **Open** (or **System Settings › Privacy &
-  Security › Open Anyway**). If macOS says the app "is damaged", run `xattr -dr com.apple.quarantine /Applications/Glimpse.app`.
+- **macOS:** the app is signed ad-hoc. The first time, open Glimpse, close the warning, then go to **System Settings ›
+  Privacy & Security** and click **Open Anyway**. If an older build says the app "is damaged", run
+  `xattr -cr /Applications/Glimpse.app`.
 - **Windows:** SmartScreen shows "Windows protected your PC": click **More info › Run anyway**.
 - **Linux:** `chmod +x Glimpse-*.AppImage` and run it. On distributions that restrict unprivileged user namespaces
   (Ubuntu 24.04 and later), the AppImage may exit with a sandbox error: install the `.deb` instead, or start the

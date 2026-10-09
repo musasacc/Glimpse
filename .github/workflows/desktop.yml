@@ -66,7 +66,15 @@ jobs:
         run: npm test
       - name: Build the unpacked app
         working-directory: apps/desktop
-        run: npm run dist -- --dir --publish never
+        run: |
+          # Signed ad-hoc on macOS like the release (see release.yml), so the smoke test runs what users get.
+          extra=()
+          if [ "$RUNNER_OS" = "macOS" ]; then extra=(-c.mac.identity=- -c.mac.hardenedRuntime=false); fi
+          npm run dist -- --dir --publish never "${extra[@]}"
+      - name: Check the macOS signature
+        if: runner.os == 'macOS'
+        working-directory: apps/desktop/release
+        run: codesign --verify --deep --strict --verbose=2 "$(find . -maxdepth 2 -name Glimpse.app -print -quit)"
 
       - name: Smoke test (headless)
         if: runner.os == 'Linux'
