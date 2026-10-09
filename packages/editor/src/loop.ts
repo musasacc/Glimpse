@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
-import type { Op } from "@glimpse/core";
-import { regionRect } from "./arrange";
-import { capturePreview, captureUrl, drawBoxes, within, type MarkBox } from "./capture";
+import type { Change } from "@glimpse/core";
+import { capturePreview, captureUrl, drawMarkers, within } from "./capture";
+import { marksFor, pageToView } from "./markers";
 import { DEVICE_WIDTH, store } from "./store";
 
 /**
@@ -426,25 +426,51 @@ export function initLoop(): () => void {
   });
 }
 
+export interface HandoffShots {
+  /** The edited UI with a numbered marker on every change that has a box. */
+  after: string | null;
+  /** The same view before the edits, without markers, when Glimpse can draw it. */
+  before: string | null;
+}
+
 /**
- * Screenshot of the page the human is editing, for a handoff, with their box
- * prompts drawn in (numbered as on the canvas). Never holds sending up for more than 3 s.
+ * Screenshots for a handoff: the page (or mock) the human is editing with a
+ * numbered outline on each change (the numbers are the changes' `mark`s), and
+ * a clean picture of the same view before the edits: the latest version from
+ * the timeline for a static page, the unedited mock for a scene. Each never
+ * holds sending up for more than 3 s; React pages get no "before" (their
+ * snapshots only render through Vite).
  */
-export function handoffScreenshot(): Promise<string | null> {
+export async function handoffScreenshots(changes: readonly Change[]): Promise<HandoffShots> {
   const scene = store.sceneSurface;
-  if (scene?.screenshot) return within(scene.screenshot(), 3000, null);
+  if (scene?.screenshot) {
+    const [after, before] = await Promise.all([
+      within(scene.screenshot(changes), 3000, null),
+      scene.screenshotBefore ? within(scene.screenshotBefore(), 3000, null) : Promise.resolve(null),
+    ]);
+    return { after, before: after ? before : null };
+  }
   const doc = store.bridge?.doc;
+  const win = doc?.defaultView;
+  const width = doc?.documentElement.clientWidth ?? 0;
+  const scroll = { x: win?.scrollX ?? 0, y: win?.scrollY ?? 0 };
   // One screen of a tall window is plenty, and keeps the PNG well under the server's 5 MB.
-  const shot = capturePreview(doc, { maxWidth: 1280, maxHeight: 1600, atScroll: true }).then((png) => {
-    if (!png) return null;
-    const regions = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
-    const boxes = regions.flatMap((r, i): MarkBox[] => {
-      const rect = regionRect(r);
-      return rect ? [{ ...rect, num: i + 1, text: r.text }] : [];
-    });
-    return drawBoxes(png, boxes, doc?.documentElement.clientWidth ?? 0);
-  });
-  return within(shot, 3000, null);
+  const opts = { maxWidth: 1280, maxHeight: 1600 };
+  const after = capturePreview(doc, { ...opts, atScroll: true }).then((png) =>
+    png ? drawMarkers(png, marksFor(changes, (b) => pageToView(b, scroll)), width) : null,
+  );
+  const latest = loop.state.snapshots.at(-1);
+  const before =
+    latest && win && store.state.project?.target !== "react"
+      ? captureUrl(`/snapshot/${enc(latest.id)}/`, { width: win.innerWidth, height: win.innerHeight }, { ...opts, scrollTo: scroll })
+      : Promise.resolve(null);
+  const [a, b] = await Promise.all([within(after, 3000, null), within(before, 3000, null)]);
+  return { after: a, before: a ? b : null };
+}
+
+/** The changes numbered for the screenshot's markers (1, 2, … in list order). */
+export function numbered(changes: readonly Change[]): Change[] {
+  return changes.map((c, i) => ({ ...c, mark: i + 1 }));
 }
 
 /**

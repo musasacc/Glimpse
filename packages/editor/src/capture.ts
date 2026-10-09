@@ -1,4 +1,5 @@
 import { toPng } from "html-to-image";
+import { markerLayout, type Mark } from "./markers";
 
 export interface CaptureOptions {
   /** Scale the picture down to at most this many pixels wide. */
@@ -9,6 +10,8 @@ export interface CaptureOptions {
   atScroll?: boolean;
   /** Give up (null) on a page with more elements than this: html-to-image copies all of them on the main thread. */
   maxElements?: number;
+  /** captureUrl only: scroll the page there first (and capture what is scrolled into view). */
+  scrollTo?: { x: number; y: number };
 }
 
 /**
@@ -81,31 +84,25 @@ export function captureUrl(url: string, size: { width: number; height: number },
       const doc = frame.contentDocument;
       if (doc?.contentType !== "text/html" || doc.querySelector('meta[name="glimpse-missing"]')) return finish(null);
       // Give scripts, images and layout a moment to settle.
-      setTimeout(() => void capturePreview(frame, opts).then(finish), 600);
+      setTimeout(() => {
+        if (opts.scrollTo) frame.contentWindow?.scrollTo(opts.scrollTo.x, opts.scrollTo.y);
+        void capturePreview(frame, opts.scrollTo ? { ...opts, atScroll: true } : opts).then(finish);
+      }, 600);
     };
     frame.src = url;
     document.body.appendChild(frame);
   });
 }
 
-/** A box to draw over a capture, in the captured viewport's CSS pixels. */
-export interface MarkBox {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-  num: number;
-  text: string;
-}
-
 /**
- * Draw box prompts over a viewport capture the way the editor shows them
- * (dashed cyan, numbered, with their text). They live in the editor's overlay,
- * not in the page, so the capture alone would leave them out. Best effort:
- * on any failure the plain picture is returned.
+ * Draw numbered markers over a capture of a view `viewWidth` CSS px wide: a
+ * cyan outline around each changed element with a number badge matching the
+ * change list, and box prompts the way the editor shows them (dashed, with
+ * their text). They live in the editor's overlay, not in the page, so the
+ * capture alone would leave them out. Best effort: on any failure the plain picture is returned.
  */
-export async function drawBoxes(dataUrl: string, boxes: MarkBox[], viewportWidth: number): Promise<string> {
-  if (boxes.length === 0 || !viewportWidth) return dataUrl;
+export async function drawMarkers(dataUrl: string, marks: Mark[], viewWidth: number): Promise<string> {
+  if (marks.length === 0 || !viewWidth) return dataUrl;
   try {
     const img = new Image();
     img.src = dataUrl;
@@ -116,35 +113,46 @@ export async function drawBoxes(dataUrl: string, boxes: MarkBox[], viewportWidth
     const ctx = canvas.getContext("2d");
     if (!ctx) return dataUrl;
     ctx.drawImage(img, 0, 0);
-    const k = img.naturalWidth / viewportWidth;
+    const k = img.naturalWidth / viewWidth;
     ctx.scale(k, k);
-    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#5ce1ff";
-    for (const b of boxes) {
-      ctx.fillStyle = "rgba(92, 225, 255, 0.1)";
-      ctx.fillRect(b.left, b.top, b.width, b.height);
-      ctx.setLineDash([6, 4]);
+    const accent = "#22d3ee";
+    const placed = markerLayout(marks, { width: viewWidth, height: img.naturalHeight / k });
+    for (const m of placed) {
+      ctx.fillStyle = m.dashed ? "rgba(34, 211, 238, 0.12)" : "rgba(34, 211, 238, 0.06)";
+      ctx.fillRect(m.left, m.top, m.width, m.height);
+      // A dark halo under the cyan line keeps it visible on light and dark pages alike.
+      ctx.setLineDash(m.dashed ? [6, 4] : []);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.strokeRect(m.left + 1, m.top + 1, Math.max(0, m.width - 2), Math.max(0, m.height - 2));
       ctx.lineWidth = 2;
       ctx.strokeStyle = accent;
-      ctx.strokeRect(b.left, b.top, b.width, b.height);
+      ctx.strokeRect(m.left + 1, m.top + 1, Math.max(0, m.width - 2), Math.max(0, m.height - 2));
       ctx.setLineDash([]);
-      ctx.font = "500 12px system-ui, sans-serif";
       ctx.textBaseline = "middle";
-      const text = fit(ctx, b.text, Math.max(0, b.width - 28));
-      if (text) {
-        const w = ctx.measureText(text).width + 12;
-        ctx.fillStyle = "rgba(0, 0, 0, 0.78)";
-        ctx.fillRect(b.left + 16, b.top + 6, w, 18);
-        ctx.fillStyle = accent;
-        ctx.fillText(text, b.left + 22, b.top + 15);
+      if (m.text) {
+        ctx.font = "500 12px system-ui, sans-serif";
+        const text = fit(ctx, m.text, Math.max(0, m.width - 28));
+        if (text) {
+          const w = ctx.measureText(text).width + 12;
+          ctx.fillStyle = "rgba(0, 0, 0, 0.78)";
+          ctx.fillRect(m.left + 16, m.top + 6, w, 18);
+          ctx.fillStyle = accent;
+          ctx.fillText(text, m.left + 22, m.top + 15);
+        }
       }
+      const b = m.badge;
       ctx.beginPath();
-      ctx.arc(b.left, b.top, 10, 0, Math.PI * 2);
+      ctx.roundRect(b.left, b.top, b.width, b.height, b.height / 2);
       ctx.fillStyle = accent;
       ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.7)";
+      ctx.stroke();
       ctx.fillStyle = "#000";
       ctx.font = "700 11px system-ui, sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(String(b.num), b.left, b.top + 0.5);
+      ctx.fillText(m.label, b.left + b.width / 2, b.top + b.height / 2 + 0.5);
       ctx.textAlign = "start";
     }
     return canvas.toDataURL("image/png");

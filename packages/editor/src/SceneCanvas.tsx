@@ -7,7 +7,8 @@ import * as L from "./loop-icons";
 import { NativeWindow } from "./NativeRenderer";
 import { WaitingForAi } from "./Waiting";
 import { isEnter, MOD } from "./platform";
-import { captureFrame, renderThumbnail } from "./scene-capture";
+import { captureFrame, renderScene, renderThumbnail } from "./scene-capture";
+import { marksFor } from "./markers";
 import { absBox, editableProp, unitSize, type Cell, type SceneTarget } from "./scene-geometry";
 import { sceneMode, useSceneMode } from "./scene-mode";
 import { store, useHovered, useStore } from "./store";
@@ -97,18 +98,16 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
   // Pictures of the mock for handoffs and the timeline.
   useEffect(() => {
     sceneMode.capture = {
-      screenshot: () => {
+      screenshot: (changes) => {
         const el = frame.current;
         if (!el || !store.scene) return Promise.resolve(null);
-        const regions = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+        // Change boxes are in the scene's units from the top-left of the screen.
         const u = unitSize(sceneMode.state.target, sceneMode.state.cell);
         const o = originOf(el, screen.current);
-        const boxes = regions.flatMap((r, i) => {
-          const b = regionRect(r);
-          return b ? [{ left: o.x + b.left * u.w, top: o.y + b.top * u.h, width: b.width * u.w, height: b.height * u.h, num: i + 1, text: r.text }] : [];
-        });
-        return captureFrame(el, boxes);
+        const marks = marksFor(changes, (b) => ({ left: o.x + b.x * u.w, top: o.y + b.y * u.h, width: b.w * u.w, height: b.h * u.h }));
+        return captureFrame(el, marks);
       },
+      before: () => (store.log ? renderScene(store.log.base, 1280) : Promise.resolve(null)),
       thumbnail: (id, maxWidth) => renderThumbnail(id, maxWidth),
     };
     return () => {

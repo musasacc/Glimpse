@@ -86,9 +86,27 @@ and schema, `glimpse_scene_validate` checks a file). Set `meta.command` to how t
 | `source` | **Edit source** wrote changes into the files | No; it's kept in history for reference |
 | `variants` | The human asks for N versions of one element ("show me 3 versions of this button") | Yes |
 
-**Screenshots.** An `ai` handoff can carry a PNG of the human's edited version. It is saved as
-`.glimpse/handoffs/<seq>.png` (the handoff's `screenshot` field), the prompt ends with
-`Screenshot of the human's edited version: <absolute path>`, and the MCP tools return it as an image block.
+**What the agent receives.** Every change says where it is in the code and, for added, moved and resized elements,
+box prompts and comments, where it is on screen: its box, its nearest neighbours, how it lines up with them and its
+slot in a row or grid. Each change is numbered, and the screenshot carries the same numbers:
+
+```
+Positions are page coordinates in CSS px from the top-left of the page with the preview 784px wide; …
+
+1. Add button "Button" — child 4 of 6 in nav.buttons, after button "Sprinkles", before button "Maple". In code: after the element at index.html:22:7, before the element at index.html:23:7. Position: at x 407, y 365 (86×42px); below box<div>.stage, right of button "Sprinkles" and left of button "Maple", top-aligned with them; 4th of 6 buttons in a row.
+2. Reposition text<p> "Five buttons and a donut that w…" (index.html:12:7) — moved 40px right and 20px down. Position: at x 270, y 117 (323×20px); below text<h1> "Donut Shop" and above box<div>.stage.
+3. In the box the human drew at x 444, y 171 (150×100px); over box<div>.donut; inside box<div>.stage (index.html:15:5): "a price tag: $2.50"
+
+Screenshots (open them to see what the human means):
+- After: /…/.glimpse/handoffs/1.png is the human's edited version; each change is outlined in cyan with a number badge that matches its number in the list above.
+- Before: /…/.glimpse/handoffs/1-before.png is the same view before these edits (no markers).
+```
+
+**Screenshots.** An `ai` handoff can carry a PNG of the human's edited version with every change outlined and
+numbered, saved as `.glimpse/handoffs/<seq>.png` (the handoff's `screenshot` field), and a clean PNG of the same view
+before the edits, `.glimpse/handoffs/<seq>-before.png` (`screenshotBefore`; from the latest version in the timeline,
+or the unedited mock; React pages have none). The prompt ends with both absolute paths, the built-in API engine gets
+the marked picture as an image, and the MCP tools return both as image blocks (marked one first).
 
 **Variants.** A `variants` handoff names a job (`v1`, `v2`, …), the element (`label`, `src`) and a count of 2–4.
 Write variant *k* into `.glimpse/variants/<id>/<k>/`, mirroring the project's relative paths
@@ -133,7 +151,7 @@ script the editor's window. Open projects you would also run.
 | Route | Body → response |
 |---|---|
 | `GET /api/session` | → `{ project: { dir, target, entry }, entryExists, previewError, agentWaiting, lastSeq }` |
-| `POST /api/handoff` | `{ kind: "ai" \| "source", changeList, screenshot?, scene?, sceneVersion? }` → `{ seq, delivered, sceneVersion?, backup? }` (409 when the scene file changed) |
+| `POST /api/handoff` | `{ kind: "ai" \| "source", changeList, screenshot?, screenshotBefore?, scene?, sceneVersion? }` → `{ seq, delivered, sceneVersion?, backup? }` (409 when the scene file changed) |
 | `POST /api/patch/preview` | `{ changeList, repeated?, scene?, sceneVersion? }` → `{ files: [{ file, diff }], applied, needsAi, planId }` |
 | `POST /api/patch/apply` | same body, plus `planId?` from the preview → `{ files, applied, needsAi, backup, snapshot, version? }` (Edit source; 409 when the files no longer give the previewed diff) |
 | `POST /api/request` | `{ text, target? }` → `{ seq, delivered }` (home-screen request) |
@@ -151,7 +169,8 @@ script the editor's window. Open projects you would also run.
 | `POST /api/variants/<id>/choose` | `{ k }` → `{ files, skipped, backup, snapshot }` |
 | `POST /api/variants/<id>/discard` | → `{ ok }` |
 | `GET /variant/<id>/<k>/<path>` | Variant k overlaid on the project, instrumented like the preview |
-| `GET /api/handoffs/<seq>/screenshot` | The handoff's PNG |
+| `GET /api/handoffs/<seq>/screenshot` | The handoff's PNG (the edited version, changes marked) |
+| `GET /api/handoffs/<seq>/screenshot-before` | The PNG of the view before the edits, if it has one |
 
 ## The change list (`glimpse wait --json`)
 
@@ -171,7 +190,9 @@ script the editor's window. Open projects you would also run.
         { "op": "delete", "label": "button \"Maple\"", "parent": "g9", "index": 3, "nodes": [] },
         { "op": "move", "node": "g2", "label": "text<h1> \"Donut Shop\"",
           "from": { "x": 0, "y": 0 }, "to": { "x": 100, "y": 20 },
-          "intent": "moved 100px right and 20px down; now above text<p> \"Five buttons…\"" },
+          "intent": "moved 100px right and 20px down",
+          "box": { "x": 380, "y": 60, "w": 226, "h": 46 }, "mark": 2,
+          "place": "at x 380, y 60 (226×46px); above text<p> \"Five buttons…\"" },
         { "op": "setText", "node": "g10", "from": "Glazed", "to": "Honey Glazed" },
         { "op": "setStyle", "node": "g14", "key": "background", "from": null, "to": "red" },
         { "op": "comment", "node": "g14", "text": "make this bounce when hovered" },
@@ -195,7 +216,11 @@ script the editor's window. Open projects you would also run.
 | `reorder` | Moved to another position in the tree |
 | `comment` | Point & talk: a free-text instruction pinned to an element |
 | `behavior` | Logic: on `event` do `action` (`detail`) |
-| `region` | Box prompt: the human drew an area and said what goes there (`text`). `rect` is relative to the element it was drawn in (`parent`, `label`, `src`) |
+| `region` | Box prompt: the human drew an area and said what goes there (`text`). `rect` is relative to the element it was drawn in (`parent`, `label`, `src`); `box` is where it is on the page |
+
+Changes on an element that is shown also carry `box` (where it is now: CSS px of the page, independent of
+scrolling, or cells/px from the top-left of a mock; `changeList.viewport` is the preview's size), `place` (that
+position in words) and `mark` (its number on the marked screenshot).
 
 A change to an element Glimpse could locate carries `src: "file:line:col"` (where the element starts in the source):
 the HTML file for HTML projects, the component's `.jsx`/`.tsx` file for React projects, and the widget's `source` from

@@ -11,10 +11,31 @@ export function changeListToPrompt(list: ChangeList): string {
     "Prefer idiomatic layout changes (flex/grid order, spacing, alignment) over hard-coded pixel positions; use the intent hints.",
     "",
   ];
+  const where = positionsNote(list);
+  if (where) lines.splice(2, 0, where);
   if (list.note) lines.push(`Note from the human: ${list.note}`, "");
   if (list.changes.length === 0) lines.push("No changes were made.");
-  list.changes.forEach((c, i) => lines.push(`${i + 1}. ${describeChange(c)}`));
+  lines.push(...numberedChanges(list.changes));
   return lines.join("\n");
+}
+
+/**
+ * The changes as a numbered list. When the editor numbered them (the markers
+ * on the annotated screenshot), those numbers are kept, so they still match
+ * the picture after some changes were dealt with elsewhere.
+ */
+export function numberedChanges(changes: Change[]): string[] {
+  const marked = changes.length > 0 && changes.every((c) => c.mark !== undefined) && new Set(changes.map((c) => c.mark)).size === changes.length;
+  return changes.map((c, i) => `${marked ? c.mark : i + 1}. ${describeChange(c)}`);
+}
+
+/** What the coordinates in "Position:" mean, when any change has one. */
+export function positionsNote(list: ChangeList): string | undefined {
+  if (!list.changes.some((c) => c.place)) return undefined;
+  if (list.target === "tui") return "Positions are terminal cells from the top-left of the screen (column, row).";
+  if (list.target === "native") return "Positions are pixels from the top-left of the window's client area.";
+  const wide = list.viewport ? ` with the preview ${list.viewport.width}px wide` : "";
+  return `Positions are page coordinates in CSS px from the top-left of the page${wide}; they say where things should end up, build it with the layout, not absolute positioning.`;
 }
 
 function asList(value: string): (string | string[])[] {
@@ -23,6 +44,12 @@ function asList(value: string): (string | string[])[] {
 }
 
 export function describeChange(c: Change): string {
+  const text = describeOp(c);
+  if (!c.place || c.op === "region" || c.op === "comment") return text;
+  return `${text} Position: ${c.place}.`;
+}
+
+function describeOp(c: Change): string {
   const at = c.src ? ` (${c.src})` : "";
   const who = c.label ?? "element";
   const hint = c.intent ? ` — ${c.intent}` : "";
@@ -63,11 +90,12 @@ export function describeChange(c: Change): string {
     case "setLocked":
       return `${c.to ? "Lock" : "Unlock"} ${who}${at} (editor-only; no code change needed).`;
     case "comment":
-      return `Instruction for ${who}${at}: "${c.text}"`;
+      return `Instruction for ${who}${at}${c.place ? `, ${c.place}` : ""}: "${c.text}"`;
     case "behavior":
       return `Behavior for ${who}${at}: on ${c.event} → ${c.action}${c.detail ? ` (${c.detail})` : ""}.`;
     case "region":
       // `who`/`at` name the element the box was drawn in; the rect is relative to it.
+      if (c.place) return `In the box the human drew ${c.place}: "${c.text}"`;
       return `In the area ${c.rect.x},${c.rect.y} ${c.rect.w}×${c.rect.h} inside ${c.label ?? "the page"}${at}: "${c.text}"`;
   }
 }

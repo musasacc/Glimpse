@@ -217,4 +217,19 @@ describe("version history", () => {
     expect(handoffs.find((x) => x.seq === 1)?.screenshot).toBe(true);
     expect(handoffs.find((x) => x.seq === 2)?.screenshot).toBeUndefined();
   });
+
+  it("stores the before screenshot next to the marked one and tells the agent which is which", async () => {
+    const marked = { ...aiChangeList, changes: aiChangeList.changes.map((c, i) => ({ ...c, mark: i + 1 })) };
+    await post("/api/handoff", { kind: "ai", changeList: marked, screenshot: PNG_URL, screenshotBefore: PNG_URL });
+    const h = await get<{ screenshot: string; screenshotBefore: string; prompt: string }>("/api/handoffs/1");
+    expect(h.screenshotBefore).toBe(".glimpse/handoffs/1-before.png");
+    const abs = (f: string) => join(dir, ".glimpse", "handoffs", f).split("\\").join("/");
+    expect(h.prompt).toContain(`- After: ${abs("1.png")} is the human's edited version; each change is outlined in cyan with a number badge that matches its number in the list above.`);
+    expect(h.prompt).toContain(`- Before: ${abs("1-before.png")} is the same view before these edits (no markers).`);
+    expect((await readFile(join(dir, ".glimpse", "handoffs", "1-before.png"))).toString("base64")).toBe(PNG_B64);
+    expect((await fetch(`${srv.url}/api/handoffs/1/screenshot-before`)).headers.get("content-type")).toBe("image/png");
+    // Without the edited picture, a "before" alone means nothing and is dropped.
+    await post("/api/handoff", { kind: "ai", changeList: marked, screenshotBefore: PNG_URL });
+    expect(await get("/api/handoffs/2")).not.toHaveProperty("screenshotBefore");
+  });
 });

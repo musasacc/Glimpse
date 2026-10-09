@@ -174,6 +174,15 @@ export function createGlimpseMcp(opts: McpOptions = {}): { mcp: McpServer; close
           .then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null))
           .catch(() => null));
       if (png) content.push({ type: "image", data: png.toString("base64"), mimeType: "image/png" });
+      // The page before the edits, when the editor sent one (after the marked "after" picture, as the prompt describes).
+      if (png && h.screenshotBefore && /^\.glimpse\/handoffs\/\d+-before\.png$/.test(h.screenshotBefore)) {
+        const before =
+          (await readFile(join(p.dir, ...h.screenshotBefore.split("/"))).catch(() => null)) ??
+          (await fetch(`${p.url}/api/handoffs/${h.seq}/screenshot-before`)
+            .then(async (r) => (r.ok ? Buffer.from(await r.arrayBuffer()) : null))
+            .catch(() => null));
+        if (before) content.push({ type: "image", data: before.toString("base64"), mimeType: "image/png" });
+      }
     }
     return { content };
   };

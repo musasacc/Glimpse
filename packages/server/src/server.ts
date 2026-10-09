@@ -52,6 +52,8 @@ export interface Handoff {
   variants?: { id: string; src?: string; label: string; count: number; hint?: string };
   /** Project-relative path of a PNG of the human's edited version (`.glimpse/handoffs/<seq>.png`). */
   screenshot?: string;
+  /** Project-relative path of a PNG of the UI before the human's edits (`.glimpse/handoffs/<seq>-before.png`). */
+  screenshotBefore?: string;
   /** Whether an agent has already received it. */
   delivered: boolean;
   /** Withdrawn before any agent received it (its variants job was chosen or discarded). */
@@ -706,12 +708,14 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       return;
     }
 
-    const seqMatch = path.match(/^\/api\/handoffs\/(\d+)(\/screenshot)?$/);
+    const seqMatch = path.match(/^\/api\/handoffs\/(\d+)(\/screenshot(-before)?)?$/);
     if (seqMatch && req.method === "GET") {
       const h = handoffs.find((x) => x.seq === Number(seqMatch[1]));
       if (!h) return send(res, 404, { error: "No such handoff" });
       if (!seqMatch[2]) return send(res, 200, h);
-      const png = h.screenshot ? await readFile(join(stateDir, "handoffs", `${h.seq}.png`)).catch(() => null) : null;
+      const before = !!seqMatch[3];
+      const png =
+        (before ? h.screenshotBefore : h.screenshot) ? await readFile(join(stateDir, "handoffs", `${h.seq}${before ? "-before" : ""}.png`)).catch(() => null) : null;
       if (!png) return send(res, 404, { error: "That handoff has no screenshot" });
       res.writeHead(200, { "content-type": MIME[".png"]!, "cache-control": "no-store" });
       res.end(png);
@@ -719,7 +723,14 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/handoff" && req.method === "POST") {
-      const body = (await readJson(req)) as { kind?: HandoffKind; changeList?: ChangeList; screenshot?: unknown; scene?: unknown; sceneVersion?: unknown };
+      const body = (await readJson(req)) as {
+        kind?: HandoffKind;
+        changeList?: ChangeList;
+        screenshot?: unknown;
+        screenshotBefore?: unknown;
+        scene?: unknown;
+        sceneVersion?: unknown;
+      };
       if (!isChangeList(body.changeList) || (body.kind !== "ai" && body.kind !== "source")) {
         send(res, 400, { error: "Expected { kind: 'ai' | 'source', changeList, screenshot?, scene?, sceneVersion? }" });
         return;
@@ -727,6 +738,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       // The picture is a nicety: one Glimpse can't take (not a PNG, over 5 MB) is left out, never the edits.
       const screenshot = body.screenshot == null ? undefined : (decodePngDataUrl(body.screenshot) ?? undefined);
       const warning = body.screenshot != null && !screenshot ? "The screenshot wasn't a PNG of at most 5 MB, so it was left out." : undefined;
+      // The "before" picture only makes sense next to the edited one.
+      const screenshotBefore = screenshot && body.screenshotBefore != null ? (decodePngDataUrl(body.screenshotBefore) ?? undefined) : undefined;
       let changeList = body.changeList;
       let prompt: string;
       let scene: { version: string | null; backup?: string } | undefined;
@@ -755,7 +768,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       } else {
         prompt = changeListToPrompt(changeList);
       }
-      const h = await addHandoff({ kind: body.kind, changeList, prompt }, { screenshot });
+      const h = await addHandoff({ kind: body.kind, changeList, prompt }, { screenshot, screenshotBefore });
       if (h.kind === "ai") {
         const n = h.changeList.changes.length;
         await takeSnapshot("handoff", `Sent ${n} change${n === 1 ? "" : "s"} to the AI`);
@@ -1365,7 +1378,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   let handoffQueue: Promise<unknown> = Promise.resolve();
   function addHandoff(
     h: Omit<Handoff, "seq" | "createdAt" | "delivered">,
-    opts: { notify?: boolean; screenshot?: Buffer } = {},
+    opts: { notify?: boolean; screenshot?: Buffer; screenshotBefore?: Buffer } = {},
   ): Promise<Handoff> {
     const run = handoffQueue.then(() => addHandoffNow(h, opts));
     handoffQueue = run.catch(() => undefined);
@@ -1374,16 +1387,19 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 
   async function addHandoffNow(
     h: Omit<Handoff, "seq" | "createdAt" | "delivered">,
-    opts: { notify?: boolean; screenshot?: Buffer },
+    opts: { notify?: boolean; screenshot?: Buffer; screenshotBefore?: Buffer },
   ): Promise<Handoff> {
     const notify = opts.notify ?? true;
     const handoff: Handoff = { seq: Math.max(handoffs.at(-1)?.seq ?? 0, seqFloor) + 1, createdAt: new Date().toISOString(), delivered: !notify, ...h };
     if (opts.screenshot) {
       // Written before the agent can receive the handoff, so the file is always there when it looks.
-      const file = join(stateDir, "handoffs", `${handoff.seq}.png`);
-      await writeFile(file, opts.screenshot);
+      await writeFile(join(stateDir, "handoffs", `${handoff.seq}.png`), opts.screenshot);
       handoff.screenshot = `.glimpse/handoffs/${handoff.seq}.png`;
-      handoff.prompt += `\n\nScreenshot of the human's edited version: ${file.split(sep).join("/")}`;
+      if (opts.screenshotBefore) {
+        await writeFile(join(stateDir, "handoffs", `${handoff.seq}-before.png`), opts.screenshotBefore);
+        handoff.screenshotBefore = `.glimpse/handoffs/${handoff.seq}-before.png`;
+      }
+      handoff.prompt += `\n\n${screenshotNote(handoff, dir)}`;
     }
     handoffs.push(handoff);
     if (notify) offer(handoff);
@@ -1427,9 +1443,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     } else {
       body = h.prompt;
     }
-    if (h.screenshot && !body.includes("Screenshot of the human's edited version")) {
-      body += `\n\nScreenshot of the human's edited version: ${join(dir, h.screenshot).split(sep).join("/")}`;
-    }
+    if (h.screenshot && !body.includes(join(dir, h.screenshot).split(sep).join("/"))) body += `\n\n${screenshotNote(h, dir)}`;
     return `${preamble}\n\n${body}`;
   }
 
@@ -1819,6 +1833,22 @@ function planId(files: FilePatch[]): string {
   const hash = createHash("sha256");
   for (const f of files) hash.update(`${f.file}\0${f.before}\0${f.after}\0`);
   return hash.digest("base64url");
+}
+
+/**
+ * Where the handoff's pictures are, for the agent to open. With numbered
+ * markers (the editor drew one per change), says that the numbers are the list's.
+ */
+function screenshotNote(h: Pick<Handoff, "screenshot" | "screenshotBefore" | "changeList">, dir: string): string {
+  const abs = (p: string) => join(dir, p).split(sep).join("/");
+  if (!h.screenshot) return "";
+  const marked = h.changeList.changes.some((c) => c.mark !== undefined);
+  if (!marked && !h.screenshotBefore) return `Screenshot of the human's edited version: ${abs(h.screenshot)}`;
+  return [
+    "Screenshots (open them to see what the human means):",
+    `- After: ${abs(h.screenshot)} is the human's edited version${marked ? "; each change is outlined in cyan with a number badge that matches its number in the list above" : ""}.`,
+    ...(h.screenshotBefore ? [`- Before: ${abs(h.screenshotBefore)} is the same view before these edits (no markers).`] : []),
+  ].join("\n");
 }
 
 function sourcePrompt(list: ChangeList, files: string[]): string {

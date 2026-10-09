@@ -1,6 +1,7 @@
 import type { Op } from "./ops.js";
-import { formatSource, getNode, type Scene, type SceneNode, type Target } from "./scene.js";
+import { formatSource, getNode, type Layout, type Scene, type SceneNode, type Target } from "./scene.js";
 import type { OpLog } from "./oplog.js";
+import { boxes, describePlace, type Measure } from "./placement.js";
 
 /** One entry of the change list handed to the AI (or to the source patcher). */
 export type Change = Op & {
@@ -15,6 +16,15 @@ export type Change = Op & {
    * sits between, so it can be placed exactly in the code.
    */
   anchor?: { after?: string; before?: string };
+  /**
+   * Where the element (or box prompt) is now, absolute: CSS pixels of the page
+   * for the web (independent of scrolling), cells or pixels from the top-left of a mock.
+   */
+  box?: Layout;
+  /** That position in words: coordinates, nearest neighbours, alignment, slot in a row or grid. */
+  place?: string;
+  /** The number of its marker on the annotated screenshot. */
+  mark?: number;
 };
 
 export interface ChangeList {
@@ -23,7 +33,15 @@ export interface ChangeList {
   createdAt: string;
   /** Free-text note the human typed before sending. */
   note?: string;
+  /** The preview the boxes were measured in (CSS px; cells for a terminal UI). */
+  viewport?: { width: number; height: number };
   changes: Change[];
+}
+
+export interface ChangeListOptions {
+  /** Measure nodes where they are shown (the live page); defaults to the scene's own layouts. */
+  measure?: Measure;
+  viewport?: ChangeList["viewport"];
 }
 
 /**
@@ -32,17 +50,18 @@ export interface ChangeList {
  * edits that cancel out (or were undone) never reach the AI. Annotations
  * (comments, behaviors, regions) come from the op log.
  */
-export function buildChangeList(log: OpLog, note?: string): ChangeList {
+export function buildChangeList(log: OpLog, note?: string, opts: ChangeListOptions = {}): ChangeList {
   return {
     version: 1,
     target: log.base.target,
     createdAt: new Date().toISOString(),
     ...(note ? { note } : {}),
-    changes: diffScenes(log.base, log.scene, log.ops),
+    ...(opts.viewport ? { viewport: opts.viewport } : {}),
+    changes: diffScenes(log.base, log.scene, log.ops, opts.measure),
   };
 }
 
-export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] {
+export function diffScenes(base: Scene, final: Scene, ops: Op[] = [], measure?: Measure): Change[] {
   const deletes: Change[] = [];
   const adds: Change[] = [];
   const reorders: Change[] = [];
@@ -152,7 +171,37 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     }
   }
 
-  return [...deletes, ...adds, ...reorders, ...edits, ...notes];
+  const all = [...deletes, ...adds, ...reorders, ...edits, ...notes];
+  locate(final, all, boxes(final, measure));
+  return all;
+}
+
+/** Ops whose position is worth putting into words (the rest only get a box, for the screenshot's markers). */
+const PLACED_OPS = new Set<Change["op"]>(["add", "reorder", "move", "resize", "comment", "region"]);
+
+/** Give every change on a shown element its box, and the ones about position a description of it. */
+function locate(scene: Scene, changes: Change[], boxOf: (id: string) => Layout | null): void {
+  for (const c of changes) {
+    if (c.op === "delete" || c.op === "setLocked") continue;
+    let box: Layout | null = null;
+    let id: string | undefined;
+    if (c.op === "region") {
+      const p = boxOf(c.parent) ?? (c.parent === scene.rootId ? { x: 0, y: 0, w: 0, h: 0 } : null);
+      box = p && { x: p.x + c.rect.x, y: p.y + c.rect.y, w: c.rect.w, h: c.rect.h };
+    } else {
+      id = c.op === "add" ? c.nodes[0]!.id : c.node;
+      box = boxOf(id);
+    }
+    if (!box) continue;
+    c.box = box;
+    if (!PLACED_OPS.has(c.op)) continue;
+    const n = id ? scene.nodes[id] : undefined;
+    const within = c.op === "region" ? c.parent : n?.parent;
+    if (!within) continue;
+    const place = describePlace(scene, box, boxOf, { self: id, within, sayInside: c.op === "region" && within !== scene.rootId });
+    // A comment names its element already: where it is on screen is enough.
+    c.place = c.op === "comment" ? place.split("; ")[0]! : place;
+  }
 }
 
 /** Targets whose layout places nodes (rather than being measured from a page that lays itself out). */
@@ -284,11 +333,6 @@ function longestIncreasing(seq: number[]): number[] {
   return out;
 }
 
-function siblingsOf(scene: Scene, n: SceneNode): SceneNode[] {
-  if (n.parent === null) return [];
-  return getNode(scene, n.parent).children.filter((c) => c !== n.id).map((c) => getNode(scene, c));
-}
-
 function positionIntent(scene: Scene, n: SceneNode): string {
   if (n.parent === null) return "";
   const parent = getNode(scene, n.parent);
@@ -317,26 +361,8 @@ function shift(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
 }
 
 function moveIntent(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
+  // The neighbours of the new position are in the change's `place`.
   let hint = `moved ${shift(base, scene, b, f)}`;
-
-  // Name the closest sibling to anchor the new position semantically.
-  const cx = f.layout.x + f.layout.w / 2;
-  const cy = f.layout.y + f.layout.h / 2;
-  let best: { s: SceneNode; d: number } | undefined;
-  for (const s of siblingsOf(scene, f)) {
-    const d = Math.hypot(s.layout.x + s.layout.w / 2 - cx, s.layout.y + s.layout.h / 2 - cy);
-    if (!best || d < best.d) best = { s, d };
-  }
-  if (best) {
-    const s = best.s.layout;
-    const where =
-      f.layout.x >= s.x + s.w ? "right of"
-      : f.layout.x + f.layout.w <= s.x ? "left of"
-      : f.layout.y >= s.y + s.h ? "below"
-      : f.layout.y + f.layout.h <= s.y ? "above"
-      : "overlapping";
-    hint += `; now ${where} ${describeNode(best.s)}`;
-  }
   if (f.parent) {
     const p = getNode(scene, f.parent).layout;
     const left = f.layout.x;

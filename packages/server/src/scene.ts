@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, normalize, resolve, sep } from "node:path";
 import { createTwoFilesPatch } from "diff";
 import {
-  describeChange,
+  numberedChanges,
   parseSceneFile,
   SCENE_FILE_NAME,
   SceneFileSyntaxError,
@@ -232,11 +232,11 @@ export function sceneChangesPrompt(list: ChangeList, opts: { file?: string; extr
     opts.sceneWritten
       ? `${file} already matches the edited mock; only update it again if your code ends up different.`
       : `Then update ${file} to match, so the mock stays in sync with the code.`,
-    `Positions and sizes are in ${units}, relative to the parent widget. Express moves and resizes with the toolkit's own layout (containers, docking, CSS, grid/pack options, constraints) rather than absolute positions; use the intent hints.`,
+    `Positions and sizes are in ${units}, relative to the parent widget (a "Position:" is on screen, from the top-left). Express moves and resizes with the toolkit's own layout (containers, docking, CSS, grid/pack options, constraints) rather than absolute positions; use the intent hints.`,
     "",
   ];
   if (list.note) lines.push(`Note from the human: ${list.note}`, "");
   if (list.changes.length === 0) lines.push("No changes were made.");
-  list.changes.forEach((c, i) => lines.push(`${i + 1}. ${describeChange(c)}`));
+  lines.push(...numberedChanges(list.changes));
   return lines.join("\n");
 }

@@ -14,7 +14,7 @@ import { currentEngine, store, useStore, type Device } from "./store";
 import { queuedNote } from "./agent";
 import { AiSettings } from "./AiSettings";
 import { connectLive } from "./live";
-import { handoffScreenshot, initLoop, loop, useTimelineOpen } from "./loop";
+import { handoffScreenshots, initLoop, loop, numbered, useTimelineOpen } from "./loop";
 import { LoopStage, LoopToolbar } from "./Timeline";
 import { SceneCanvas } from "./SceneCanvas";
 import { SceneToolbar } from "./SceneToolbar";
@@ -212,15 +212,22 @@ function SendDialog({ list: opened, onClose }: { list: ChangeList; onClose: () =
     try {
       const current = store.changeList() ?? list;
       if (current.changes.length === 0) throw new Error("Nothing to send right now: your edits no longer differ from the page (the AI's latest change may include them).");
-      const changeList = { ...current, ...(note.trim() ? { note: note.trim() } : {}) };
-      // A picture of the edited page helps the agent see what was meant (best effort, ≤ 3 s).
-      const screenshot = await handoffScreenshot();
+      // Numbered like the markers on the screenshot.
+      const changeList = { ...current, changes: numbered(current.changes), ...(note.trim() ? { note: note.trim() } : {}) };
+      // Pictures of the edited page (each change marked) and of the page before, so the agent sees what was meant (best effort, ≤ 3 s).
+      const { after: screenshot, before: screenshotBefore } = await handoffScreenshots(changeList.changes);
       // A scene mock: Glimpse writes the edited scene into its file first, so the agent only changes the code.
       const res = await sceneMode.writes(
         fetch("/api/handoff", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "ai", changeList, ...(screenshot ? { screenshot } : {}), ...sceneMode.body({ handoff: true }) }),
+          body: JSON.stringify({
+            kind: "ai",
+            changeList,
+            ...(screenshot ? { screenshot } : {}),
+            ...(screenshotBefore ? { screenshotBefore } : {}),
+            ...sceneMode.body({ handoff: true }),
+          }),
         }),
       );
       const body = (await res.json()) as { warning?: string; error?: string };

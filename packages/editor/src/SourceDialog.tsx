@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { describeChange, type Change, type ChangeList } from "@glimpse/core";
 import * as I from "./icons";
-import { handoffScreenshot } from "./loop";
+import { handoffScreenshots, numbered, type HandoffShots } from "./loop";
 import { sceneMode } from "./scene-mode";
 import { store } from "./store";
 import { Modal } from "./Modal";
@@ -27,7 +27,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const [sendRest, setSendRest] = useState(true);
   /** The files were written (and the edits committed): a retry only sends the rest to the AI. */
   const [written, setWritten] = useState(false);
-  const shot = useRef<string | null | undefined>(undefined);
+  const shot = useRef<HandoffShots | undefined>(undefined);
   // Elements the page renders more than once (list items, shared components): their edits go to the AI.
   const [repeats] = useState(() => store.repeats);
   const repeated = [...repeats.keys()];
@@ -58,7 +58,7 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
     try {
       const toAi = sendRest && preview.needsAi.length > 0;
       // Picture the edited page before the files change under it (best effort, ≤ 3 s).
-      if (toAi && shot.current === undefined) shot.current = await handoffScreenshot();
+      if (toAi && shot.current === undefined) shot.current = await handoffScreenshots(numbered(preview.needsAi));
       if (!wrote && preview.files.length > 0) {
         // React renders from its own record of the page: our edits come off before the files change, and the
         // update Vite sends for them shows the written source (see Store.takeOffEdits).
@@ -90,12 +90,19 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
         store.activity("handoff", `Wrote ${n} change${n === 1 ? "" : "s"} to \`${(body.files ?? []).join("`, `")}\`${body.backup ? ` (backup in \`${body.backup}\`)` : ""}`);
       }
       if (toAi) {
-        const screenshot = shot.current;
+        const { after: screenshot, before: screenshotBefore } = shot.current ?? { after: null, before: null };
         const res = await sceneMode.writes(
           fetch("/api/handoff", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ kind: "ai", changeList: { ...list, changes: preview.needsAi }, ...(screenshot ? { screenshot } : {}), ...sceneMode.body({ handoff: true }) }),
+            body: JSON.stringify({
+              kind: "ai",
+              // Numbered like the markers on the screenshot.
+              changeList: { ...list, changes: numbered(preview.needsAi) },
+              ...(screenshot ? { screenshot } : {}),
+              ...(screenshotBefore ? { screenshotBefore } : {}),
+              ...sceneMode.body({ handoff: true }),
+            }),
           }),
         );
         const body = (await res.json()) as { warning?: string; error?: string };

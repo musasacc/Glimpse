@@ -2,20 +2,21 @@ import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { toPng } from "html-to-image";
-import { parseSceneFile } from "@glimpse/core";
-import { drawBoxes, type MarkBox } from "./capture";
+import { parseSceneFile, type Scene } from "@glimpse/core";
+import { drawMarkers } from "./capture";
+import type { Mark } from "./markers";
 import { enc } from "./loop";
 import { sceneMode } from "./scene-mode";
 import { SceneView } from "./SceneView";
 
 /**
- * Pictures of scene mocks: the edited mock for a handoff (with its box prompts
- * drawn in), and timeline thumbnails of past versions, drawn off-screen from
- * the version's scene file the way the canvas draws it.
+ * Pictures of scene mocks: the edited mock for a handoff (with its changes
+ * marked), the mock before the edits, and timeline thumbnails of past
+ * versions, drawn off-screen from a scene the way the canvas draws it.
  */
 
-/** PNG of the mock's frame (unscaled), with `boxes` drawn over it. Best effort: null on failure. */
-export async function captureFrame(frame: HTMLElement, boxes: MarkBox[], maxWidth = 1280): Promise<string | null> {
+/** PNG of the mock's frame (unscaled), with `marks` drawn over it. Best effort: null on failure. */
+export async function captureFrame(frame: HTMLElement, marks: Mark[], maxWidth = 1280): Promise<string | null> {
   try {
     const width = frame.offsetWidth;
     const height = frame.offsetHeight;
@@ -31,7 +32,7 @@ export async function captureFrame(frame: HTMLElement, boxes: MarkBox[], maxWidt
       style: { transform: "none" },
       filter: (n: Node) => !(n.nodeType === 1 && (n as Element).hasAttribute("data-glimpse-internal")),
     });
-    return drawBoxes(png, boxes, width);
+    return drawMarkers(png, marks, width);
   } catch {
     return null;
   }
@@ -53,6 +54,11 @@ export async function renderThumbnail(id: string, maxWidth: number): Promise<str
   } catch {
     return null;
   }
+  return renderScene(scene, maxWidth);
+}
+
+/** A picture of `scene`, drawn off-screen the way the canvas draws it (unscaled up to `maxWidth`). */
+export async function renderScene(scene: Scene, maxWidth: number): Promise<string | null> {
   const { cell, theme, extras } = sceneMode.state;
   const host = document.createElement("div");
   host.setAttribute("aria-hidden", "true");

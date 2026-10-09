@@ -6,6 +6,7 @@ import {
   OpLog,
   rebaseOps,
   Scrollback,
+  type Change,
   type LogEntry,
   type Op,
   type Scene,
@@ -133,7 +134,11 @@ class SceneMode {
   private term = new Scrollback(TERM_BUFFER);
   private termListeners = new Set<(data: string | null) => void>();
   /** Set by the canvas: pictures of the mock for handoffs and the timeline. */
-  capture: { screenshot(): Promise<string | null>; thumbnail(id: string, maxWidth: number): Promise<string | null> } | null = null;
+  capture: {
+    screenshot(changes: readonly Change[]): Promise<string | null>;
+    before(): Promise<string | null>;
+    thumbnail(id: string, maxWidth: number): Promise<string | null>;
+  } | null = null;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -463,7 +468,8 @@ class SceneMode {
       const n = store.scene?.nodes[id];
       if (n && n.parent !== null) this.set({ editing: id });
     },
-    screenshot: async () => (this.capture ? this.capture.screenshot() : null),
+    screenshot: async (changes) => (this.capture ? this.capture.screenshot(changes) : null),
+    screenshotBefore: async () => (this.capture ? this.capture.before() : null),
     thumbnail: async (id, maxWidth) => (this.capture ? this.capture.thumbnail(id, maxWidth) : null),
   };
 }

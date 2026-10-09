@@ -584,9 +584,10 @@ describe("diffScenes on terminal scenes", () => {
     final.nodes["details.checkbox-0"]!.layout.y = 4;
     const changes = diffScenes(base, final);
     expect(changes.map((c) => c.intent)).toEqual([
-      expect.stringMatching(/^moved 1 cell right; now /),
-      expect.stringMatching(/^moved 3 cells down; now /),
+      expect.stringMatching(/^moved 1 cell right/),
+      expect.stringMatching(/^moved 3 cells down/),
     ]);
+    expect(changes.map((c) => c.place)).toEqual([expect.stringMatching(/^at column 1, row \d+ \(\d+×\d+ cells\); /), expect.stringMatching(/^at column \d+, row \d+ /)]);
   });
 
   it("mentions the move that comes with resizing from the left or top edge", () => {
@@ -595,7 +596,7 @@ describe("diffScenes on terminal scenes", () => {
     final.nodes.details!.layout = { x: 30, y: 1, w: 50, h: 22 };
     const [change] = diffScenes(base, final);
     expect(change!.intent).toBe("size 48×22 → 50×22 (+2w, 0h); also moved 2 cells left");
-    expect(describeChange(change!)).toBe("Resize panel details: size 48×22 → 50×22 (+2w, 0h); also moved 2 cells left.");
+    expect(describeChange(change!)).toMatch(/^Resize panel details: size 48×22 → 50×22 \(\+2w, 0h\); also moved 2 cells left\. Position: at column 30, row 1 \(50×22 cells\); /);
   });
 
   it("describes list props as lists", () => {

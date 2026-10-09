@@ -209,7 +209,8 @@ describe("buildChangeList", () => {
     const log = new OpLog(fixture());
     log.apply({ op: "move", node: "b1", from: { x: 20, y: 10 }, to: { x: 400, y: 10 } });
     const [move] = buildChangeList(log).changes;
-    expect(move!.intent).toMatch(/^moved 380px right; now right of button "Button 3"/);
+    expect(move!.intent).toBe("moved 380px right");
+    expect(move!.place).toBe('at x 400, y 10 (100×40px); right of button "Button 3", top-aligned with it; 3rd of 3 buttons in a row');
   });
 
   it("keeps annotations and drops those on deleted elements", () => {
@@ -229,7 +230,7 @@ describe("buildChangeList", () => {
     const prompt = changeListToPrompt(buildChangeList(log, "keep it minimal"));
     expect(prompt).toContain("Note from the human: keep it minimal");
     expect(prompt).toContain('1. Set style `background: red` on button "Button 1" (index.html:10:5).');
-    expect(prompt).toContain('2. Instruction for button "Button 2" (index.html:11:5): "make this bounce"');
+    expect(prompt).toContain('2. Instruction for button "Button 2" (index.html:11:5), at x 140, y 10 (100×40px): "make this bounce"');
   });
 });
 
@@ -296,7 +297,12 @@ describe("box prompts (regions)", () => {
     log.apply({ op: "region", id: "r1", parent: "b2", rect: { x: 4, y: 6, w: 50, h: 20 }, text: "put an icon here" });
     const [c] = buildChangeList(log).changes;
     expect(c).toMatchObject({ op: "region", label: 'button "Button 2"', src: "index.html:11:5" });
-    expect(describeChange(c!)).toBe('In the area 4,6 50×20 inside button "Button 2" (index.html:11:5): "put an icon here"');
+    expect(describeChange(c!)).toBe(
+      'In the box the human drew at x 144, y 16 (50×20px); right of button "Button 1" and left of button "Button 3", vertically centered with them; inside button "Button 2" (index.html:11:5): "put an icon here"',
+    );
+    // Without a position (an older editor), the box is given relative to its element.
+    const { place: _p, ...bare } = c!;
+    expect(describeChange(bare)).toBe('In the area 4,6 50×20 inside button "Button 2" (index.html:11:5): "put an icon here"');
   });
 
   it("calls the root the page, and drops boxes in deleted elements or undone ones", () => {
@@ -307,7 +313,7 @@ describe("box prompts (regions)", () => {
     log.apply({ op: "region", id: "r3", parent: "b1", rect: { x: 0, y: 0, w: 10, h: 10 }, text: "undone" });
     log.undo();
     const notes = buildChangeList(log).changes.filter((c) => c.op === "region");
-    expect(notes.map((c) => describeChange(c))).toEqual(['In the area 10,80 300×120 inside the page: "a hero image"']);
+    expect(notes.map((c) => describeChange(c))).toEqual(['In the box the human drew at x 10, y 80 (300×120px); below nav nav: "a hero image"']);
   });
 
   it("names an element without text or id by its classes", () => {

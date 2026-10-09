@@ -4,6 +4,7 @@ export * from "./oplog.js";
 export * from "./changes.js";
 export * from "./prompt.js";
 export * from "./arrange.js";
+export * from "./placement.js";
 export * from "./rebase.js";
 export * from "./scene-file.js";
 export * from "./scene-schema.js";

@@ -256,7 +256,7 @@ describe("prompts", () => {
     expect(written).toContain(
       'Set `items` of list<ListView> todos (app.py:55:19) to ["○ Buy groceries","○ Write the weekly report","○ Call the plumber","✔ Book train tickets","Water the plants"] (was [',
     );
-    expect(written).toContain('Instruction for list<ListView> todos (app.py:55:19): "Show a count of open todos"');
+    expect(written).toContain('Instruction for list<ListView> todos (app.py:55:19), at column 0, row 1 (36×19 cells): "Show a count of open todos"');
 
     const notWritten = sceneChangesPrompt({ ...list, target: "native" }, { file: "ui/scene.json", sceneWritten: false });
     expect(notWritten).toContain("Then update ui/scene.json to match");

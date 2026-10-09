@@ -1,4 +1,4 @@
-import type { Layout, Op, Scene, SceneNode } from "@glimpse/core";
+import type { Change, Layout, Op, Scene, SceneNode } from "@glimpse/core";
 import type { Rect } from "./arrange";
 import type { DomBridge } from "./dom";
 
@@ -34,8 +34,10 @@ export interface Surface {
   place?(node: SceneNode, parent: string, after?: string): void;
   /** Inline text editing of a node (double-click, Inspector's Edit text). */
   editText?(id: string): void;
-  /** A picture of the edited UI with its box prompts drawn in, for a handoff. */
-  screenshot?(): Promise<string | null>;
+  /** A picture of the edited UI with a numbered marker on each of `changes` (by their `mark` and `box`), for a handoff. */
+  screenshot?(changes: readonly Change[]): Promise<string | null>;
+  /** A picture of the UI before the edits (the op log's base), for a handoff. */
+  screenshotBefore?(): Promise<string | null>;
   /** A thumbnail of version `id` for the timeline. */
   thumbnail?(id: string, maxWidth: number): Promise<string | null>;
 }

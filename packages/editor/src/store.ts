@@ -643,8 +643,23 @@ class Store {
     }
   }
 
+  /**
+   * The unsent edits as a change list, each change with where it is now:
+   * measured in the live page (or the mock), so the AI gets real positions
+   * and the screenshot's markers land on the elements.
+   */
   changeList(note?: string): ChangeList | null {
-    return this.log && this.commitTimer === undefined ? buildChangeList(this.log, note) : null;
+    if (!this.log || this.commitTimer !== undefined) return null;
+    const surface = this.surface;
+    const root = this.log.scene.nodes[this.log.scene.rootId];
+    const win = this.sceneSurface ? null : this.bridge?.doc.defaultView;
+    const viewport = win
+      ? { width: win.document.documentElement.clientWidth || win.innerWidth, height: win.innerHeight }
+      : root && { width: root.layout.w, height: root.layout.h };
+    return buildChangeList(this.log, note, {
+      ...(surface && { measure: (id: string) => surface.box(id) }),
+      ...(viewport && viewport.width > 0 && { viewport }),
+    });
   }
 
   /** The server's agent info changed (or there is none: an older server). */
