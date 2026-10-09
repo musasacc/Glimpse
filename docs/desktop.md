@@ -26,10 +26,12 @@ Glimpse.app
   process hands the request to that folder's Glimpse server (`POST /api/request`, as the editor's Home does; from
   the main process there is no Origin header, so the server treats it as a local tool like the CLI). The editor
   shows the build live.
-- **AI.** The composer's engine chip shows what builds requests (Claude Code, Codex, Claude API, or **Set up AI**),
-  from glimpse-ui's `detectAgents()` and `loadAgentSettings()`. Clicking it opens AI settings (Auto, Claude Code,
-  Codex, Claude API key), saved with `saveAgentSettings` to Glimpse's global settings file; if nothing can build when
-  you send, the settings open first. The key never goes back to the page, only whether one is saved.
+- **AI.** The composer's engine chip shows what builds requests (Claude Code, Codex, the Direct API's provider and
+  model such as "GPT · OpenAI" or "Ollama · llama3", or **Set up AI**), from glimpse-ui's `detectAgents()` and
+  `loadAgentSettings()`. Clicking it opens AI settings (Auto, Claude Code, Codex, Direct API with its provider, model
+  and key), saved with `saveAgentSettings` to Glimpse's global settings file; if nothing can build when you send, the
+  settings open first. Keys never go back to the page, only whether one is saved. Quality, max steps and custom
+  instructions are set in the editor's AI settings.
 - **Recent projects** are a JSON file in the app's user-data folder
   (`~/Library/Application Support/Glimpse/recent-projects.json` on macOS,
   `%APPDATA%\Glimpse\recent-projects.json` on Windows, `~/.config/Glimpse/recent-projects.json` on Linux).

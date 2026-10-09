@@ -10,7 +10,7 @@ import { WebSocketServer, type RawData, type WebSocket } from "ws";
 import { changeListToPrompt, SCENE_AUTHORING_GUIDE, type ChangeList, type Scene, type Target } from "@glimpse/core";
 import { createReactPreview, isJsxChange, mergePatchPlans, planJsxPatch, ReactPreviewError, resolveVite, type ReactPreview } from "@glimpse/react";
 import { AgentRunner } from "./agent-runner.js";
-import { AGENT_ENGINES, saveAgentSettings, type AgentEngine, type AgentSettingsPatch } from "./agent-settings.js";
+import { saveAgentSettings, SettingsError, validateSettingsPatch, type AgentSettingsPatch } from "./agent-settings.js";
 import { detectProject, SCENE_FILE, type ProjectInfo } from "./detect.js";
 import {
   decodePngDataUrl,
@@ -648,22 +648,14 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/agent/settings" && req.method === "POST") {
-      const body = (await readJson(req)) as { engine?: unknown; anthropicApiKey?: unknown } | null;
-      const engine = body?.engine;
-      const key = body?.anthropicApiKey;
-      if (
-        !body ||
-        typeof body !== "object" ||
-        Array.isArray(body) ||
-        (engine !== undefined && !(AGENT_ENGINES as readonly unknown[]).includes(engine)) ||
-        (key !== undefined && key !== null && (typeof key !== "string" || !/^\S{1,400}$/.test(key.trim())))
-      ) {
-        send(res, 400, { error: `Expected { engine?: ${AGENT_ENGINES.join(" | ")}, anthropicApiKey?: string | null }` });
+      let patch: AgentSettingsPatch;
+      try {
+        patch = validateSettingsPatch(await readJson(req));
+      } catch (err) {
+        if (!(err instanceof SettingsError)) throw err;
+        send(res, 400, { error: err.message });
         return;
       }
-      const patch: AgentSettingsPatch = {};
-      if (engine !== undefined) patch.engine = engine as AgentEngine;
-      if (key !== undefined) patch.anthropicApiKey = key === null ? null : (key as string).trim();
       await saveAgentSettings(patch);
       runner.refresh();
       const info = await runner.info();

@@ -1,6 +1,6 @@
 // Home window page (sandboxed renderer). Talks to the main process only through window.glimpse (preload.ts).
 // Looks and words follow the editor's Home and AI settings (packages/editor/src/Home.tsx, AiSettings.tsx).
-import type { AiEngine, AiInfo, BuildTarget, LauncherApi, RecentEntry } from "../api.js";
+import type { AiEngine, AiInfo, AiKeyProvider, AiProvider, BuildTarget, LauncherApi, RecentEntry } from "../api.js";
 
 declare global {
   interface Window {
@@ -218,6 +218,10 @@ async function send(): Promise<void> {
 
 let ai: AiInfo | null = null;
 let choice: AiEngine = "auto";
+/** The Direct API provider picked in the panel, and the model typed per provider ("" = its default). */
+let provider: AiProvider = "anthropic";
+let models: Partial<Record<AiProvider, string>> = {};
+const KEY_HINTS: Record<AiKeyProvider, string> = { anthropic: "sk-ant-…", openai: "sk-…", gemini: "AIza…", openrouter: "sk-or-…" };
 /** Runs after a successful Save (a request that was waiting for the AI to be set up). */
 let afterSave: (() => void) | null = null;
 
@@ -228,16 +232,16 @@ function renderAi(info: AiInfo | null): void {
   $("ai-label").textContent = ai.label;
   chip.classList.toggle("on", ai.engine !== "none");
   chip.title =
-    ai.engine === "none" ? "Choose what builds your UI: Claude Code, Codex or a Claude API key. AI settings…"
+    ai.engine === "none" ? "Choose what builds your UI: Claude Code, Codex, or a model's API. AI settings…"
     : ai.engine === "external" ? "Requests wait until your agent picks them up. AI settings…"
     : `${ai.label} builds your request on this machine. AI settings…`;
 }
 
 const OPTIONS: { id: AiEngine; title: string; sub: string }[] = [
-  { id: "auto", title: "Auto", sub: "Uses Claude Code, then Codex, then your API key" },
+  { id: "auto", title: "Auto", sub: "Uses Claude Code, then Codex, then the Direct API" },
   { id: "claude", title: "Claude Code", sub: "Runs the claude command line, with your Claude subscription or account" },
   { id: "codex", title: "Codex", sub: "Runs the codex command line, with your ChatGPT or OpenAI account" },
-  { id: "api", title: "Claude API key", sub: "Glimpse calls the Claude API itself with your Anthropic key" },
+  { id: "api", title: "Direct API", sub: "No agent: Glimpse calls the model itself (Claude, GPT, Gemini, OpenRouter, Ollama)" },
 ];
 
 function renderAiPanel(): void {
@@ -275,9 +279,57 @@ function renderAiPanel(): void {
       return wrap;
     }),
   );
-  const saved = !!ai?.keySaved;
-  $("ai-key-saved").hidden = !saved;
-  $("ai-key").hidden = saved;
+  renderApiFields();
+}
+
+function providerInfo(p: AiProvider = provider) {
+  return ai?.providers?.find((x) => x.id === p);
+}
+
+/** The Direct API part of the panel: provider, model, and the provider's key (or Ollama's state). */
+function renderApiFields(): void {
+  const select = $<HTMLSelectElement>("ai-provider");
+  const providers = ai?.providers ?? [];
+  $("ai-api").hidden = providers.length === 0 || (choice !== "api" && choice !== "auto");
+  if (select.options.length !== providers.length)
+    select.replaceChildren(
+      ...providers.map((p) => {
+        const o = document.createElement("option");
+        o.value = p.id;
+        o.textContent = p.name;
+        return o;
+      }),
+    );
+  for (const o of select.options) {
+    const p = providerInfo(o.value as AiProvider);
+    o.textContent = p ? `${p.name}${p.ready ? " ✓" : ""}` : o.value;
+  }
+  select.value = provider;
+  const info = providerInfo();
+  const model = $<HTMLInputElement>("ai-model");
+  model.value = models[provider] ?? "";
+  model.placeholder = info ? `Default: ${info.defaultModel}` : "";
+  $("ai-models").replaceChildren(
+    ...(info?.models ?? []).map((m) => {
+      const o = document.createElement("option");
+      o.value = m;
+      return o;
+    }),
+  );
+  const ollama = provider === "ollama";
+  const saved = !ollama && !!info?.keySaved;
+  const status = $("ai-key-saved");
+  status.hidden = !saved && !ollama;
+  status.textContent =
+    ollama ?
+      info?.ready ? `Ollama is running · ${info.models.length} model${info.models.length === 1 ? "" : "s"} installed`
+      : "Ollama isn't running on this machine. Get it at ollama.com and start it."
+    : "The key is stored on this machine and never shown again.";
+  const key = $<HTMLInputElement>("ai-key");
+  key.hidden = saved || ollama;
+  key.placeholder = !ollama && info?.envKey ? "Using the key from the environment · paste one to save it" : KEY_HINTS[provider as AiKeyProvider] ?? "";
+  key.setAttribute("aria-label", `${info?.name ?? "Provider"} API key`);
+  $("ai-key-btn").hidden = ollama;
   $("ai-key-btn").textContent = saved ? "Remove key" : "Save key";
   updateKeyBtn();
 }
@@ -287,10 +339,12 @@ function foundBadge(id: AiEngine): HTMLElement | null {
   const span = document.createElement("span");
   const ok = id === "api" ? ai.available.api : ai.available[id];
   span.className = `ai-found${ok ? " ok" : ""}`;
+  const p = providerInfo(ai.provider);
   span.textContent =
     id === "api" ?
-      ai.keySaved ? "Key saved"
-      : ai.available.api ? "Key from ANTHROPIC_API_KEY"
+      p ? `${p.name}${ok ? " ready" : " not set up"}`
+      : ai.keySaved ? "Key saved"
+      : ai.available.api ? "Key from the environment"
       : "No key"
     : ok ? "Installed"
     : "Not found";
@@ -299,7 +353,7 @@ function foundBadge(id: AiEngine): HTMLElement | null {
 
 function updateKeyBtn(): void {
   const btn = $<HTMLButtonElement>("ai-key-btn");
-  btn.disabled = aiBusy || (!ai?.keySaved && !$<HTMLInputElement>("ai-key").value.trim());
+  btn.disabled = aiBusy || (!providerInfo()?.keySaved && !$<HTMLInputElement>("ai-key").value.trim());
 }
 
 function aiError(text: string): void {
@@ -319,6 +373,8 @@ function setAiBusy(on: boolean): void {
 function openAiPanel(then?: () => void): void {
   afterSave = then ?? null;
   choice = ai?.preferred ?? "auto";
+  provider = ai?.provider ?? "anthropic";
+  models = { [provider]: ai?.chosenModel ?? "" };
   aiError("");
   $<HTMLInputElement>("ai-key").value = "";
   renderAiPanel();
@@ -344,7 +400,9 @@ async function saveKey(): Promise<void> {
   setAiBusy(true);
   aiError("");
   try {
-    const next = ai?.keySaved ? await api.saveAi({ anthropicApiKey: null }) : await api.saveAi({ anthropicApiKey: key, ...(choice === "api" && { engine: "api" as const }) });
+    if (provider === "ollama") return;
+    const p = provider as AiKeyProvider;
+    const next = await api.saveAi({ apiKey: { provider: p, key: providerInfo()?.keySaved ? null : key } });
     input.value = "";
     renderAi(next);
     renderAiPanel();
@@ -356,18 +414,23 @@ async function saveKey(): Promise<void> {
 }
 
 async function saveAi(): Promise<void> {
-  const typed = $<HTMLInputElement>("ai-key").value.trim();
+  const typed = provider === "ollama" ? "" : $<HTMLInputElement>("ai-key").value.trim();
+  const model = $<HTMLInputElement>("ai-model").value.trim();
   setAiBusy(true);
   aiError("");
   try {
-    const next = await api.saveAi({ engine: choice, ...(typed && { anthropicApiKey: typed }) });
+    const next = await api.saveAi({
+      engine: choice,
+      ...(ai?.providers && { provider, model: model || null }),
+      ...(typed && { apiKey: { provider: provider as AiKeyProvider, key: typed } }),
+    });
     $<HTMLInputElement>("ai-key").value = "";
     renderAi(next);
     renderAiPanel();
     if (next.engine === "none") {
       aiError(
         choice === "auto" ?
-          "Nothing that can run the AI was found on this machine. Install Claude Code or Codex, or add an Anthropic API key."
+          "Nothing that can run the AI was found on this machine. Install Claude Code or Codex, or set up a provider for the Direct API."
         : `${OPTIONS.find((o) => o.id === choice)?.title ?? choice} isn't available on this machine yet. Install it, or pick another option.`,
       );
       return;
@@ -474,6 +537,16 @@ async function init(): Promise<void> {
   $("ai-save").addEventListener("click", () => void saveAi());
   $("ai-key-btn").addEventListener("click", () => void saveKey());
   $("ai-key").addEventListener("input", () => updateKeyBtn());
+  $("ai-provider").addEventListener("change", () => {
+    models[provider] = $<HTMLInputElement>("ai-model").value;
+    provider = $<HTMLSelectElement>("ai-provider").value as AiProvider;
+    $<HTMLInputElement>("ai-key").value = "";
+    aiError("");
+    renderApiFields();
+  });
+  $("ai-model").addEventListener("input", () => {
+    models[provider] = $<HTMLInputElement>("ai-model").value;
+  });
   $("ai-key").addEventListener("keydown", (e) => {
     if (e.key === "Enter" && $<HTMLInputElement>("ai-key").value.trim()) {
       e.preventDefault();

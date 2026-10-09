@@ -5,12 +5,34 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import { createProjectTools, resolveEngine } from "./agent-runner.js";
-import { detectAgents, findExecutable, loadAgentSettings, saveAgentSettings, settingsPath } from "./agent-settings.js";
+import { claudeArgs, createProjectTools, resolveEngine, withInstructions } from "./agent-runner.js";
+import {
+  clearOllamaCache,
+  detectAgents,
+  detectOllama,
+  findExecutable,
+  loadAgentSettings,
+  normalizeBaseUrl,
+  resolveApiKey,
+  saveAgentSettings,
+  settingsPath,
+  validateSettingsPatch,
+} from "./agent-settings.js";
 import { startServer, type GlimpseServer } from "./index.js";
 
 const isWindows = process.platform === "win32";
-const ENV_KEYS = ["GLIMPSE_CONFIG_DIR", "GLIMPSE_AGENT_CLAUDE_BIN", "GLIMPSE_AGENT_CODEX_BIN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "FAKE_MODE", "FAKE_LOG"];
+const API_ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"];
+const ENV_KEYS = ["GLIMPSE_CONFIG_DIR", "GLIMPSE_AGENT_CLAUDE_BIN", "GLIMPSE_AGENT_CODEX_BIN", ...API_ENV, "FAKE_MODE", "FAKE_LOG"];
+
+/** The settings with nothing chosen, plus `over`. */
+const settings = (over: Record<string, unknown> = {}, api: Record<string, unknown> = {}) => ({
+  engine: "auto",
+  quality: "balanced",
+  allowCommands: false,
+  maxSteps: 40,
+  ...over,
+  api: { provider: "anthropic", keys: {}, ...api },
+});
 
 let tmp: string;
 let dir: string;
@@ -27,9 +49,9 @@ beforeEach(async () => {
   process.env.GLIMPSE_AGENT_CLAUDE_BIN = join(tmp, "no-claude");
   process.env.GLIMPSE_AGENT_CODEX_BIN = join(tmp, "no-codex");
   process.env.FAKE_LOG = join(tmp, "fake.log");
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.ANTHROPIC_BASE_URL;
+  for (const k of API_ENV) delete process.env[k];
   delete process.env.FAKE_MODE;
+  clearOllamaCache();
 });
 
 afterEach(async () => {
@@ -148,6 +170,8 @@ async function editor(): Promise<{ messages: { type: string; [k: string]: unknow
       listeners.add(check);
       check();
     });
+  // The server sends every event after the hello (it registers the socket once that is out).
+  await until((m) => m.type === "hello");
   return { messages, until, close: () => ws.close() };
 }
 
@@ -162,21 +186,22 @@ function alive(pid: number): boolean {
 
 describe("agent settings", () => {
   it("defaults when the file is missing or broken, and saves patches with mode 0600", async () => {
-    expect(await loadAgentSettings()).toEqual({ engine: "auto" });
+    expect(await loadAgentSettings()).toEqual(settings());
     await mkdir(process.env.GLIMPSE_CONFIG_DIR!, { recursive: true });
     await writeFile(settingsPath(), "{not json");
-    expect(await loadAgentSettings()).toEqual({ engine: "auto" });
-    await writeFile(settingsPath(), JSON.stringify({ engine: "bogus", other: 1 }));
-    expect(await loadAgentSettings()).toEqual({ engine: "auto" });
+    expect(await loadAgentSettings()).toEqual(settings());
+    await writeFile(settingsPath(), JSON.stringify({ engine: "bogus", other: 1, quality: "max", maxSteps: 0, api: { provider: "nope", keys: { openai: "has space" } } }));
+    expect(await loadAgentSettings()).toEqual(settings());
 
-    expect(await saveAgentSettings({ engine: "codex", anthropicApiKey: " sk-ant-test " })).toEqual({ engine: "codex", anthropicApiKey: "sk-ant-test" });
-    expect(await loadAgentSettings()).toEqual({ engine: "codex", anthropicApiKey: "sk-ant-test" });
+    expect(await saveAgentSettings({ engine: "codex", anthropicApiKey: " sk-ant-test " })).toEqual(settings({ engine: "codex" }, { keys: { anthropic: "sk-ant-test" } }));
+    expect(await loadAgentSettings()).toEqual(settings({ engine: "codex" }, { keys: { anthropic: "sk-ant-test" } }));
     const raw = JSON.parse(await readFile(settingsPath(), "utf8"));
     expect(raw.other).toBe(1); // unknown keys are kept
+    expect(raw.anthropicApiKey).toBeUndefined();
     if (!isWindows) expect((await stat(settingsPath())).mode & 0o777).toBe(0o600);
 
-    expect(await saveAgentSettings({ engine: "api" })).toEqual({ engine: "api", anthropicApiKey: "sk-ant-test" });
-    expect(await saveAgentSettings({ anthropicApiKey: null })).toEqual({ engine: "api" });
+    expect(await saveAgentSettings({ engine: "api" })).toEqual(settings({ engine: "api" }, { keys: { anthropic: "sk-ant-test" } }));
+    expect(await saveAgentSettings({ anthropicApiKey: null })).toEqual(settings({ engine: "api" }));
     await expect(saveAgentSettings({ engine: "nope" as never })).rejects.toThrow(/Unknown engine/);
   });
 
@@ -375,7 +400,7 @@ describe("built-in agent", () => {
     expect((await post("/api/agent/settings", { anthropicApiKey: "has space" })).status).toBe(400);
     expect((await post("/api/agent/settings", { anthropicApiKey: 42 })).status).toBe(400);
     expect((await post("/api/agent/settings", [])).status).toBe(400);
-    expect(await loadAgentSettings()).toEqual({ engine: "auto" });
+    expect(await loadAgentSettings()).toEqual(settings());
 
     const ed = await editor();
     const res = await post("/api/agent/settings", { engine: "external", anthropicApiKey: "sk-ant-secret-123" });
@@ -385,7 +410,7 @@ describe("built-in agent", () => {
     expect(JSON.parse(text)).toMatchObject({ preferred: "external", available: { api: true } });
     const broadcastInfo = await ed.until((m) => m.type === "agent-info" && (m.info as { preferred: string }).preferred === "external");
     expect(JSON.stringify(broadcastInfo)).not.toContain("sk-ant-secret");
-    expect(await loadAgentSettings()).toEqual({ engine: "external", anthropicApiKey: "sk-ant-secret-123" });
+    expect(await loadAgentSettings()).toEqual(settings({ engine: "external" }, { keys: { anthropic: "sk-ant-secret-123" } }));
     if (!isWindows) expect((await stat(settingsPath())).mode & 0o777).toBe(0o600);
     expect(await (await post("/api/agent/settings", { anthropicApiKey: null })).json()).toMatchObject({ available: { api: false } });
     expect(await (await post("/api/agent/stop", {})).json()).toEqual({ ok: true });
@@ -464,7 +489,7 @@ describe("API engine", () => {
     const [first, second] = requests;
     expect(first!.headers["x-api-key"]).toBe("sk-ant-test-key");
     expect(String(first!.headers["anthropic-beta"])).toContain("server-side-fallback-2026-07-01");
-    expect(first!.body).toMatchObject({ model: "claude-opus-5-5", max_tokens: 64000, thinking: { type: "adaptive" }, output_config: { effort: "high" }, fallbacks: "default", stream: true });
+    expect(first!.body).toMatchObject({ model: "claude-opus-5-5", max_tokens: 64000, thinking: { type: "adaptive" }, output_config: { effort: "medium" }, fallbacks: "default", stream: true });
     expect((first!.body.tools as { name: string; eager_input_streaming: boolean }[]).map((t) => [t.name, t.eager_input_streaming])).toEqual([
       ["list_files", true],
       ["read_file", true],
@@ -475,6 +500,30 @@ describe("API engine", () => {
     expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
     expect(msgs[2]!.content[0]).toMatchObject({ type: "tool_result", tool_use_id: "toolu_1" });
     expect(msgs[2]!.content[0]!.is_error).toBeUndefined();
+    ed.close();
+  }, 20_000);
+
+  it("uses the chosen model and maps the quality to its effort", async () => {
+    const done = { status: 200, events: message("end_turn", [["text", { type: "text", text: "" }, [{ type: "text_delta", text: "Done." }]]]) };
+    reply = () => done;
+    await saveAgentSettings({ quality: "best", api: { model: "claude-sonnet-5-5" } });
+    srv = await startServer({ dir, port: 0 });
+    let ed = await editor();
+    await post("/api/request", { text: "One" });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    expect(ed.messages.find((m) => m.type === "agent-run" && m.event === "start")).toMatchObject({ text: "Claude API · claude-sonnet-5-5" });
+    expect(requests[0]!.body).toMatchObject({ model: "claude-sonnet-5-5", output_config: { effort: "high" } });
+    ed.close();
+    await srv.close();
+    srv = undefined;
+
+    await saveAgentSettings({ quality: "fast", api: { model: "claude-haiku-5-5" } });
+    srv = await startServer({ dir, port: 0 });
+    ed = await editor();
+    await post("/api/request", { text: "Two" });
+    await ed.until((m) => m.type === "agent-run" && m.event === "done");
+    expect(requests[1]!.body).toMatchObject({ model: "claude-haiku-5-5", thinking: { type: "adaptive" } });
+    expect(requests[1]!.body.output_config).toBeUndefined();
     ed.close();
   }, 20_000);
 
@@ -561,3 +610,325 @@ describe("project tools of the API engine", () => {
   });
 });
 
+
+describe("provider settings", () => {
+  it("migrates an old file's Anthropic key and keeps it out of the new file", async () => {
+    await mkdir(process.env.GLIMPSE_CONFIG_DIR!, { recursive: true });
+    await writeFile(settingsPath(), JSON.stringify({ engine: "api", anthropicApiKey: "sk-ant-old", other: true }));
+    expect(await loadAgentSettings()).toEqual(settings({ engine: "api" }, { keys: { anthropic: "sk-ant-old" } }));
+    await saveAgentSettings({ api: { provider: "openai", keys: { openai: "sk-openai" } }, quality: "best", maxSteps: 12, customInstructions: "  Use Tailwind  " });
+    const raw = JSON.parse(await readFile(settingsPath(), "utf8"));
+    expect(raw).toEqual({
+      engine: "api",
+      other: true,
+      api: { provider: "openai", keys: { anthropic: "sk-ant-old", openai: "sk-openai" } },
+      quality: "best",
+      maxSteps: 12,
+      customInstructions: "Use Tailwind",
+    });
+    if (!isWindows) expect((await stat(settingsPath())).mode & 0o777).toBe(0o600);
+    const s = await saveAgentSettings({ api: { model: "gpt-5-mini", keys: { anthropic: null } }, customInstructions: null, allowCommands: true });
+    expect(s).toEqual(settings({ engine: "api", quality: "best", maxSteps: 12, allowCommands: true }, { provider: "openai", model: "gpt-5-mini", keys: { openai: "sk-openai" } }));
+    expect((await saveAgentSettings({ api: { model: null } })).api.model).toBeUndefined();
+  });
+
+  it("validates a settings change strictly", () => {
+    const bad = [
+      [],
+      "x",
+      { nope: 1 },
+      { engine: "gpt" },
+      { anthropicApiKey: "has space" },
+      { api: [] },
+      { api: { provider: "mistral" } },
+      { api: { other: 1 } },
+      { api: { keys: { ollama: "x" } } },
+      { api: { keys: { openai: "" } } },
+      { api: { keys: { gemini: "x".repeat(401) } } },
+      { api: { keys: { openai: 5 } } },
+      { api: { model: "two words" } },
+      { api: { baseUrl: "http://example.com:11434" } },
+      { api: { baseUrl: "file:///etc/passwd" } },
+      { api: { baseUrl: "http://user:pw@localhost:11434" } },
+      { quality: "max" },
+      { allowCommands: "yes" },
+      { maxSteps: 0 },
+      { maxSteps: 201 },
+      { maxSteps: 2.5 },
+      { customInstructions: 3 },
+      { customInstructions: "x".repeat(4001) },
+    ];
+    for (const b of bad) expect(() => validateSettingsPatch(b), JSON.stringify(b)).toThrow();
+    expect(
+      validateSettingsPatch({
+        engine: "api",
+        api: { provider: "ollama", baseUrl: "http://127.0.0.1:9999/v1/", model: " llama3.2:latest ", keys: { openrouter: " sk-or-1 ", gemini: null } },
+        quality: "fast",
+        allowCommands: false,
+        maxSteps: 200,
+        customInstructions: "",
+      }),
+    ).toEqual({
+      engine: "api",
+      api: { provider: "ollama", baseUrl: "http://127.0.0.1:9999", model: "llama3.2:latest", keys: { openrouter: "sk-or-1", gemini: null } },
+      quality: "fast",
+      allowCommands: false,
+      maxSteps: 200,
+      customInstructions: null,
+    });
+    expect(normalizeBaseUrl("http://localhost:11434/")).toBe("http://localhost:11434");
+    expect(normalizeBaseUrl("https://[::1]:1/ollama")).toBe("https://[::1]:1/ollama");
+    expect(normalizeBaseUrl("http://192.168.1.2:11434")).toBeUndefined();
+  });
+
+  it("takes keys from the settings, else the environment, and detects the chosen provider", async () => {
+    const s = await loadAgentSettings();
+    expect(resolveApiKey(s, "openai")).toBeUndefined();
+    process.env.OPENAI_API_KEY = "sk-env-openai";
+    process.env.GOOGLE_API_KEY = "g-google";
+    process.env.OPENROUTER_API_KEY = "sk-or-env";
+    expect(resolveApiKey(s, "openai")).toBe("sk-env-openai");
+    expect(resolveApiKey(s, "gemini")).toBe("g-google");
+    process.env.GEMINI_API_KEY = "g-gemini";
+    expect(resolveApiKey(s, "gemini")).toBe("g-gemini");
+    expect(resolveApiKey(s, "openrouter")).toBe("sk-or-env");
+    expect(resolveApiKey(s, "anthropic")).toBeUndefined();
+    const saved = await saveAgentSettings({ api: { keys: { openai: "sk-saved" } } });
+    expect(resolveApiKey(saved, "openai")).toBe("sk-saved");
+
+    // api = the chosen provider can run
+    delete process.env.OPENAI_API_KEY;
+    expect((await detectAgents(await saveAgentSettings({ api: { provider: "anthropic" } }))).api).toBe(false);
+    expect((await detectAgents(await saveAgentSettings({ api: { provider: "openai" } }))).api).toBe(true);
+    expect((await detectAgents(await saveAgentSettings({ api: { provider: "gemini" } }))).api).toBe(true);
+  });
+
+  it("builds Claude Code's command line and appends the standing instructions", () => {
+    expect(claudeArgs({ allowCommands: false })).toEqual(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]);
+    expect(claudeArgs({ allowCommands: true }).slice(-2)).toEqual(["--allowedTools", "Bash"]);
+    expect(withInstructions("Build it", undefined)).toBe("Build it");
+    expect(withInstructions("Build it", "  ")).toBe("Build it");
+    expect(withInstructions("Build it", "Use Tailwind")).toContain("Build it\n\n## Standing instructions from the human (AI settings)\n\nUse Tailwind");
+  });
+
+  it("passes the standing instructions and the allow-commands flag to Claude Code", async () => {
+    await fakeClaude();
+    await saveAgentSettings({ engine: "claude", allowCommands: true, customInstructions: "Always use Tailwind" });
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "A page" });
+    await ed.until((m) => m.type === "agent-run" && (m.event === "done" || m.event === "error"));
+    const log = JSON.parse(await readFile(process.env.FAKE_LOG!, "utf8")) as { args: string[]; input: string };
+    expect(log.args).toContain("--allowedTools");
+    expect(log.input).toContain("Always use Tailwind");
+    ed.close();
+  }, 20_000);
+});
+
+/** A local stand-in for Ollama's /api/tags (and, with `chat`, the OpenAI-compatible endpoint). */
+async function fakeHttp(handler: (req: IncomingMessage, body: string, res: import("node:http").ServerResponse) => void): Promise<{ server: Server; url: string }> {
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (d) => (raw += d));
+    req.on("end", () => handler(req, raw, res));
+  });
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", () => ok()));
+  return { server, url: `http://127.0.0.1:${(server.address() as { port: number }).port}` };
+}
+const closeHttp = (s: Server) => new Promise<void>((ok) => s.close(() => ok()));
+
+describe("Ollama detection", () => {
+  it("lists the installed models, and reports a closed port as not running", async () => {
+    let calls = 0;
+    const { server, url } = await fakeHttp((req, _body, res) => {
+      calls++;
+      res.writeHead(req.url === "/api/tags" ? 200 : 404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [{ name: "llama3.2:latest" }, { model: "qwen2.5-coder:7b" }, { name: 5 }] }));
+    });
+    try {
+      expect(await detectOllama(url)).toEqual({ running: true, models: ["llama3.2:latest", "qwen2.5-coder:7b"] });
+      await detectOllama(url);
+      expect(calls).toBe(1); // cached
+      clearOllamaCache();
+      await detectOllama(url);
+      expect(calls).toBe(2);
+    } finally {
+      await closeHttp(server);
+    }
+    clearOllamaCache();
+    expect(await detectOllama(url)).toEqual({ running: false, models: [] });
+
+    // Ollama is "available" for the API engine only while it answers; its first model is the default.
+    const up = await fakeHttp((_req, _body, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ models: [{ name: "llama3.2:latest" }] }));
+    });
+    try {
+      await saveAgentSettings({ engine: "api", api: { provider: "ollama", baseUrl: up.url } });
+      srv = await startServer({ dir, port: 0 });
+      const info = (await (await fetch(`${srv.url}/api/agent`)).json()) as { engine: string; api: { model: string; ollama: unknown } };
+      expect(info.engine).toBe("api");
+      expect(info.api.model).toBe("llama3.2:latest");
+      expect(info.api.ollama).toEqual({ baseUrl: up.url, running: true, models: ["llama3.2:latest"] });
+    } finally {
+      await closeHttp(up.server);
+    }
+  }, 20_000);
+});
+
+describe("OpenAI-compatible engine", () => {
+  let fake: { server: Server; url: string };
+  let requests: { url: string; headers: IncomingMessage["headers"]; body: Record<string, unknown> }[];
+  let reply: (n: number) => { status: number; chunks?: unknown[]; body?: unknown };
+
+  beforeEach(async () => {
+    requests = [];
+    fake = await fakeHttp((req, raw, res) => {
+      if (req.url === "/api/tags") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ models: [{ name: "llama3.2:latest" }] }));
+        return;
+      }
+      requests.push({ url: req.url ?? "", headers: req.headers, body: JSON.parse(raw || "{}") });
+      const r = reply(requests.length);
+      if (!r.chunks) {
+        res.writeHead(r.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(r.body));
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      for (const c of r.chunks) res.write(`data: ${JSON.stringify(c)}\n\n`);
+      res.write("data: [DONE]\n\n");
+      res.end();
+    });
+  });
+
+  afterEach(async () => {
+    await closeHttp(fake.server);
+  });
+
+  const chunk = (delta: Record<string, unknown>, finish: string | null = null) => ({
+    id: "chatcmpl-1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "m",
+    choices: [{ index: 0, delta, finish_reason: finish }],
+  });
+  const toolTurn = (path: string, contents: string) => ({
+    status: 200,
+    chunks: [
+      chunk({ role: "assistant", content: "Writing the page\n" }),
+      chunk({ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "write_file", arguments: "" } }] }),
+      chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path, contents }).slice(0, 10) } }] }),
+      chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path, contents }).slice(10) } }] }),
+      chunk({}, "tool_calls"),
+    ],
+  });
+  const doneTurn = { status: 200, chunks: [chunk({ content: "Made the page." }), chunk({}, "stop")] };
+
+  const run = async () => {
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "A page" });
+    const end = await ed.until((m) => m.type === "agent-run" && (m.event === "done" || m.event === "error"));
+    return { ed, end };
+  };
+
+  it("runs the tool loop against OpenAI's Chat Completions", async () => {
+    process.env.OPENAI_BASE_URL = `${fake.url}/v1`;
+    await saveAgentSettings({ engine: "api", api: { provider: "openai", keys: { openai: "sk-openai-test" } }, quality: "best" });
+    reply = (n) => (n === 1 ? toolTurn("index.html", "<h1>From GPT</h1>") : doneTurn);
+    const { ed, end } = await run();
+    expect(end).toMatchObject({ event: "done", engine: "api", text: "Made the page." });
+    expect(ed.messages.find((m) => m.type === "agent-run" && m.event === "start")).toMatchObject({ text: "OpenAI · gpt-5" });
+    expect(ed.messages.filter((m) => m.type === "agent-run" && m.event === "output").map((m) => m.text)).toEqual(["Writing the page", "Editing index.html", "Made the page."]);
+    expect(await readFile(join(dir, "index.html"), "utf8")).toBe("<h1>From GPT</h1>");
+
+    expect(requests).toHaveLength(2);
+    const [first, second] = requests;
+    expect(first!.url).toBe("/v1/chat/completions");
+    expect(first!.headers.authorization).toBe("Bearer sk-openai-test");
+    expect(first!.body).toMatchObject({ model: "gpt-5", stream: true, reasoning_effort: "high" });
+    expect((first!.body.tools as { type: string; function: { name: string } }[]).map((t) => [t.type, t.function.name])).toEqual([
+      ["function", "list_files"],
+      ["function", "read_file"],
+      ["function", "write_file"],
+      ["function", "delete_file"],
+    ]);
+    const msgs = second!.body.messages as { role: string; tool_call_id?: string; content?: unknown; tool_calls?: unknown[] }[];
+    expect(msgs.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool"]);
+    expect(msgs[2]!.tool_calls).toHaveLength(1);
+    expect(msgs[3]).toMatchObject({ tool_call_id: "call_1", content: "Wrote index.html" });
+    ed.close();
+  }, 20_000);
+
+  it("runs a local Ollama model without a key, and stops after the step limit", async () => {
+    await saveAgentSettings({ engine: "api", api: { provider: "ollama", baseUrl: fake.url }, maxSteps: 2, customInstructions: "Use Tailwind" });
+    reply = () => toolTurn("index.html", "<h1>Again</h1>");
+    const { ed, end } = await run();
+    expect(end).toMatchObject({ event: "error", text: "Stopped after 2 steps without finishing" });
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.url).toBe("/v1/chat/completions");
+    expect(requests[0]!.body).toMatchObject({ model: "llama3.2:latest" });
+    expect(requests[0]!.body.reasoning_effort).toBeUndefined();
+    const user = (requests[0]!.body.messages as { role: string; content: unknown }[])[1]!;
+    expect(typeof user.content).toBe("string");
+    expect(user.content).toContain("Use Tailwind");
+    ed.close();
+  }, 20_000);
+
+  it("explains a rejected key and an unknown model", async () => {
+    process.env.OPENAI_BASE_URL = `${fake.url}/v1`;
+    await saveAgentSettings({ engine: "api", api: { provider: "openai", keys: { openai: "sk-bad" } } });
+    reply = () => ({ status: 401, body: { error: { message: "Incorrect API key", type: "invalid_request_error", code: "invalid_api_key" } } });
+    let { ed, end } = await run();
+    expect(end).toMatchObject({ event: "error", text: "The OpenAI API key was rejected" });
+    ed.close();
+    await srv!.close();
+    srv = undefined;
+
+    await saveAgentSettings({ api: { model: "gpt-nope" } });
+    reply = () => ({ status: 404, body: { error: { message: "The model `gpt-nope` does not exist", type: "invalid_request_error", code: "model_not_found" } } });
+    ({ ed, end } = await run());
+    expect(end).toMatchObject({ event: "error", text: 'OpenAI doesn\'t know the model "gpt-nope": pick another in the AI settings' });
+    ed.close();
+  }, 30_000);
+
+  it("explains that Ollama isn't running", async () => {
+    // Ollama answered the detection, then went away before the run.
+    await saveAgentSettings({ engine: "api", api: { provider: "ollama", baseUrl: fake.url, model: "llama3.2" } });
+    srv = await startServer({ dir, port: 0 });
+    await fetch(`${srv.url}/api/agent`);
+    await closeHttp(fake.server);
+    fake.server = createServer();
+    fake.server.listen(0);
+    const ed = await editor();
+    await post("/api/request", { text: "A page" });
+    const end = await ed.until((m) => m.type === "agent-run" && (m.event === "done" || m.event === "error"));
+    expect(end).toMatchObject({ event: "error" });
+    expect(String(end.text)).toMatch(/^Ollama isn't running at http:\/\/127\.0\.0\.1:\d+/);
+    ed.close();
+  }, 20_000);
+
+  it("never returns or broadcasts a key, for any provider", async () => {
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    const secrets = { anthropic: "sk-ant-SECRET1", openai: "sk-SECRET2", gemini: "AIzaSECRET3", openrouter: "sk-or-SECRET4" };
+    const res = await post("/api/agent/settings", { engine: "api", api: { provider: "gemini", keys: secrets } });
+    const text = await res.text();
+    expect(res.status).toBe(200);
+    expect(text).not.toMatch(/SECRET/);
+    const info = JSON.parse(text);
+    expect(info.api).toMatchObject({ provider: "gemini", model: "gemini-2.5-pro", keysSaved: { anthropic: true, openai: true, gemini: true, openrouter: true } });
+    expect(info.engine).toBe("api");
+    expect(JSON.stringify(await (await fetch(`${srv.url}/api/agent`)).json())).not.toMatch(/SECRET/);
+    await ed.until((m) => m.type === "agent-info" && (m.info as { api: { provider: string } }).api.provider === "gemini");
+    expect(JSON.stringify(ed.messages)).not.toMatch(/SECRET/);
+    expect((await post("/api/agent/settings", { api: { baseUrl: "http://evil.example" } })).status).toBe(400);
+    expect((await post("/api/agent/settings", { api: { keys: { openai: "two words" } } })).status).toBe(400);
+    const cleared = await (await post("/api/agent/settings", { api: { keys: { gemini: null } } })).json();
+    expect(cleared.api.keysSaved.gemini).toBe(false);
+    expect(cleared.available.api).toBe(false);
+    ed.close();
+  }, 20_000);
+});

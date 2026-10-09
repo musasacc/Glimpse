@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MORE_HIDDEN, normalizeAgentInfo, normalizeAgentRun, normalizeRunMessage, outputLines, queuedNote, RunFeed, type AgentInfo } from "./agent";
+import { engineLabel, MORE_HIDDEN, normalizeAgentInfo, normalizeAgentRun, normalizeRunMessage, outputLines, queuedNote, RunFeed, type AgentInfo } from "./agent";
 
 const INFO: AgentInfo = {
   engine: "claude",
@@ -7,7 +7,25 @@ const INFO: AgentInfo = {
   available: { claude: true, codex: false, api: false, external: false },
   running: null,
   queued: 0,
+  api: null,
+  behavior: null,
 };
+
+const API = {
+  provider: "openai",
+  model: "gpt-5",
+  chosenModel: "",
+  providers: {
+    anthropic: { name: "Anthropic", defaultModel: "claude-opus-5-5", models: ["claude-opus-5-5"] },
+    openai: { name: "OpenAI", defaultModel: "gpt-5", models: ["gpt-5"] },
+    gemini: { name: "Gemini", defaultModel: "gemini-2.5-pro", models: [] },
+    openrouter: { name: "OpenRouter", defaultModel: "anthropic/claude-opus-5-5", models: [] },
+    ollama: { name: "Ollama", defaultModel: "llama3.2:latest", models: ["llama3.2:latest"] },
+  },
+  keysSaved: { anthropic: false, openai: true, gemini: false, openrouter: false },
+  envKeys: { anthropic: false, openai: false, gemini: true, openrouter: false },
+  ollama: { baseUrl: "http://localhost:11434", running: true, models: ["llama3.2:latest"] },
+} as const;
 
 describe("normalizeAgentInfo", () => {
   it("keeps a full object", () => {
@@ -31,7 +49,33 @@ describe("normalizeAgentInfo", () => {
       available: { claude: false, codex: false, api: false, external: false },
       running: null,
       queued: 0,
+      api: null,
+      behavior: null,
     });
+  });
+
+  it("reads the Direct API and behavior settings of a newer server", () => {
+    const info = normalizeAgentInfo({ ...INFO, engine: "api", api: structuredClone(API), quality: "best", allowCommands: true, maxSteps: 12, customInstructions: "Tailwind" });
+    expect(info?.api).toEqual(API);
+    expect(info?.behavior).toEqual({ quality: "best", allowCommands: true, maxSteps: 12, customInstructions: "Tailwind" });
+    // A garbled api block: defaults per provider, no flags.
+    const partial = normalizeAgentInfo({ ...INFO, api: { provider: "gemini" }, quality: "nope" });
+    expect(partial?.api).toMatchObject({ provider: "gemini", model: "gemini-2.5-pro", keysSaved: { gemini: false }, ollama: { running: false, models: [] } });
+    expect(partial?.behavior).toBeNull();
+    expect(normalizeAgentInfo({ ...INFO, api: { provider: "mistral" } })?.api).toBeNull();
+  });
+
+  it("labels the engine chip with the provider and model", () => {
+    const api = (provider: string, model: string) => ({ api: { ...structuredClone(API), provider, model } }) as never;
+    expect(engineLabel("claude", null)).toBe("Claude Code");
+    expect(engineLabel("api", null)).toBe("Claude API");
+    expect(engineLabel("api", api("anthropic", "claude-opus-5-5"))).toBe("Claude · opus-5-5");
+    expect(engineLabel("api", api("openai", "gpt-5"))).toBe("GPT · OpenAI");
+    expect(engineLabel("api", api("openai", "o4-mini"))).toBe("OpenAI · o4-mini");
+    expect(engineLabel("api", api("gemini", "gemini-2.5-pro"))).toBe("Gemini");
+    expect(engineLabel("api", api("ollama", "llama3:latest"))).toBe("Ollama · llama3");
+    expect(engineLabel("api", api("openrouter", "anthropic/claude-opus-5-5"))).toBe("OpenRouter · claude-opus-5-5");
+    expect(engineLabel("none", api("openai", "gpt-5"))).toBe("Set up AI");
   });
 });
 

@@ -20,14 +20,19 @@ import {
 } from "electron";
 import {
   detectAgents,
+  detectOllama,
+  envApiKey,
+  KEY_PROVIDERS,
   loadAgentSettings,
+  ollamaUrl,
+  PROVIDERS,
   saveAgentSettings,
   startGlimpse,
   VERSION as GLIMPSE_VERSION,
   withProjectLock,
 } from "../app/glimpse/lib.js";
 import { IPC, type AiInfo, type AppInfo, type FolderChoice, type HomeRequest, type RecentEntry, type SendResult } from "./api.js";
-import { aiInfo, parseRequest, parseSaveAi, postRequest, projectSlug, uniqueFolder } from "./home.js";
+import { aiInfo, parseRequest, parseSaveAi, postRequest, projectSlug, toSettingsPatch, uniqueFolder } from "./home.js";
 import { chromeScript, desktopPlatform, fullscreenScript, MAC_TRAFFIC_LIGHTS, MCP_SETUP } from "./chrome.js";
 import { canonicalDir, dirKey, folderName } from "./paths.js";
 import { ProjectServers } from "./projects.js";
@@ -223,7 +228,7 @@ function registerIpc(): void {
   handle(IPC.send, (event, request) => sendRequest(event, parseRequest(request)));
   handle(IPC.aiInfo, () => currentAiInfo());
   handle(IPC.saveAi, async (_e, patch) => {
-    await saveAgentSettings(parseSaveAi(patch));
+    await saveAgentSettings(toSettingsPatch(parseSaveAi(patch)));
     return currentAiInfo();
   });
 }
@@ -337,11 +342,13 @@ async function sendRequest(event: IpcMainInvokeEvent, request: HomeRequest): Pro
   return { status: "sent", folder: dir };
 }
 
-/** What builds requests, without the API key. Detection needs the login shell's PATH (claude, codex). */
+/** What builds requests, without any API key. Detection needs the login shell's PATH (claude, codex) and environment (keys). */
 async function currentAiInfo(): Promise<AiInfo> {
   await Promise.race([shellEnv, new Promise((r) => setTimeout(r, 3000))]);
   const settings = await loadAgentSettings();
-  return aiInfo(settings, await detectAgents(settings));
+  const [available, ollama] = await Promise.all([detectAgents(settings), detectOllama(ollamaUrl(settings))]);
+  const envKeys = Object.fromEntries(KEY_PROVIDERS.map((p) => [p, !!envApiKey(p)])) as Record<(typeof KEY_PROVIDERS)[number], boolean>;
+  return aiInfo(settings, available, { providers: PROVIDERS, envKeys, ollama });
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────

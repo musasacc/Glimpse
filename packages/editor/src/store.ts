@@ -4,7 +4,7 @@ import { DomBridge, tagFor } from "./dom";
 import { followMoves, followOps, isVitePage, repeatedSources, sameEdit, undoAll } from "./hmr";
 import { shownPane } from "./scene-geometry";
 import { domSurface, type Surface } from "./surface";
-import { engineName, RunFeed, type AgentInfo, type AgentRun, type AgentRunMessage, type Engine } from "./agent";
+import { engineLabel, RunFeed, type AgentInfo, type AgentRun, type AgentRunMessage, type Engine } from "./agent";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -705,7 +705,7 @@ class Store {
     }
     if (this.state.agentRun?.seq === run.seq) return;
     this.runFeed.reset();
-    this.activity("ai-status", `${engineName(run.engine)} is building…`);
+    this.activity("ai-status", `${engineLabel(run.engine, this.state.agentInfo)} is building…`);
     for (const line of run.output ?? []) this.runFeed.push(line);
     this.runFeed.flush();
     this.set({ agentRun: { seq: run.seq, engine: run.engine, startedAt: run.startedAt } });
@@ -717,7 +717,7 @@ class Store {
     switch (msg.event) {
       case "start":
         this.runFeed.reset();
-        this.activity("ai-status", `${engineName(msg.engine)} is building…`);
+        this.activity("ai-status", `${engineLabel(msg.engine, this.state.agentInfo)} is building…`);
         this.set({ agentRun: { seq: msg.seq, engine: msg.engine, startedAt: msg.at ?? new Date().toISOString() } });
         break;
       case "output":
@@ -731,7 +731,7 @@ class Store {
         const text = msg.text?.trim();
         if (msg.event === "done") this.activity("handoff", "Done");
         else if (text === "Stopped") this.activity("info", "Stopped");
-        else this.activity("warn", text || `${engineName(msg.engine)} stopped with an error`);
+        else this.activity("warn", text || `${engineLabel(msg.engine, this.state.agentInfo)} stopped with an error`);
         // An older run's end doesn't end a newer one.
         if (!current || current.seq <= msg.seq) this.set({ agentRun: null });
         break;

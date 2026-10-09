@@ -100,10 +100,23 @@
           <p>Choose what builds your UI. Glimpse runs it on this machine and every file it saves shows up live.</p>
         </header>
         <div id="ai-options" class="ai-options" role="radiogroup" aria-label="What builds your UI"></div>
-        <div class="ai-key">
-          <span id="ai-key-saved" class="hint" hidden>The key is stored on this machine and never shown again.</span>
-          <input id="ai-key" class="input" type="password" autocomplete="off" spellcheck="false" aria-label="Anthropic API key" placeholder="sk-ant-…" />
-          <button id="ai-key-btn" class="btn" type="button">Save key</button>
+        <div id="ai-api" class="ai-api" hidden>
+          <div class="ai-fields">
+            <label class="ai-field"
+              ><span>Provider</span>
+              <select id="ai-provider" class="input"></select>
+            </label>
+            <label class="ai-field"
+              ><span>Model</span>
+              <input id="ai-model" class="input" list="ai-models" autocomplete="off" spellcheck="false" />
+              <datalist id="ai-models"></datalist>
+            </label>
+          </div>
+          <div class="ai-key">
+            <span id="ai-key-saved" class="hint" hidden>The key is stored on this machine and never shown again.</span>
+            <input id="ai-key" class="input" type="password" autocomplete="off" spellcheck="false" aria-label="API key" placeholder="sk-ant-…" />
+            <button id="ai-key-btn" class="btn" type="button">Save key</button>
+          </div>
         </div>
         <p id="ai-error" class="ai-error" role="alert" hidden></p>
         <footer>

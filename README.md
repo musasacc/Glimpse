@@ -83,9 +83,13 @@ Glimpse picks the AI by itself (**AI settings** in the sidebar to change it):
 
 1. **Claude Code**, if the `claude` command is installed (uses your Claude subscription),
 2. **Codex**, if the `codex` command is installed,
-3. otherwise a **Claude API key** you paste once in AI settings.
+3. otherwise the **Direct API**: no agent, Glimpse calls the model itself with a key you paste once in AI settings —
+   **Anthropic** (Claude), **OpenAI** (GPT), **Google Gemini**, **OpenRouter** — or a local **Ollama** without a key.
+   Keys also come from `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY` and `OPENROUTER_API_KEY`.
 
-It runs in your project folder, and every file it writes shows up live. Press **Stop** to cancel a run.
+It runs in your project folder, and every file it writes shows up live. Press **Stop** to cancel a run. AI settings
+also set the model, the quality (fast, balanced, best), how many steps the Direct API may take, whether Claude Code may
+run shell commands, and custom instructions added to every request ("use Tailwind").
 
 ## Other agents (MCP)
 

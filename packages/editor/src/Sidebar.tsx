@@ -6,7 +6,7 @@ import * as L from "./loop-icons";
 import { Layers } from "./Panels";
 import { ScenePalette } from "./ScenePalette";
 import { currentEngine, store, useStore, type View } from "./store";
-import { engineName } from "./agent";
+import { engineLabel } from "./agent";
 import { Mark } from "./Logo";
 
 
@@ -133,7 +133,7 @@ export function Sidebar() {
       <div className="side-bottom">
         <span className={`agent-dot${ready ? " on" : ""}${state.agentRun ? " busy" : ""}`} />
         <div className="grow">
-          <div className="agent-name">{engineName(state.agentRun?.engine ?? engine)}</div>
+          <div className="agent-name">{engineLabel(state.agentRun?.engine ?? engine, state.agentInfo)}</div>
           <div className="agent-sub">
             {!state.connected ? "Reconnecting…"
             : state.agentRun ? "Building…"
