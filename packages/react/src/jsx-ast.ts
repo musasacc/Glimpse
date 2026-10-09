@@ -7,7 +7,7 @@ export const SRC_ATTR = "data-glimpse-src";
 /** Files Glimpse reads JSX from (and writes Edit source into). */
 export const JSX_FILE = /\.[jt]sx?$/i;
 
-export function parserPlugins(file: string): ParserPlugin[] {
+function parserPlugins(file: string): ParserPlugin[] {
   return /\.tsx?$/i.test(file) ? ["jsx", "typescript"] : ["jsx"];
 }
 
@@ -61,7 +61,7 @@ export function isHostName(name: t.JSXOpeningElement["name"]): name is t.JSXIden
 }
 
 /** The "line:col" key of a JSX element: 1-based, pointing at its "<" (what instrumentJsx writes). */
-export function locKey(node: t.Node): string {
+function locKey(node: t.Node): string {
   const start = node.loc!.start;
   return `${start.line}:${start.column + 1}`;
 }

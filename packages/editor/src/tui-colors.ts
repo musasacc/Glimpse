@@ -114,7 +114,7 @@ export function mix(color: string, back: string, amount: number): string {
 }
 
 /** Relative brightness 0…1 (good enough to pick light or dark text). */
-export function luminance(color: string): number {
+function luminance(color: string): number {
   const c = rgb(color);
   return c ? (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255 : 0;
 }
@@ -232,7 +232,7 @@ const EMOJI_PRESENTATION = /^\p{Emoji_Presentation}/u;
 const EMOJI = /^\p{Emoji}/u;
 
 /** Cells one grapheme cluster takes: wcwidth of its first character, wide when an emoji variation selector follows. */
-export function graphemeWidth(g: string): number {
+function graphemeWidth(g: string): number {
   const cp = g.codePointAt(0);
   if (cp === undefined || ZERO_WIDTH.test(g)) return 0;
   if (isWide(cp) || EMOJI_PRESENTATION.test(g)) return g.includes("︎") ? 1 : 2;

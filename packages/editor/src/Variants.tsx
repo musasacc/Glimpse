@@ -11,8 +11,8 @@ import "./loop.css";
 const COUNTS = [2, 3, 4];
 
 /** Variants are written as files, so the element has to be in one. */
-export const NO_SOURCE = "Variants need an element that is in the files. Send or write this one to the source first.";
-export const NO_REACT =
+const NO_SOURCE = "Variants need an element that is in the files. Send or write this one to the source first.";
+const NO_REACT =
   "Variants aren't available for React projects yet: Glimpse can't show a variant of a component outside your running app. Use Point & talk to ask your agent for alternatives.";
 
 /** Why "Variants…" can't be used on this element, or undefined when it can. */

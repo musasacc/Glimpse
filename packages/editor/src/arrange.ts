@@ -202,7 +202,7 @@ function flexLike(parent: Element | undefined): Record<string, string> {
  * coordinates). The deepest ones win: an element is left out when something
  * inside it is hit too, so dragging over a row of buttons selects the buttons.
  */
-export function elementsIn(rect: Rect): string[] {
+function elementsIn(rect: Rect): string[] {
   return marqueeHits()(rect);
 }
 

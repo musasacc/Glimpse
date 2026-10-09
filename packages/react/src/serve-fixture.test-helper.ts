@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createReactPreview, type ReactPreview } from "./dev-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const FIXTURES = join(here, "..", "fixtures");
+const FIXTURES = join(here, "..", "fixtures");
 
 export interface ServedFixture {
   dir: string;

@@ -56,11 +56,6 @@ export const ArrowUp = (p: P) => (
     <path d="M12 19V5M6 11l6-6 6 6" />
   </Icon>
 );
-export const Plus = (p: P) => (
-  <Icon {...p}>
-    <path d="M12 5v14M5 12h14" />
-  </Icon>
-);
 export const Sidebar = (p: P) => (
   <Icon {...p}>
     <rect x="3" y="4" width="18" height="16" rx="2" />
@@ -230,11 +225,6 @@ export const Code = (p: P) => (
 export const Send = (p: P) => (
   <Icon {...p}>
     <path d="M22 2 11 13M22 2l-7 20-4-9-9-4Z" />
-  </Icon>
-);
-export const Square = (p: P) => (
-  <Icon {...p}>
-    <rect x="4" y="4" width="16" height="16" rx="2" />
   </Icon>
 );
 export const Type = (p: P) => (

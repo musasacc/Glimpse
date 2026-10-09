@@ -205,7 +205,7 @@ export function TerminalPane({ target }: { target: SceneTarget }) {
 }
 
 /** The pane's width (docked right) or height (at the bottom). */
-export function dockStyle(dock: { side: "right" | "bottom"; size?: number }): React.CSSProperties {
+function dockStyle(dock: { side: "right" | "bottom"; size?: number }): React.CSSProperties {
   const size = dock.size ?? "45%";
   return dock.side === "right" ? { width: size } : { height: size };
 }

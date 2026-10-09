@@ -8,8 +8,7 @@ Glimpse talks to agents in two ways: an **MCP server** (`glimpse mcp`) for agent
   usually with a screenshot of the edited page.
 - **Variants** requests: "show me 3 versions of this element", written into `.glimpse/variants/` (see below).
 
-Nothing to install once `glimpse-ui` is on npm: agents run `npx -y glimpse-ui mcp`. From source:
-`pnpm install && pnpm build && (cd packages/cli && npm link)`, then use `glimpse mcp` / `glimpse` instead of
+Agents run `npx -y glimpse-ui mcp`. If `glimpse` is on your PATH, use `glimpse mcp` / `glimpse` instead of
 `npx -y glimpse-ui mcp` / `npx -y glimpse-ui` below.
 
 ## MCP

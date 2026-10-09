@@ -240,11 +240,6 @@ export function hasBorder(n: SceneNode): boolean {
   return kind !== "" || n.type === "panel" || n.type === "card";
 }
 
-/** Snap a box (in layout units) to whole units, at least one unit big. */
-export function snapLayout(l: Layout): Layout {
-  return { x: Math.round(l.x), y: Math.round(l.y), w: Math.max(1, Math.round(l.w)), h: Math.max(1, Math.round(l.h)) };
-}
-
 /** Prop a double-click edits: the text, the title of a frame, or the rows of a list-like widget. */
 export function editableProp(n: SceneNode): { key: string; multiline: boolean } | null {
   switch (n.type) {

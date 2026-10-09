@@ -52,18 +52,13 @@ glimpse open .
 npx glimpse-ui open .   # or run it without installing
 ```
 
-> The name `glimpse` is taken on npm, so the package is `glimpse-ui` and the command stays `glimpse`.
-> Without a global install, agents use `npx -y glimpse-ui mcp` wherever this README says `glimpse mcp`.
-> Until the first release lands on npm, install from source (below).
-
 **Desktop app**
 
 Download the installer for your system from [GitHub Releases](https://github.com/musasacc/Glimpse/releases):
 `.dmg` for macOS (Apple Silicon and Intel), `.exe` for Windows (x64 and Arm), `.AppImage` or `.deb` for Linux.
 Open a folder (or start a new project) and Glimpse opens it in its own window, with your recent projects one click
-away. Agents connect the same way as below (**Help › Copy MCP Command**) and find the project you have open. The
-builds aren't code-signed yet; see [docs/desktop.md](docs/desktop.md#unsigned-builds) for the one-time first-launch
-step, and for building the app yourself. Releases are cut as described in [docs/releasing.md](docs/releasing.md).
+away. Agents connect the same way as below (**Help › Copy MCP Command**) and find the project you have open. See
+[docs/desktop.md](docs/desktop.md) for first-launch steps and building the app yourself.
 
 **From source** (requires Node.js 20+ and [pnpm](https://pnpm.io))
 
@@ -87,8 +82,7 @@ Glimpse ships an MCP server. Add it once and your agent gets the tools `glimpse_
 `glimpse_get_changes`, `glimpse_status`, `glimpse_update`, `glimpse_close`, and for terminal UIs and native GUIs
 `glimpse_scene_schema` and `glimpse_scene_validate`.
 
-The commands below run Glimpse with `npx -y glimpse-ui mcp`, which works without installing anything once `glimpse-ui`
-is on npm. With a global or source install (`glimpse` on your PATH), use `glimpse mcp` instead.
+If `glimpse` is on your PATH, you can use `glimpse mcp` instead of `npx -y glimpse-ui mcp`.
 
 **Claude Code**
 

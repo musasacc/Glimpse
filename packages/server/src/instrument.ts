@@ -22,10 +22,6 @@ export function walkElements(root: Node, visit: (el: Element) => void): void {
   }
 }
 
-export function srcKey(line: number, col: number): string {
-  return `${line}:${col}`;
-}
-
 /**
  * Tag every element inside <body> with `data-glimpse-src="file:line:col"` so the
  * editor knows where each element lives in the source. The original markup is

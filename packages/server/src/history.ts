@@ -33,7 +33,7 @@ export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /** Keeps a snapshot cheap even when Glimpse is pointed at a huge folder. */
 export const MAX_FILES = 2000;
 /** Thumbnails and handoff screenshots. */
-export const MAX_PNG_BYTES = 5 * 1024 * 1024;
+const MAX_PNG_BYTES = 5 * 1024 * 1024;
 /**
  * Saves less than this far apart belong to the same AI round, unless the agent
  * waited for the human in between: an agent saves once per tool call, and its
@@ -45,7 +45,7 @@ const ROUND_GAP_MS = 60_000;
  * only they held). Every other kind of version (the human's, handoffs, Glimpse's
  * own writes) is kept. Pruning waits for some slack, so it runs now and then.
  */
-export const KEEP_AI_ROUNDS = 200;
+const KEEP_AI_ROUNDS = 200;
 const PRUNE_SLACK = 20;
 
 /**

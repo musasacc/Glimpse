@@ -66,7 +66,7 @@ interface LoopState {
 }
 
 const TIMELINE_KEY = "glimpse.timeline";
-export const UNSUPPORTED = "This Glimpse server doesn't support that yet. Update glimpse-ui and restart it.";
+const UNSUPPORTED = "This Glimpse server doesn't support that yet. Update glimpse-ui and restart it.";
 
 class Loop {
   state: LoopState = {
@@ -476,7 +476,7 @@ export function since(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export const THUMB_WIDTH = 320;
+const THUMB_WIDTH = 320;
 /** At most this many missing thumbnails are filled in when the history loads. */
 const BACKFILL_MAX = 12;
 /** Pages bigger than this get no thumbnail: copying the whole DOM into a picture would freeze the editor. */
