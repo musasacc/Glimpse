@@ -1,5 +1,15 @@
 export { startServer, type GlimpseServer, type Handoff, type HandoffKind, type HandoffSummary, type ServerOptions } from "./server.js";
 export { detectProject, SCENE_FILE, type ProjectInfo } from "./detect.js";
+export {
+  detectAgents,
+  loadAgentSettings,
+  saveAgentSettings,
+  type AgentEngine,
+  type AgentSettings,
+  type AgentSettingsPatch,
+  type DetectedAgents,
+} from "./agent-settings.js";
+export { type AgentInfo, type AgentRunEvent, type AgentRunState, type BuiltInEngine, type ResolvedEngine } from "./agent-types.js";
 export { injectClient } from "./inject.js";
 export { openBrowser } from "./browser.js";
 export { findRunningServer, projectDirKey, sameDir, servesProject, withProjectLock, type ServerInfo } from "./running.js";
