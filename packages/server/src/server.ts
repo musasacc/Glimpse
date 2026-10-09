@@ -135,6 +135,24 @@ const MIME: Record<string, string> = {
   ".mp4": "video/mp4",
   ".webm": "video/webm",
   ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".map": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".xml": "application/xml; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".flac": "audio/flac",
+  ".ogv": "video/ogg",
+  ".mov": "video/quicktime",
+  ".bmp": "image/bmp",
+  ".apng": "image/apng",
+  ".vtt": "text/vtt; charset=utf-8",
 };
 
 /** Saves in the project are recorded as (part of) an AI round once they have been quiet this long, */
@@ -463,6 +481,27 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }, TERMINAL_RESTART_MS);
   }
 
+  /** Each editor's terminal pane size. The app gets the size of the editor the human typed in or focused last. */
+  const termSizes = new Map<WebSocket, { cols: number; rows: number }>();
+  let termOwner: WebSocket | undefined;
+
+  function claimTerminal(ws: WebSocket, force = false): void {
+    if (termOwner === ws && !force) return;
+    const size = termSizes.get(ws);
+    if (!size) return;
+    termOwner = ws;
+    if (size.cols !== terminal.cols || size.rows !== terminal.rows) terminal.resize(size.cols, size.rows);
+  }
+
+  /** An editor went away: the size falls to another one still open. */
+  function releaseTerminal(ws: WebSocket): void {
+    termSizes.delete(ws);
+    if (termOwner !== ws) return;
+    termOwner = undefined;
+    const next = [...termSizes.keys()].at(-1);
+    if (next) claimTerminal(next);
+  }
+
   /** A message from the editor's websocket. Only terminal controls; the command itself never comes from the browser. */
   async function onClientMessage(ws: WebSocket, raw: RawData): Promise<void> {
     let msg: unknown;
@@ -474,10 +513,22 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     const reply = (m: object) => {
       if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m));
     };
-    const m = (typeof msg === "object" && msg !== null ? msg : {}) as { type?: unknown; enabled?: unknown };
+    const m = (typeof msg === "object" && msg !== null ? msg : {}) as { type?: unknown; enabled?: unknown; cols?: unknown; rows?: unknown; focus?: unknown };
     try {
       switch (m.type) {
+        case "term-resize": {
+          if (!Number.isInteger(m.cols) || !Number.isInteger(m.rows)) return;
+          termSizes.set(ws, { cols: m.cols as number, rows: m.rows as number });
+          // Only the editor in use sizes the app; the others would resize it back and forth.
+          if (termOwner === undefined || termOwner === ws || !termSizes.has(termOwner) || m.focus === true) claimTerminal(ws, true);
+          return;
+        }
+        case "term-input":
+          claimTerminal(ws);
+          await handleTerminalMessage(terminal, msg, reply);
+          return;
         case "term-restart": {
+          claimTerminal(ws);
           // Starts the current command again, picking up an edited meta.command.
           if (!(await commandToRun()).command) return reply({ type: "term-error", message: NOTHING_TO_RUN });
           await startTerminal();
@@ -507,6 +558,11 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       return;
     }
     const url = new URL(req.url ?? "/", "http://localhost");
+    // The React app's own backend calls (fetch("/api/items")), sent on by its vite.config server.proxy as `vite`
+    // would: they are the app's, never Glimpse's, whichever path they use.
+    if (project.target === "react" && reactPreview?.proxies(req.url ?? "/") && previewFrom(req)?.kind === "preview") {
+      return reactPreview.handle(req, res);
+    }
     // State-changing requests, and every API call (GET /api/handoff/next hands a message out), only from Glimpse's own pages.
     const method = req.method ?? "GET";
     const api = url.pathname.startsWith("/api/");
@@ -745,30 +801,39 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 
     if (path.startsWith("/preview/") || path === "/preview") {
       if (project.target === "react") return serveReactPreview(req, res);
-      await servePreview(path.slice("/preview".length).replace(/^\/+/, ""), res);
+      const rel = path.slice("/preview".length).replace(/^\/+/, "");
+      if (rel === "" && toEntry(req, res, url, "/preview/")) return;
+      await servePreview(rel, res);
       return;
     }
 
     const snapMatch = /^\/snapshot\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (snapMatch && req.method === "GET") {
+      if (!snapMatch[2] && project.target === "html" && toEntry(req, res, url, `/snapshot/${encodeURIComponent(snapMatch[1]!)}/`)) return;
       await serveSnapshot(snapMatch[1]!, snapMatch[2] ?? "", res);
       return;
     }
 
     const variantMatch = /^\/variant\/([^/]+)\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (variantMatch && req.method === "GET") {
-      await serveVariant(variantMatch[1]!, Number(variantMatch[2]), variantMatch[3] ?? "", res);
+      const [, id, k, rel] = variantMatch;
+      if (!rel && project.target === "html" && toEntry(req, res, url, `/variant/${encodeURIComponent(id!)}/${encodeURIComponent(k!)}/`)) return;
+      await serveVariant(id!, Number(k), rel ?? "", res);
       return;
     }
 
     // Root-absolute URLs in the previewed app (<img src="/logo.svg">, fetch("/data.json")) skip the /preview/
-    // prefix and land here: serve them from the project when the live preview asked for them.
-    if ((req.method === "GET" || req.method === "HEAD") && path !== "/" && fromLivePreview(req)) {
+    // prefix and land here: serve them from the project, or from the version or variant that asked for them.
+    const from = path === "/" ? null : previewFrom(req);
+    if (from && (req.method === "GET" || req.method === "HEAD")) {
+      const rel = path.replace(/^\/+/, "");
+      if (from.kind === "snapshot") return serveSnapshot(from.id, rel, res);
+      if (from.kind === "variant") return serveVariant(from.id, from.k, rel, res);
       if (project.target === "react") {
         req.url = `/preview${req.url ?? "/"}`;
         return serveReactPreview(req, res);
       }
-      if (!isScene()) return servePreview(path.replace(/^\/+/, ""), res);
+      if (!isScene()) return servePreview(rel, res);
     }
 
     await serveEditor(path, res);
@@ -785,13 +850,38 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
 <p style="margin:0;color:#a1a1aa">${escapeHtml(previewError ?? "Vite didn't start.")}</p>`);
   }
 
-  /** Whether a request comes from a page of the live preview (its Referer is under /preview/). */
-  function fromLivePreview(req: IncomingMessage): boolean {
+  /**
+   * Which previewed page a request comes from, by its Referer: the live preview (under /preview/), a version
+   * (/snapshot/<id>/) or a variant (/variant/<id>/<k>/). Null for the editor's own requests.
+   */
+  function previewFrom(req: IncomingMessage): { kind: "preview" } | { kind: "snapshot"; id: string } | { kind: "variant"; id: string; k: number } | null {
+    let ref: string;
     try {
-      return new URL(req.headers.referer ?? "").pathname.startsWith("/preview/");
+      ref = decodeURIComponent(new URL(req.headers.referer ?? "").pathname);
     } catch {
-      return false;
+      return null;
     }
+    if (ref.startsWith("/preview/")) return { kind: "preview" };
+    const snap = /^\/snapshot\/([^/]+)\//.exec(ref);
+    if (snap && history.get(snap[1]!)) return { kind: "snapshot", id: snap[1]! };
+    const variant = /^\/variant\/([^/]+)\/(\d+)\//.exec(ref);
+    if (variant && variants.get(variant[1]!)) return { kind: "variant", id: variant[1]!, k: Number(variant[2]) };
+    return null;
+  }
+
+  /**
+   * A page at the root of the preview (or of a version or variant) whose entry is another file: send the frame
+   * there instead, so the page's relative URLs resolve next to it (an entry in a subfolder) and the live client
+   * knows which file it shows. False when the entry is the folder's index.html, served right here.
+   */
+  function toEntry(req: IncomingMessage, res: ServerResponse, url: URL, root: string): boolean {
+    const entry = entryRel();
+    if (project.target !== "html" || (entry === "index.html" && url.pathname.endsWith("/"))) return false;
+    if (req.method !== "GET" && req.method !== "HEAD") return false;
+    const page = entry === "index.html" ? "" : entry.split("/").map(encodeURIComponent).join("/");
+    res.writeHead(302, { location: `${root}${page}${url.search}`, "cache-control": "no-store" });
+    res.end();
+    return true;
   }
 
   /**
@@ -1281,14 +1371,20 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (new URL(req.url ?? "/", "http://localhost").pathname !== "/__glimpse/ws") return socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
       ws.on("message", (raw) => void onClientMessage(ws, raw));
-      ws.on("close", () => sockets.delete(ws));
+      ws.on("close", () => {
+        sockets.delete(ws);
+        releaseTerminal(ws);
+      });
       void helloState().then(
         (hello) => {
           if (ws.readyState !== ws.OPEN) return;
           ws.send(JSON.stringify(hello));
           // Catch up on the terminal, then receive every event from here on.
-          for (const m of terminalSnapshot(terminal)) ws.send(JSON.stringify(m));
+          const catchUp = terminalSnapshot(terminal);
+          for (const m of catchUp) ws.send(JSON.stringify(m));
           sockets.add(ws);
+          // The scrollback of a full-screen app may hold only its latest updates: have it paint the whole screen.
+          if (catchUp.some((m) => m.type === "term-data")) terminal.redraw();
         },
         () => ws.close(1011, "Glimpse couldn't read the project"),
       );

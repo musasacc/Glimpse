@@ -5,6 +5,7 @@ import { TalkPopover } from "./Talk";
 import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
 import { loop, useLoopLive } from "./loop";
 import { watchUpdates, whenRendered } from "./hmr";
+import { cssSize } from "./dom";
 import { PreviewError } from "./PreviewError";
 import "./editing.css";
 
@@ -263,8 +264,9 @@ function ResizeHandle({ id }: { id: string }) {
     const handle = e.currentTarget as HTMLElement;
     handle.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
-      el.style.width = `${Math.max(4, from.w + ev.clientX - start.x)}px`;
-      el.style.height = `${Math.max(4, from.h + ev.clientY - start.y)}px`;
+      const size = cssSize(el, Math.max(4, from.w + ev.clientX - start.x), Math.max(4, from.h + ev.clientY - start.y));
+      el.style.width = size.width;
+      el.style.height = size.height;
       store.set({});
     };
     const up = (ev: PointerEvent) => {

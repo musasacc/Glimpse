@@ -161,10 +161,10 @@ export function textStyle(value: string | undefined): TextStyle {
   };
 }
 
-/** Terminal width of a string in cells: wide (CJK, most emoji) characters take two. */
+/** Terminal width of a string in cells: wide (CJK, most emoji) characters take two, combining marks none. */
 export function cellWidth(text: string): number {
   let n = 0;
-  for (const ch of text) n += isWide(ch.codePointAt(0)!) ? 2 : 1;
+  for (const g of graphemes(text)) n += graphemeWidth(g);
   return n;
 }
 
@@ -173,13 +173,18 @@ export function fitCells(text: string, max: number): string {
   if (max <= 0) return "";
   let n = 0;
   let out = "";
-  for (const ch of text) {
-    const w = isWide(ch.codePointAt(0)!) ? 2 : 1;
+  for (const g of graphemes(text)) {
+    const w = graphemeWidth(g);
     if (n + w > max) break;
     n += w;
-    out += ch;
+    out += g;
   }
   return out;
+}
+
+/** `text` followed by spaces up to `width` cells (String.padEnd counts UTF-16 units, not cells). */
+export function padCells(text: string, width: number): string {
+  return text + " ".repeat(Math.max(0, width - cellWidth(text)));
 }
 
 /** Word-wrap text into lines of at most `width` cells (explicit line breaks kept). */
@@ -199,7 +204,7 @@ export function wrapCells(text: string, width: number): string[] {
       // A word longer than the line breaks anywhere.
       while (cellWidth(line) > width) {
         // A wide glyph in a 1-cell line doesn't fit at all: take it anyway, or the line never gets shorter.
-        const head = fitCells(line, width) || [...line][0]!;
+        const head = fitCells(line, width) || graphemes(line)[0]!;
         out.push(head);
         line = line.slice(head.length);
       }
@@ -209,17 +214,51 @@ export function wrapCells(text: string, width: number): string[] {
   return out;
 }
 
+const segmenter = typeof Intl !== "undefined" && "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/**
+ * The characters of `text` as a terminal draws them: grapheme clusters, so an emoji with a skin tone, a ZWJ
+ * sequence (👩‍💻), a flag or a letter with combining accents is one glyph.
+ */
+export function graphemes(text: string): string[] {
+  if (!segmenter) return [...text];
+  const out: string[] = [];
+  for (const s of segmenter.segment(text)) out.push(s.segment);
+  return out;
+}
+
+const ZERO_WIDTH = /^[\p{Mn}\p{Me}\p{Cf}]/u;
+const EMOJI_PRESENTATION = /^\p{Emoji_Presentation}/u;
+const EMOJI = /^\p{Emoji}/u;
+
+/** Cells one grapheme cluster takes: wcwidth of its first character, wide when an emoji variation selector follows. */
+export function graphemeWidth(g: string): number {
+  const cp = g.codePointAt(0);
+  if (cp === undefined || ZERO_WIDTH.test(g)) return 0;
+  if (isWide(cp) || EMOJI_PRESENTATION.test(g)) return g.includes("︎") ? 1 : 2;
+  // A text-style symbol shown as an emoji (☀️, ❤️) is drawn wide.
+  if (g.includes("️") && (cp > 0xff || g.includes("⃣")) && EMOJI.test(g)) return 2;
+  return 1;
+}
+
+/** East Asian Wide and Fullwidth ranges (emoji are matched by their Emoji_Presentation property). */
 function isWide(cp: number): boolean {
   return (
     (cp >= 0x1100 && cp <= 0x115f) ||
     (cp >= 0x2e80 && cp <= 0xa4cf && cp !== 0x303f) ||
+    (cp >= 0xa960 && cp <= 0xa97f) ||
     (cp >= 0xac00 && cp <= 0xd7a3) ||
     (cp >= 0xf900 && cp <= 0xfaff) ||
-    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xfe10 && cp <= 0xfe19) ||
+    (cp >= 0xfe30 && cp <= 0xfe6f) ||
     (cp >= 0xff00 && cp <= 0xff60) ||
     (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x16fe0 && cp <= 0x18aff) ||
+    (cp >= 0x1b000 && cp <= 0x1b2ff) ||
+    (cp >= 0x1f200 && cp <= 0x1f2ff) ||
     (cp >= 0x1f300 && cp <= 0x1f64f) ||
     (cp >= 0x1f900 && cp <= 0x1f9ff) ||
+    (cp >= 0x1fa70 && cp <= 0x1faff) ||
     (cp >= 0x20000 && cp <= 0x3fffd)
   );
 }

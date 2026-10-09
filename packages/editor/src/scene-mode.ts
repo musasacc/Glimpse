@@ -86,6 +86,22 @@ interface Dock {
 const NO_TERMINAL: TerminalInfo = { command: null, running: false, mode: "pty", fallbackReason: null, autoRestart: true, exit: null, error: null };
 /** Keep this much terminal output for a pane that mounts later (the server keeps 256 KB). */
 const TERM_BUFFER = 512 * 1024;
+
+/**
+ * The last `max` characters of terminal output, cut where a terminal can start reading: after a line break near
+ * the cut (escape sequences never span one), else before an escape sequence, never inside a surrogate pair.
+ */
+export function trimOutput(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = text.slice(-max);
+  const near = Math.min(out.length, 4096);
+  const nl = out.indexOf("\n");
+  const esc = out.indexOf("\x1b");
+  if (nl >= 0 && nl < near) out = out.slice(nl + 1);
+  else if (esc >= 0 && esc < near) out = out.slice(esc);
+  else if (/^[\udc00-\udfff]/.test(out)) out = out.slice(1);
+  return out;
+}
 const DOCK_KEY = "glimpse.dock";
 
 class SceneMode {
@@ -275,7 +291,7 @@ class SceneMode {
         break;
       case "term-data": {
         const data = String(msg.data ?? "");
-        this.termBuffer = (this.termBuffer + data).slice(-TERM_BUFFER);
+        this.termBuffer = trimOutput(this.termBuffer + data, TERM_BUFFER);
         this.emitTerm(data);
         break;
       }
@@ -396,8 +412,9 @@ class SceneMode {
     sendLive({ type: "term-input", data });
   }
 
-  resize(cols: number, rows: number): void {
-    sendLive({ type: "term-resize", cols, rows });
+  /** The terminal pane's size. `focus`: this window is the one the human is using now, so its size wins. */
+  resize(cols: number, rows: number, focus = false): void {
+    sendLive({ type: "term-resize", cols, rows, ...(focus && { focus: true }) });
   }
 
   setAutoRestart(enabled: boolean): void {

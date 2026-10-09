@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createScene, type Scene, type SceneNode } from "@glimpse/core";
-import { absBox, hasBorder, placeWidget, tagForWidget } from "./scene-geometry";
-import { cellWidth, fitCells, mix, tuiColor, wrapCells } from "./tui-colors";
+import { absBox, hasBorder, placeWidget, selectedTab, shownPane, tagForWidget } from "./scene-geometry";
+import { imageUrl } from "./NativeRenderer";
+import { cellWidth, fitCells, mix, padCells, tuiColor, wrapCells } from "./tui-colors";
 
 function node(id: string, parent: string, layout: SceneNode["layout"], extra: Partial<SceneNode> = {}): SceneNode {
   return { id, type: "box", parent, children: [], layout, style: {}, props: {}, ...extra };
@@ -96,5 +97,53 @@ describe("terminal text", () => {
   it("gets through wide characters in a one-cell line", () => {
     expect(wrapCells("🔍", 1)).toEqual(["🔍", ""]);
     expect(wrapCells("日本x", 1)).toEqual(["日", "本", "x"]);
+  });
+
+  it("measures emoji and combining characters as a terminal draws them", () => {
+    expect(cellWidth("🚀")).toBe(2);
+    expect(cellWidth("✅ Done")).toBe(7);
+    expect(cellWidth("⚡")).toBe(2);
+    expect(cellWidth("🫠")).toBe(2);
+    expect(cellWidth("☀️")).toBe(2); // text symbol + emoji variation selector
+    expect(cellWidth("👩‍💻")).toBe(2); // ZWJ sequence
+    expect(cellWidth("👍🏽")).toBe(2); // skin tone
+    expect(cellWidth("🇩🇪")).toBe(2);
+    expect(cellWidth("é")).toBe(1); // e + combining acute
+    expect(cellWidth("│─")).toBe(2);
+    expect(fitCells("a👩‍💻b", 3)).toBe("a👩‍💻");
+    expect(fitCells("a👩‍💻b", 2)).toBe("a");
+  });
+
+  it("pads table cells by cells, not UTF-16 units", () => {
+    expect(padCells("日本", 6)).toBe("日本  ");
+    expect(padCells("🚀 go", 6)).toBe("🚀 go ");
+    expect(cellWidth(padCells("✅", 5))).toBe(5);
+  });
+});
+
+describe("tabs", () => {
+  const tabs = (selected: string | undefined): SceneNode =>
+    node("t", "root", { x: 0, y: 0, w: 40, h: 10 }, { type: "tabs", children: ["a", "b"], props: selected === undefined ? {} : { selected } });
+
+  it("clamps the selected tab to the tabs there are", () => {
+    expect(shownPane(tabs(undefined))).toBe("a");
+    expect(shownPane(tabs("1"))).toBe("b");
+    expect(shownPane(tabs("-1"))).toBe("a");
+    expect(shownPane(tabs("7"))).toBe("b");
+    expect(selectedTab(tabs("7"), 3)).toBe(2);
+    expect(selectedTab(tabs("2"), 0)).toBe(0);
+  });
+});
+
+describe("native image paths", () => {
+  it("resolves against the scene's folder and encodes each part", () => {
+    expect(imageUrl("logo.png", "")).toBe("/preview/logo.png");
+    expect(imageUrl("assets\\my logo#1.png", "ui")).toBe("/preview/ui/assets/my%20logo%231.png");
+    expect(imageUrl("../assets/x.png", "ui/mock")).toBe("/preview/ui/assets/x.png");
+    expect(imageUrl("/img/a?.png", "ui")).toBe("/preview/img/a%3F.png");
+    expect(imageUrl("../../x.png", "ui")).toBeUndefined();
+    expect(imageUrl("C:\\pics\\x.png", "")).toBeUndefined();
+    expect(imageUrl("https://example.com/x.png", "ui")).toBe("https://example.com/x.png");
+    expect(imageUrl("data:image/png;base64,AAAA", "")).toBe("data:image/png;base64,AAAA");
   });
 });

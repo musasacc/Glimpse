@@ -118,6 +118,23 @@ interface Run {
 }
 
 const SCROLLBACK_BYTES = 256 * 1024;
+
+/**
+ * The last `max` characters of terminal output, cut where a terminal can start reading: after a line break
+ * near the cut (escape sequences never span one), else before an escape sequence, and never inside a
+ * surrogate pair. A late-joining terminal then doesn't start with stray "[38;5;12m" text or a broken character.
+ */
+export function trimOutput(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let out = text.slice(-max);
+  const near = Math.min(out.length, 4096);
+  const nl = out.indexOf("\n");
+  const esc = out.indexOf("\x1b");
+  if (nl >= 0 && nl < near) out = out.slice(nl + 1);
+  else if (esc >= 0 && esc < near) out = out.slice(esc);
+  else if (/^[\udc00-\udfff]/.test(out)) out = out.slice(1);
+  return out;
+}
 const isWindows = process.platform === "win32";
 
 export class TerminalSession extends EventEmitter<TerminalEvents> {
@@ -241,6 +258,30 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
   }
 
   /**
+   * Make a full-screen app draw its whole screen again, for an editor that just caught up from the scrollback
+   * (which may hold only the latest updates of the screen): the pty is resized by a row and back, so the app
+   * gets SIGWINCH and repaints. Nothing happens for pipes.
+   */
+  redraw(): void {
+    const run = this.current;
+    if (!run?.pty || run.done) return;
+    const { cols, rows } = this.size;
+    try {
+      run.pty.resize(cols, rows > 2 ? rows - 1 : rows + 1);
+    } catch {
+      return; // the process exited between the check and the resize
+    }
+    setTimeout(() => {
+      if (this.current !== run || run.done) return;
+      try {
+        run.pty?.resize(this.size.cols, this.size.rows);
+      } catch {
+        // The process exited meanwhile.
+      }
+    }, 50).unref();
+  }
+
+  /**
    * Stop the app and everything it started: SIGTERM to its process group (taskkill /T /F on Windows),
    * then SIGKILL after `graceMs`. Resolves once it's gone, and never hangs.
    */
@@ -349,7 +390,7 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
     // Late output of a run that was already replaced belongs to nobody.
     if (run !== this.last || data === "") return;
     this.buffer += data;
-    if (this.buffer.length > this.scrollback) this.buffer = this.buffer.slice(-this.scrollback);
+    if (this.buffer.length > this.scrollback) this.buffer = trimOutput(this.buffer, this.scrollback);
     this.emit("data", data);
   }
 

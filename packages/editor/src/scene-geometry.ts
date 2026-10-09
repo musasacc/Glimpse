@@ -74,8 +74,14 @@ export function isSceneContainer(n: SceneNode): boolean {
 
 /** The pane a tabs node shows (its selected tab's), the only one of its children that is drawn. */
 export function shownPane(n: SceneNode): string | undefined {
+  return n.children[selectedTab(n, n.children.length)];
+}
+
+/** The selected one of `count` tabs: the `selected` prop, clamped to the tabs there are (the first when unset). */
+export function selectedTab(n: SceneNode, count: number): number {
   const v = n.props.selected?.trim();
-  return n.children[v && /^-?\d+$/.test(v) ? Number(v) : 0];
+  const i = v && /^-?\d+$/.test(v) ? Number(v) : 0;
+  return Math.max(0, Math.min(i, count - 1));
 }
 
 /** The node is drawn: no tabs node above it shows another pane instead (hidden nodes aside). */
