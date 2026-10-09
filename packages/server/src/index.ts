@@ -5,3 +5,28 @@ export { openBrowser } from "./browser.js";
 export { planPatch, type PatchPlan } from "./patch-html.js";
 export { History, type PublicSnapshot, type Snapshot, type SnapshotKind } from "./history.js";
 export { type VariantJob } from "./variants.js";
+export {
+  applyScenePatch,
+  describeSceneTarget,
+  planScenePatch,
+  readScene,
+  sceneChangesPrompt,
+  SceneConflictError,
+  sceneVersion,
+  type ScenePatchPlan,
+  type SceneRead,
+} from "./scene.js";
+export {
+  bridgeTerminal,
+  handleTerminalMessage,
+  loadPty,
+  ptyAvailable,
+  TerminalSession,
+  terminalSnapshot,
+  type TerminalClientMessage,
+  type TerminalEvents,
+  type TerminalMode,
+  type TerminalServerMessage,
+  type TerminalStartInfo,
+  type TerminalStartOptions,
+} from "./terminal.js";

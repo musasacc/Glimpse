@@ -10,8 +10,14 @@ export class DomBridge {
   private els = new Map<string, Element>();
   /** Where each element was originally laid out, so moves can be shown as translates. */
   private origins = new Map<string, { x: number; y: number }>();
-  /** Each element's size as the page laid it out, and its own inline width/height, so undoing a resize hands sizing back to the page. */
-  private sizes = new Map<string, { w: number; h: number; width: string; height: string }>();
+  /**
+   * What the page itself had before the editor first changed an element: its text nodes, inline sizes and
+   * styles. Undoing back to the start puts exactly that back, since React keeps references to those nodes
+   * and only rewrites what its own props changed (it never repairs what the editor left behind).
+   */
+  private pristine = new WeakMap<Element, Pristine>();
+  /** The translate the editor set on an element for a move, to measure where the page itself laid it out. */
+  private moved = new WeakMap<Element, { translate: string; dx: number; dy: number }>();
   /**
    * Where reorders and deletes took elements from, newest last, so undoing puts
    * them back exactly: between the same text and untracked nodes, which the
@@ -49,10 +55,10 @@ export class DomBridge {
         const id = this.ids.get(child) ?? this.newId();
         this.register(child, id);
         scene.nodes[id] = this.snapshot(child, id, parentId);
-        const { x, y, w, h } = scene.nodes[id]!.layout;
-        this.origins.set(id, { x, y });
-        const own = (child as HTMLElement).style;
-        this.sizes.set(id, { w, h, width: own?.width ?? "", height: own?.height ?? "" });
+        // A moved element is measured with the editor's translate in it; its origin is where it was without.
+        const m = this.moved.get(child);
+        const off = m && (child as HTMLElement).style.translate === m.translate ? m : { dx: 0, dy: 0 };
+        this.origins.set(id, { x: scene.nodes[id]!.layout.x - off.dx, y: scene.nodes[id]!.layout.y - off.dy });
         scene.nodes[parentId]!.children.push(id);
         walk(child, id);
       }
@@ -147,25 +153,46 @@ export class DomBridge {
         const dy = op.to.y - origin.y;
         el.style.translate = dx || dy ? `${dx}px ${dy}px` : "";
         tidyStyle(el);
+        if (dx || dy) this.moved.set(el, { translate: el.style.translate, dx, dy });
+        else this.moved.delete(el);
         return;
       }
       case "resize": {
         const el = this.els.get(op.node) as HTMLElement;
-        const own = this.sizes.get(op.node);
-        // Back to the size the page gave it (an undo): fixed pixels would stop it following its content and the window.
-        const back = own && op.to.w === own.w && op.to.h === own.h;
-        el.style.width = back ? own.width : `${op.to.w}px`;
-        el.style.height = back ? own.height : `${op.to.h}px`;
+        const p = this.pristineOf(el);
+        p.size ??= { width: el.style.width, height: el.style.height, w: op.from.w, h: op.from.h };
+        if (op.to.w === p.size.w && op.to.h === p.size.h) {
+          // Back to the size it had (an undo): the page's own inline sizes (usually none), not fixed pixels,
+          // which would stop it following its content and the window.
+          el.style.width = p.size.width;
+          el.style.height = p.size.height;
+          delete p.size;
+        } else {
+          el.style.width = `${op.to.w}px`;
+          el.style.height = `${op.to.h}px`;
+        }
         tidyStyle(el);
         return;
       }
       case "setText":
-        setOwnText(this.els.get(op.node)!, op.to);
+        this.setText(this.els.get(op.node)!, op.to);
         return;
       case "setStyle": {
         const el = this.els.get(op.node) as HTMLElement;
-        if (op.to === null) el.style.removeProperty(op.key);
-        else el.style.setProperty(op.key, op.to);
+        const p = this.pristineOf(el);
+        p.style ??= new Map();
+        if (!p.style.has(op.key)) p.style.set(op.key, { value: el.style.getPropertyValue(op.key), priority: el.style.getPropertyPriority(op.key) });
+        const was = p.style.get(op.key)!;
+        if (op.to !== null) el.style.setProperty(op.key, op.to);
+        else if (was.value) {
+          // Removing a style the scene doesn't list (a shorthand like padding, set inline as its longhands)
+          // puts back what the page had rather than wiping those longhands.
+          el.style.setProperty(op.key, was.value, was.priority);
+          p.style.delete(op.key);
+        } else {
+          el.style.removeProperty(op.key);
+          p.style.delete(op.key);
+        }
         tidyStyle(el);
         return;
       }
@@ -208,6 +235,37 @@ export class DomBridge {
       default:
         return; // swapType, setLocked and annotations are editor-only until handed off
     }
+  }
+
+  private pristineOf(el: Element): Pristine {
+    let p = this.pristine.get(el);
+    if (!p) this.pristine.set(el, (p = {}));
+    return p;
+  }
+
+  /**
+   * Set the element's own text. The first edit remembers every text node as the page left it (React renders
+   * `Clicked {count}` as "Clicked " + "0"); setting the original text again restores each node's value.
+   */
+  private setText(el: Element, text: string): void {
+    const p = this.pristineOf(el);
+    const own = Array.from(el.childNodes).filter((n): n is Text => n.nodeType === Node.TEXT_NODE);
+    if (!p.text) p.text = { nodes: own, values: own.map((n) => n.nodeValue ?? ""), text: ownText(el) };
+    const saved = p.text;
+    if (text === saved.text && saved.nodes.every((n) => n.parentNode === el)) {
+      saved.nodes.forEach((n, i) => (n.nodeValue = saved.values[i]!));
+      if (saved.added && !saved.nodes.includes(saved.added)) saved.added.remove();
+      delete p.text;
+      return;
+    }
+    const texts = own.filter((n) => n.nodeValue?.trim());
+    if (texts.length === 0) {
+      if (saved.added?.parentNode === el) saved.added.nodeValue = text;
+      else el.insertBefore((saved.added = el.ownerDocument.createTextNode(text)), el.firstChild);
+      return;
+    }
+    texts[0]!.nodeValue = text;
+    for (const extra of texts.slice(1)) extra.nodeValue = "";
   }
 
   /** Create DOM for added nodes (palette or duplicate) and register their ids. */
@@ -343,12 +401,8 @@ function ownText(el: Element): string {
   return t.replace(/\s+/g, " ").trim();
 }
 
-function setOwnText(el: Element, text: string): void {
-  const texts = Array.from(el.childNodes).filter((n) => n.nodeType === Node.TEXT_NODE && n.nodeValue?.trim());
-  if (texts.length === 0) {
-    el.insertBefore(el.ownerDocument.createTextNode(text), el.firstChild);
-    return;
-  }
-  texts[0]!.nodeValue = text;
-  for (const extra of texts.slice(1)) extra.nodeValue = "";
-}
+type Pristine = {
+  text?: { nodes: Text[]; values: string[]; text: string; added?: Text };
+  style?: Map<string, { value: string; priority: string }>;
+  size?: { width: string; height: string; w: number; h: number };
+};

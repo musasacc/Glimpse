@@ -1,0 +1,139 @@
+{
+  "$schema": "https://raw.githubusercontent.com/musasacc/Glimpse/main/docs/glimpse.scene.schema.json",
+  "target": "tui",
+  "meta": { "framework": "textual", "command": "python app.py", "title": "Todo" },
+  "root": {
+    "type": "root",
+    "tag": "TodoApp",
+    "layout": { "x": 0, "y": 0, "w": 80, "h": 24 },
+    "source": { "file": "app.py", "line": 29, "col": 7 },
+    "children": [
+      {
+        "type": "statusbar",
+        "tag": "Header",
+        "layout": { "x": 0, "y": 0, "w": 80, "h": 1 },
+        "props": { "text": "Todo" },
+        "source": { "file": "app.py", "line": 53, "col": 15 }
+      },
+      {
+        "id": "main",
+        "type": "box",
+        "tag": "Horizontal",
+        "layout": { "x": 0, "y": 1, "w": 80, "h": 19 },
+        "source": { "file": "app.py", "line": 54, "col": 14 },
+        "children": [
+          {
+            "id": "todos",
+            "type": "list",
+            "tag": "ListView",
+            "layout": { "x": 0, "y": 0, "w": 32, "h": 19 },
+            "style": { "border": "round $accent" },
+            "props": {
+              "items": [
+                "○ Buy groceries",
+                "○ Write the weekly report",
+                "○ Call the plumber",
+                "✔ Book train tickets"
+              ],
+              "selected": 0
+            },
+            "source": { "file": "app.py", "line": 55, "col": 19 }
+          },
+          {
+            "id": "details",
+            "type": "panel",
+            "tag": "Vertical",
+            "layout": { "x": 32, "y": 0, "w": 48, "h": 19 },
+            "style": { "border": "round $secondary", "padding": "0 1" },
+            "source": { "file": "app.py", "line": 56, "col": 18 },
+            "children": [
+              {
+                "id": "detail-title",
+                "type": "text",
+                "tag": "Static",
+                "layout": { "x": 2, "y": 1, "w": 44, "h": 1 },
+                "style": { "text-style": "bold" },
+                "props": { "text": "Buy groceries" },
+                "source": { "file": "app.py", "line": 57, "col": 23 }
+              },
+              {
+                "id": "detail-notes",
+                "type": "text",
+                "tag": "Static",
+                "layout": { "x": 2, "y": 2, "w": 44, "h": 12 },
+                "style": { "color": "$text-muted" },
+                "props": { "text": "Milk, eggs, bread and coffee beans." },
+                "source": { "file": "app.py", "line": 58, "col": 23 }
+              },
+              {
+                "id": "detail-status",
+                "type": "label",
+                "tag": "Label",
+                "layout": { "x": 2, "y": 14, "w": 12, "h": 1 },
+                "props": { "text": "Status: open" },
+                "source": { "file": "app.py", "line": 59, "col": 23 }
+              },
+              {
+                "id": "detail-actions",
+                "type": "box",
+                "tag": "Horizontal",
+                "layout": { "x": 2, "y": 15, "w": 44, "h": 3 },
+                "source": { "file": "app.py", "line": 60, "col": 22 },
+                "children": [
+                  {
+                    "id": "done",
+                    "type": "button",
+                    "tag": "Button",
+                    "layout": { "x": 0, "y": 0, "w": 16, "h": 3 },
+                    "props": { "text": "Mark done", "variant": "success" },
+                    "source": { "file": "app.py", "line": 61, "col": 27 }
+                  },
+                  {
+                    "id": "delete",
+                    "type": "button",
+                    "tag": "Button",
+                    "layout": { "x": 17, "y": 0, "w": 16, "h": 3 },
+                    "props": { "text": "Delete", "variant": "error" },
+                    "source": { "file": "app.py", "line": 62, "col": 27 }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "new-row",
+        "type": "box",
+        "tag": "Horizontal",
+        "layout": { "x": 0, "y": 20, "w": 80, "h": 3 },
+        "source": { "file": "app.py", "line": 63, "col": 14 },
+        "children": [
+          {
+            "id": "new-todo",
+            "type": "input",
+            "tag": "Input",
+            "layout": { "x": 0, "y": 0, "w": 64, "h": 3 },
+            "props": { "placeholder": "What needs doing?" },
+            "source": { "file": "app.py", "line": 64, "col": 19 }
+          },
+          {
+            "id": "add",
+            "type": "button",
+            "tag": "Button",
+            "layout": { "x": 64, "y": 0, "w": 16, "h": 3 },
+            "props": { "text": "Add", "variant": "primary" },
+            "source": { "file": "app.py", "line": 65, "col": 19 }
+          }
+        ]
+      },
+      {
+        "type": "statusbar",
+        "tag": "Footer",
+        "layout": { "x": 0, "y": 23, "w": 80, "h": 1 },
+        "props": { "items": ["a Add", "d Done", "q Quit", "^p palette"] },
+        "source": { "file": "app.py", "line": 66, "col": 15 }
+      }
+    ]
+  }
+}

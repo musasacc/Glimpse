@@ -26,3 +26,5 @@ jobs:
       - run: pnpm test
       - name: CLI smoke test
         run: node packages/cli/dist/index.js --version
+      - name: Package smoke test (npm pack → install → glimpse open / mcp)
+        run: pnpm smoke:pack

@@ -19,7 +19,52 @@ export type NodeType =
   | "icon"
   | "window"
   | "tabs"
-  | "custom";
+  | "custom"
+  // Widgets of terminal UIs and native GUIs (glimpse.scene.json).
+  | "panel"
+  | "label"
+  | "checkbox"
+  | "radio"
+  | "switch"
+  | "select"
+  | "table"
+  | "tree"
+  | "progress"
+  | "slider"
+  | "menu"
+  | "statusbar"
+  | "divider";
+
+/** Every node type, in a stable order (the web types first, then the TUI/native widgets). */
+export const NODE_TYPES: readonly NodeType[] = [
+  "root",
+  "box",
+  "text",
+  "button",
+  "input",
+  "image",
+  "link",
+  "list",
+  "nav",
+  "card",
+  "icon",
+  "window",
+  "tabs",
+  "custom",
+  "panel",
+  "label",
+  "checkbox",
+  "radio",
+  "switch",
+  "select",
+  "table",
+  "tree",
+  "progress",
+  "slider",
+  "menu",
+  "statusbar",
+  "divider",
+];
 
 /** Where a node lives in the real source code. */
 export interface SourceLocation {

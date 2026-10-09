@@ -119,6 +119,16 @@ describe("OpLog", () => {
     expect(log.scene.nodes.g).toBeUndefined();
   });
 
+  it("forgets the last step without undoing it", () => {
+    const log = new OpLog(fixture());
+    log.apply({ op: "setText", node: "b1", from: "Button 1", to: "Uno" });
+    expect(log.dropLast()).toBe(true);
+    expect(log.canUndo).toBe(false);
+    expect(log.canRedo).toBe(false);
+    expect(log.scene.nodes.b1!.props.text).toBe("Uno");
+    expect(log.dropLast()).toBe(false);
+  });
+
   it("does not mutate the base scene", () => {
     const base = fixture();
     const log = new OpLog(base);

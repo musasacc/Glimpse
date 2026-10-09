@@ -250,9 +250,14 @@ class Loop {
         store.bridge?.doc === doc;
       const width = DEVICE_WIDTH[store.state.device] ?? Math.max(800, doc?.documentElement.clientWidth ?? 1280);
       const opts = { maxWidth: THUMB_WIDTH, maxHeight: Math.round(width * 0.75) };
-      const dataUrl =
-        (liveMatches ? await capturePreview(doc, opts) : null) ??
-        (await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts));
+      // A terminal UI or native GUI: the version's scene file, drawn the way the canvas draws it.
+      const sceneThumb = store.sceneSurface?.thumbnail;
+      // A React app's snapshot is source that Vite has to build: served as static files it renders blank, so only the live page pictures it.
+      const staticPage = store.state.project?.target !== "react";
+      const dataUrl = sceneThumb
+        ? await sceneThumb(s.id, THUMB_WIDTH)
+        : ((liveMatches ? await capturePreview(doc, opts) : null) ??
+          (staticPage ? await captureUrl(`/snapshot/${enc(s.id)}/`, { width, height: Math.round(width * 0.75) }, opts) : null));
       if (!dataUrl || !this.snapshot(s.id)) return;
       // An AI round that grew while we captured needs a new picture.
       if (this.snapshot(s.id)!.at !== s.at) return void (outdated = true);
@@ -412,6 +417,8 @@ export function initLoop(): () => void {
  * prompts drawn in (numbered as on the canvas). Never holds sending up for more than 3 s.
  */
 export function handoffScreenshot(): Promise<string | null> {
+  const scene = store.sceneSurface;
+  if (scene?.screenshot) return within(scene.screenshot(), 3000, null);
   const doc = store.bridge?.doc;
   // One screen of a tall window is plenty, and keeps the PNG well under the server's 5 MB.
   const shot = capturePreview(doc, { maxWidth: 1280, maxHeight: 1600, atScroll: true }).then((png) => {

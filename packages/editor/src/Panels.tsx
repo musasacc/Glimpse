@@ -7,6 +7,7 @@ import { editText } from "./Canvas";
 import { loop, useLoopLive } from "./loop";
 import { NO_SOURCE } from "./Variants";
 import { MOD } from "./platform";
+import { SceneInspector } from "./SceneInspector";
 
 /** Layers: the element tree of the page. */
 export function Layers() {
@@ -30,6 +31,7 @@ export function Layers() {
           key={node.id}
           className={`layer${state.multi.includes(node.id) ? " selected" : ""}`}
           style={{ paddingLeft: 10 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
+          title={node.source && `${node.source.file}:${node.source.line}`}
           onClick={(e) => (e.shiftKey ? store.toggleSelect(node.id) : store.select(node.id))}
           onMouseEnter={() => store.set({ hovered: node.id })}
           onMouseLeave={() => store.set({ hovered: null })}
@@ -71,6 +73,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
     );
   }
   if (store.selection.length > 1) return <SelectionInspector />;
+  if (store.sceneSurface) return <SceneInspector openTalk={openTalk} />;
   if (!node) {
     return (
       <div className="section">
@@ -216,7 +219,7 @@ const EVENTS = ["click", "submit", "hover", "change"];
 const ACTIONS = ["open modal", "go to page", "call API", "toggle element", "custom"];
 
 /** Edit behavior: logic instructions that always go to the AI. */
-function BehaviorSection({ node }: { node: SceneNode }) {
+export function BehaviorSection({ node }: { node: SceneNode }) {
   const [event, setEvent] = useState("click");
   const [action, setAction] = useState("open modal");
   const [detail, setDetail] = useState("");

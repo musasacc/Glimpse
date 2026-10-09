@@ -569,38 +569,32 @@ code {
   padding: 0 10px;
   border-bottom: 1px solid var(--border);
   min-width: 0;
-  container: toolbar / inline-size;
-  /* Last resort on very narrow windows: scroll rather than squeeze controls to nothing. */
+}
+.no-sidebar .toolbar {
+  padding-left: 48px;
+}
+/* Controls keep their size (a .seg would otherwise shrink to nothing, clipped by its overflow); when they don't
+   fit, labels give way to their icons (.compact, see useCompactToolbar; each keeps its tooltip), and as a last
+   resort the toolbar scrolls sideways rather than cut off the buttons at its end. */
+.toolbar {
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
 }
 .toolbar::-webkit-scrollbar {
   display: none;
 }
-/* Controls keep their size; on narrower windows the labels give way to icons (each keeps its tooltip). */
 .toolbar > * {
-  flex: none;
+  flex-shrink: 0;
 }
 .toolbar > .spacer {
   flex: 1 1 0;
 }
-@container toolbar (max-width: 1060px) {
-  .toolbar .tb-label {
-    display: none;
-  }
+.toolbar.compact {
+  gap: 6px;
 }
-@container toolbar (max-width: 880px) {
-  .toolbar .tb-label-md {
-    display: none;
-  }
-}
-@container toolbar (max-width: 700px) {
-  .toolbar .tb-label-sm {
-    display: none;
-  }
-}
-.no-sidebar .toolbar {
-  padding-left: 48px;
+.toolbar.compact .tb-label {
+  display: none;
 }
 .inspector {
   grid-area: inspector;
@@ -1141,4 +1135,25 @@ textarea.input {
   align-items: center;
   gap: 8px;
   font-size: 13px;
+}
+
+/* ── Desktop app ────────────────────────────────────── */
+/* macOS windows have no title bar: the traffic lights float over the top-left corner (at x 14, y 9), so the shell
+   leaves a 30px strip above the panels for them. The window's dark frame (that strip and the gutters), the sidebar's
+   top row and the editor toolbar drag the window, like a title bar; the controls in them stay clickable, and so do
+   dialogs over them. Full screen hides the traffic lights, and the strip goes with them. */
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .shell {
+  padding-top: 30px;
+  -webkit-app-region: drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.sidebar, .main) {
+  -webkit-app-region: no-drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .toolbar) {
+  -webkit-app-region: drag;
+}
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .toolbar) :is(button, a, input, select, textarea, label, [role="button"]),
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .main > .floating,
+html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .scrim {
+  -webkit-app-region: no-drag;
 }

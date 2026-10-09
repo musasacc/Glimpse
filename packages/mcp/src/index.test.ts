@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { startServer } from "@glimpse/server";
 import { createGlimpseMcp } from "./index.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -38,11 +39,57 @@ describe("glimpse MCP", () => {
       "glimpse_close",
       "glimpse_get_changes",
       "glimpse_open",
+      "glimpse_scene_schema",
+      "glimpse_scene_validate",
       "glimpse_status",
       "glimpse_update",
       "glimpse_wait_for_done",
     ]);
   });
+
+  it("reports its package version and how to work with scene files", async () => {
+    const { client } = await setup();
+    const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    expect(client.getServerVersion()).toMatchObject({ name: "glimpse", version: pkg.version });
+    expect(client.getInstructions()).toContain("glimpse.scene.json");
+  });
+
+  it("opens a terminal UI project, reports its scene problems and runs the app", async () => {
+    const { dir, call } = await setup();
+    await writeFile(
+      join(dir, "glimpse.scene.json"),
+      JSON.stringify({ target: "tui", root: { type: "root", layout: { x: 0, y: 0, w: 40, h: 10 }, children: [{ type: "button", props: { text: "OK" } }] } }),
+    );
+    const command = `${JSON.stringify(process.execPath)} -e "console.log('tui up')"`;
+    const opened = await call("glimpse_open", { dir, command });
+    expect(opened).toContain("tui, entry glimpse.scene.json");
+    expect(opened).toMatch(/glimpse\.scene\.json has \d+ problems?; .*glimpse_scene_validate/);
+    expect(opened).toContain("Running `");
+    const url = /open at (\S+) /.exec(opened)![1]!;
+    await expect.poll(async () => ((await (await fetch(`${url}/api/terminal`)).json()) as { command: string }).command).toBe(command);
+  }, 30_000);
+
+  it("asks a Glimpse started elsewhere to run the app, with the token from server.json", async () => {
+    const { dir, call } = await setup();
+    const srv = await startServer({ dir, port: 0 });
+    try {
+      await mkdir(join(dir, ".glimpse"), { recursive: true });
+      await writeFile(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: srv.url, pid: process.pid + 1, token: srv.token }));
+      const command = `${JSON.stringify(process.execPath)} -e "console.log('elsewhere')"`;
+      const opened = await call("glimpse_open", { dir, command });
+      expect(opened).toContain(`open at ${srv.url} `);
+      expect(opened).toContain("Running `");
+      await expect.poll(() => srv.terminal.output, { timeout: 10_000 }).toContain("elsewhere");
+
+      // A wrong token is refused, and says so.
+      await writeFile(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: srv.url, pid: process.pid + 1, token: "nope" }));
+      expect(await call("glimpse_close", { dir })).toContain("Detached");
+      expect(await call("glimpse_open", { dir, command })).toContain("Couldn't run");
+    } finally {
+      await call("glimpse_close", { dir });
+      await srv.close();
+    }
+  }, 30_000);
 
   it("opens a project and hands the human's request to the agent", async () => {
     const { dir, call } = await setup();

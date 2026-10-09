@@ -1,0 +1,48 @@
+{
+  "name": "glimpse-desktop",
+  "productName": "Glimpse",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Glimpse desktop app: see what your AI built, edit it visually, hand the changes back.",
+  "author": "Glimpse contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/musasacc/Glimpse",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/musasacc/Glimpse.git",
+    "directory": "apps/desktop"
+  },
+  "type": "module",
+  "main": "dist/main.mjs",
+  "desktopName": "glimpse-desktop.desktop",
+  "scripts": {
+    "prepare": "node scripts/prepare.mjs --if-built",
+    "build": "node scripts/build.mjs",
+    "typecheck": "node scripts/prepare.mjs && tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/test.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "start": "node scripts/build.mjs && electron .",
+    "dist": "node scripts/build.mjs && electron-builder",
+    "icon": "node scripts/make-icon.mjs"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.9",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "chokidar": "^5.0.0",
+    "diff": "^9.0.0",
+    "magic-string": "^1.4.3",
+    "parse5": "^8.0.1",
+    "ws": "^8.18.3",
+    "zod": "^4.0.0"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,6 +1,9 @@
 import { useSyncExternalStore } from "react";
 import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
+import { followMoves, followOps, isVitePage, repeatedSources, undoAll } from "./hmr";
+import { shownPane } from "./scene-geometry";
+import { domSurface, type Surface } from "./surface";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -53,6 +56,8 @@ interface State {
   agentWaiting: boolean;
   /** The project's entry page exists yet (false until the agent builds it). */
   entryExists: boolean;
+  /** Why the React preview can't run (e.g. "… run npm install"); null when it's fine. */
+  previewError: string | null;
   handoffs: HandoffSummary[];
   /** Handoff shown in the History view. */
   openHandoff: number | null;
@@ -83,6 +88,7 @@ class Store {
     view: "home",
     agentWaiting: false,
     entryExists: true,
+    previewError: null,
     handoffs: [],
     openHandoff: null,
     sidebarOpen: true,
@@ -92,11 +98,25 @@ class Store {
     rev: 0,
   };
   bridge: DomBridge | null = null;
+  /** Set while a terminal UI or native GUI mock is edited instead of a live page (see scene-mode.ts). */
+  sceneSurface: Surface | null = null;
   log: OpLog | null = null;
+  /**
+   * Unsent edits taken off the page while it changes under them, until they are replayed: around an HTML page's
+   * live morph (see beforeMorph) and a React page's HMR update (see beforeUpdate, which also keeps the page before it).
+   */
+  private held: readonly { ops: Op[] }[] | null = null;
+  private heldBase: Scene | null = null;
+  private heldTimer: ReturnType<typeof setTimeout> | undefined;
+  /** React pages: edits already handed off. They stay on screen until React next updates the page. */
+  private sent: OpLog[] = [];
+  /**
+   * React pages in Interact mode: the unsent edits, recorded on the scene only, while the app runs on the DOM
+   * React made (see interact). Counting and sending them works as usual; they come back on leaving the mode.
+   */
+  private frozen: OpLog | null = null;
   private listeners = new Set<() => void>();
   private activitySeq = 0;
-  /** Unsent edits taken off the page for a live morph (see beforeMorph), until they are replayed. */
-  private parked: readonly { ops: Op[] }[] | null = null;
   /** While Edit source writes the files, replayed edits that are already in them can't apply; that's expected. */
   private writing = 0;
   private morphedWhileWriting = false;
@@ -121,6 +141,11 @@ class Store {
     return this.log?.scene ?? null;
   }
 
+  /** What edits land on: the scene mock, or the live page. */
+  get surface(): Surface | null {
+    return this.sceneSurface ?? (this.bridge ? domSurface(this.bridge) : null);
+  }
+
   get pendingCount(): number {
     return this.log && this.commitTimer === undefined ? buildChangeList(this.log).changes.length : 0;
   }
@@ -130,9 +155,19 @@ class Store {
    * reloaded because the AI saved a file), replay them on top of the new page.
    */
   attach(doc: Document): void {
+    // React renders a reloaded page anew, reusing nothing; follow the elements as after an update.
+    if (this.frozen && this.log === this.frozen) {
+      // Interacting: the edits stay off the new page until editing resumes.
+      this.sent = [];
+      this.bridge = new DomBridge(doc);
+      this.set({});
+      return;
+    }
+    const before = isVitePage(doc) ? (this.heldBase ?? this.log?.base ?? null) : null;
     const pending = this.unsent();
+    this.sent = [];
     this.bridge = new DomBridge(doc);
-    this.rebase(pending);
+    this.rebase(pending, before);
     if (this.commitTimer !== undefined) this.finishWrite();
   }
 
@@ -145,13 +180,10 @@ class Store {
   beforeMorph(): void {
     // Edit source's own write: the page already shows what was written (deletes, moves in the
     // tree…), so it is morphed as it is and only the rest is replayed.
-    if (!this.log || this.parked || this.writing) return;
-    this.parked = [...this.log.entries];
-    try {
-      while (this.log.undo());
-    } catch {
-      // The page's own scripts took something away; what's left on stays on, as before.
-    }
+    if (!this.log || this.held || this.writing || this.frozen) return;
+    this.held = [...this.log.entries];
+    // A step the page's own scripts made impossible is dropped; the rest come off.
+    undoAll(this.log);
   }
 
   /**
@@ -161,14 +193,59 @@ class Store {
   pageChanged(): void {
     if (!this.bridge) return;
     if (this.writing) this.morphedWhileWriting = true;
-    this.rebase(this.unsent());
+    // A React page only changes under us after beforeUpdate took the edits off; otherwise they are still on it.
+    const held = this.held;
+    if (!held && isVitePage(this.bridge.doc)) {
+      if (this.commitTimer !== undefined) this.finishWrite();
+      return;
+    }
+    const before = this.heldBase;
+    const pending = this.unsent();
+    // Edits made while React was updating went onto the page it was changing: take them off too, then replay all.
+    if (held && this.log) undoAll(this.log);
+    this.rebase(pending, before);
     if (this.commitTimer !== undefined) this.finishWrite();
+  }
+
+  /**
+   * React pages: Vite is about to apply an HMR update. React diffs against its
+   * own record of the DOM, so our edits must be off the page first (otherwise it
+   * removes the wrong elements); pageChanged replays them once it has settled.
+   * Edits already handed off come off for good: the source has (or will have) them.
+   */
+  beforeUpdate(): void {
+    if (!this.bridge || this.held) return;
+    if (this.frozen) {
+      // Interacting: the unsent edits are already off the page.
+      for (const log of this.sent.reverse()) undoAll(log);
+      this.sent = [];
+      return;
+    }
+    this.held = [...(this.log?.entries ?? [])];
+    this.heldBase = this.log?.base ?? null;
+    if (this.log) undoAll(this.log);
+    for (const log of this.sent.reverse()) undoAll(log);
+    this.sent = [];
+    // Normally "after-update" follows within ~2 s; never keep the edits off the page for good.
+    clearTimeout(this.heldTimer);
+    this.heldTimer = setTimeout(() => this.pageChanged(), 6000);
+  }
+
+  /** Unsent edits: those held during a React update, then any made since. Ends the hold. */
+  private unsent(): readonly { ops: Op[] }[] {
+    const entries = [...(this.held ?? []), ...(this.log?.entries ?? [])];
+    this.held = this.heldBase = null;
+    clearTimeout(this.heldTimer);
+    return entries;
   }
 
   /** After a handoff, the current page (with the human's edits) becomes the new base. */
   commitHandoff(): void {
-    if (!this.bridge) return;
-    if (this.parked) this.rebase(this.unsent());
+    if (!this.surface) return;
+    // Edits taken off the page for a morph go back on before the page becomes the new base.
+    if (this.held && !this.isVitePage) this.rebase(this.unsent());
+    // React still renders the page without them: they come off before its next update (see beforeUpdate).
+    if (this.log?.canUndo && this.isVitePage && this.log !== this.frozen) this.sent.push(this.log);
     this.log = this.newLog();
     this.set({ stale: false });
   }
@@ -186,7 +263,8 @@ class Store {
     this.morphedWhileWriting = false;
     try {
       const result = await write();
-      if (this.morphedWhileWriting) this.commitHandoff();
+      // A scene mock shows the edits itself: no page morphs, so it is the new base right away.
+      if (this.morphedWhileWriting || this.sceneSurface) this.commitHandoff();
       else {
         this.writing++;
         this.commitTimer = setTimeout(() => this.finishWrite(), 1500);
@@ -206,31 +284,83 @@ class Store {
     this.commitHandoff();
   }
 
-  /** The unsent edits, wherever they are right now. */
-  private unsent(): readonly { ops: Op[] }[] {
-    const entries = this.parked ?? this.log?.entries ?? [];
-    this.parked = null;
-    return entries;
+  /**
+   * React pages, Interact mode: the app runs, and its own state updates (a click, a timer, a fetch) reconcile
+   * against the DOM just like an HMR update, so the edits come off the page (React would otherwise trip over
+   * elements the editor removed or moved) and are replayed on whatever the app shows when editing resumes.
+   */
+  interact(on: boolean): void {
+    if (on) {
+      const log = this.log;
+      if (this.frozen || !log || !this.isVitePage || this.held) return;
+      const frozen = new OpLog(log.base);
+      for (const entry of log.entries) frozen.apply(...entry.ops);
+      undoAll(log);
+      for (const sent of this.sent.reverse()) undoAll(sent);
+      this.sent = [];
+      this.log = this.frozen = frozen;
+      this.set({ hovered: null });
+      return;
+    }
+    const frozen = this.frozen;
+    if (!frozen) return;
+    this.frozen = null;
+    // Sent or discarded meanwhile: nothing to put back.
+    if (this.log === frozen && this.bridge) this.rebase(frozen.entries, frozen.base);
   }
 
-  private rebase(entries: readonly { ops: Op[] }[]): void {
+  /**
+   * React pages, Edit source: take the edits off the page before Glimpse writes
+   * them into the files, so the update Vite sends (maybe before the write's
+   * response) finds the DOM as React left it. They stay on the redo stack.
+   */
+  takeOffEdits(): void {
+    if (this.log) undoAll(this.log);
+    this.set({});
+  }
+
+  /** The write failed: put the edits taken off by takeOffEdits back. */
+  putBackEdits(): void {
+    try {
+      while (this.log?.redo()) {}
+    } catch {
+      // Redo is all or nothing: a step the page no longer takes stays on the redo stack.
+      this.activity("warn", "Some of your edits couldn't be put back on the page; use Redo to try again.");
+    }
+    this.set(this.existingSelection());
+  }
+
+  /** The page shows a React app (served by Vite), not a static HTML page. */
+  get isVitePage(): boolean {
+    return !this.sceneSurface && isVitePage(this.bridge?.doc);
+  }
+
+  /** Source locations the page renders more than once, with how often (see repeatedSources). */
+  get repeats(): Map<string, number> {
+    if (this.sceneSurface) return new Map();
+    return repeatedSources([...this.sent, ...(this.log ? [this.log] : [])].map((l) => l.base));
+  }
+
+  /** `before`: the page React rendered before an update or reload, so edits follow the elements it moved (see followMoves). */
+  private rebase(entries: readonly { ops: Op[] }[], before: Scene | null = null): void {
     this.log = this.newLog();
+    const moved = before ? followMoves(before, this.log.base) : new Map<string, string>();
     let dropped = 0;
     for (const entry of entries) {
       try {
-        this.log.apply(...entry.ops);
+        this.log.apply(...followOps(entry.ops, moved, this.log.scene));
       } catch {
         dropped++;
       }
     }
     const lost = dropped > 0 && this.writing === 0;
     if (lost) this.activity("warn", `${dropped} of your edits no longer match the page after the AI's change and were dropped`);
-    this.set({ ...this.existingSelection(), hovered: null, stale: lost });
+    this.set({ ...this.existingSelection(moved), hovered: null, stale: lost });
   }
 
   private newLog(): OpLog {
-    const bridge = this.bridge!;
-    return new OpLog(bridge.buildScene(), (scene, op, undo) => bridge.apply(scene, op, undo));
+    const surface = this.surface!;
+    return new OpLog(surface.buildScene(), (scene, op, undo) => surface.apply(scene, op, undo));
   }
 
   edit(...ops: Op[]): void {
@@ -282,11 +412,13 @@ class Store {
     this.set({ selected: multi[0] ?? null, multi });
   }
 
-  /** Forget selected elements that are gone (e.g. undoing the step that created them). */
-  private existingSelection(): Pick<State, "selected" | "multi"> {
+  /** Forget selected elements that are gone (e.g. undoing the step that created them); follow those that `moved`. */
+  private existingSelection(moved?: Map<string, string>): Pick<State, "selected" | "multi"> {
     const nodes = this.scene?.nodes ?? {};
-    const multi = this.state.multi.filter((id) => nodes[id]);
-    const selected = this.state.selected && nodes[this.state.selected] ? this.state.selected : (multi[0] ?? null);
+    const follow = (id: string) => moved?.get(id) ?? id;
+    const multi = this.state.multi.map(follow).filter((id) => nodes[id]);
+    const current = this.state.selected && follow(this.state.selected);
+    const selected = current && nodes[current] ? current : (multi[0] ?? null);
     return { selected, multi };
   }
 
@@ -305,9 +437,9 @@ class Store {
 
   /** Duplicate every selected element (each copy right after its original) and select the copies. */
   duplicateSelected(): void {
-    if (!this.log || !this.bridge) return;
-    const bridge = this.bridge;
-    const ops = duplicateManyOps(this.log.scene, this.selection, () => bridge.newId());
+    const surface = this.surface;
+    if (!this.log || !surface) return;
+    const ops = duplicateManyOps(this.log.scene, this.selection, () => surface.newId());
     if (ops.length === 0) return;
     this.edit(...ops);
     this.selectMany(ops.flatMap((op) => (op.op === "add" ? [op.nodes[0]!.id] : [])));
@@ -323,8 +455,9 @@ class Store {
       this.commitTimer = undefined;
       this.writing--;
     }
-    this.log = null;
-    this.parked = null;
+    this.log = this.frozen = null;
+    this.held = this.heldBase = null;
+    clearTimeout(this.heldTimer);
     this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
 
@@ -334,12 +467,22 @@ class Store {
    */
   addElement(type: NodeType, tag: string = tagFor(type), defaults: Partial<SceneNode> = {}): void {
     const scene = this.scene;
-    const bridge = this.bridge;
-    if (!scene || !bridge) return;
-    const sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
+    const surface = this.surface;
+    if (!scene || !surface) return;
+    let sel = this.state.selected ? scene.nodes[this.state.selected] : undefined;
+    let into = !!sel && surface.isContainer(sel);
+    // A tabs node (mocks) draws one pane, its children: a new widget goes into the shown pane, or next to
+    // the tabs, never in as another pane nobody would see.
+    if (sel?.type === "tabs") {
+      const pane = scene.nodes[shownPane(sel) ?? ""];
+      into = !!pane && surface.isContainer(pane);
+      if (pane && into) sel = pane;
+    } else if (!into && sel?.parent && scene.nodes[sel.parent]?.type === "tabs") {
+      sel = scene.nodes[sel.parent];
+    }
     let parent = scene.rootId;
     let index = scene.nodes[scene.rootId]!.children.length;
-    if (sel && isContainer(sel)) {
+    if (sel && into) {
       parent = sel.id;
       index = sel.children.length;
     } else if (sel?.parent) {
@@ -353,7 +496,7 @@ class Store {
       : scene.nodes[parent]!.children.map((c) => scene.nodes[c]!).find((c) => c.tag === tag);
     if (twin?.props.class) defaults = { ...defaults, props: { ...defaults.props, class: twin.props.class } };
     const node: SceneNode = {
-      id: bridge.newId(),
+      id: surface.newId(),
       type,
       tag,
       parent,
@@ -363,6 +506,7 @@ class Store {
       props: {},
       ...defaults,
     };
+    surface.place?.(node, parent, sel && sel.id !== parent ? sel.id : undefined);
     this.edit({ op: "add", parent, index, nodes: [node] });
     this.set({ selected: node.id });
   }
@@ -385,12 +529,6 @@ class Store {
     const item = { id: ++this.activitySeq, at: Date.now(), kind, text };
     this.set({ activity: [item, ...this.state.activity].slice(0, 200) });
   }
-}
-
-const CONTAINER_TAGS = new Set(["div", "section", "main", "header", "footer", "nav", "article", "aside", "form", "ul", "ol"]);
-
-function isContainer(n: SceneNode): boolean {
-  return CONTAINER_TAGS.has(n.tag ?? "") || n.type === "root";
 }
 
 export const store = new Store();

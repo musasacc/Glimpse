@@ -4,6 +4,8 @@ import { DEVICE_WIDTH, store, useStore } from "./store";
 import { TalkPopover } from "./Talk";
 import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
 import { loop, useLoopLive } from "./loop";
+import { watchUpdates, whenRendered } from "./hmr";
+import { PreviewError } from "./PreviewError";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -36,6 +38,8 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const live = useRef<Live>({ marquee: null, region: null }).current;
   const cancelGesture = useRef(() => {});
   const [draft, setDraft] = useState<Draft | null>(null);
+  /** The React app crashed while rendering and left a blank page: why, until it renders again. */
+  const [crash, setCrash] = useState<string | null>(null);
 
   // Re-render the overlay when the page scrolls or resizes.
   const rerender = () => setTick((t) => t + 1);
@@ -46,6 +50,9 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
       setDraft(null);
     };
   }, []);
+
+  // A React app runs with the edits off its DOM (see Store.interact).
+  useEffect(() => store.interact(mode === "interact"), [mode]);
 
   // Tools and half-done gestures belong to edit mode.
   useEffect(() => {
@@ -61,17 +68,41 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
     if (doc) setPageCursor(doc, crosshair ? "crosshair" : null);
   }, [crosshair]);
 
+  useEffect(() => {
+    const onMessage = (ev: MessageEvent) => {
+      // Only our own page (compare and variant frames run the live client too), once attached to it.
+      if (ev.source !== iframe.current?.contentWindow) return;
+      if (ev.data?.glimpse === "error") setCrash(ev.data.blank ? String(ev.data.message ?? "") : null);
+      // The edits were already replayed (glimpse:after-morph, or after-update for React).
+      if (ev.data?.glimpse === "morphed" && store.bridge?.doc === iframe.current?.contentDocument) {
+        // The update after a crash still leaves it blank; one that renders the app again ends it.
+        if (hasContent(store.bridge.doc)) setCrash(null);
+        rerender();
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
   const onLoad = () => {
+    setCrash(null);
     const doc = iframe.current?.contentDocument;
     if (!doc) return;
+    // A React page renders after the load event: start once its first render has settled (if it's still the page).
+    whenRendered(doc, () => iframe.current?.contentDocument === doc && attachPage(doc));
+  };
+
+  const attachPage = (doc: Document) => {
     store.attach(doc);
     // The AI saved the page and the live client morphs it in place (only our own page:
     // compare and variant frames run the client too). The edits come off around it.
-    doc.defaultView?.addEventListener("glimpse:before-morph", () => store.beforeMorph());
+    doc.defaultView?.addEventListener("glimpse:before-morph", () => store.bridge?.doc === doc && store.beforeMorph());
     doc.defaultView?.addEventListener("glimpse:after-morph", () => {
+      if (store.bridge?.doc !== doc) return;
       store.pageChanged();
       rerender();
     });
+    if (modeRef.current === "interact") store.interact(true);
     setDraft(null);
     cancelGesture.current = installPageHandlers(doc, {
       mode: () => modeRef.current,
@@ -80,6 +111,15 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
       live,
       onPress: () => setDraft(null),
       onRegion: (rect) => setDraft(regionTarget(rect)),
+    });
+    // React pages: our edits come off right before each HMR update and go back on once it has settled.
+    watchUpdates(doc, {
+      before: () => store.bridge?.doc === doc && store.beforeUpdate(),
+      after: () => {
+        if (store.bridge?.doc !== doc) return;
+        store.pageChanged();
+        rerender();
+      },
     });
     setPageCursor(doc, modeRef.current === "edit" && store.state.tool === "region" ? "crosshair" : null);
     rerender();
@@ -100,6 +140,14 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
   const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
   const draftRect = draft ? regionRect({ op: "region", id: "draft", text: "", ...draft }) : null;
+
+  if (state.previewError) {
+    return (
+      <div className="canvas">
+        <PreviewError />
+      </div>
+    );
+  }
 
   if (!state.entryExists) {
     return (
@@ -126,6 +174,16 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
         <div className="banner">
           Some edits could not be replayed after the AI changed the page.
           <button className="btn" onClick={() => store.set({ stale: false })}>
+            OK
+          </button>
+        </div>
+      )}
+      {crash !== null && (
+        <div className="banner" role="alert" style={{ maxWidth: "min(720px, calc(100% - 32px))" }}>
+          <span className="ellipsis" title={crash}>
+            The app crashed while rendering{crash ? `: ${crash}` : ""}. The full error is in the preview's console; the page comes back once the code is fixed.
+          </span>
+          <button className="btn" onClick={() => setCrash(null)}>
             OK
           </button>
         </div>
@@ -422,6 +480,7 @@ function setPageCursor(doc: Document, cursor: string | null): void {
 
 /** Inline text editing: the element becomes contentEditable until Enter/blur. */
 export function editText(id: string): void {
+  if (store.sceneSurface?.editText) return store.sceneSurface.editText(id);
   const el = store.bridge?.el(id) as HTMLElement | undefined;
   const node = store.scene?.nodes[id];
   if (!el || !node || node.children.length > 0) return;
@@ -462,6 +521,11 @@ export function editText(id: string): void {
 }
 
 /** Editor shortcuts; installed on both the editor window and the page. */
+/** The page shows something (a React app that crashed while rendering leaves an empty root). */
+function hasContent(doc: Document): boolean {
+  return !!doc.body && (!!doc.body.innerText.trim() || !!doc.body.querySelector("img, svg, canvas, video, input, button"));
+}
+
 export function handleKey(e: KeyboardEvent, openTalk: () => void): void {
   const t = e.target as HTMLElement;
   if (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;

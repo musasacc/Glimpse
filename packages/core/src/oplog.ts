@@ -96,6 +96,17 @@ export class OpLog {
     }
   }
 
+  /**
+   * Forget the last step without undoing it: what it changed stays in the scene,
+   * but it is no longer an edit (nor undoable). For a step whose undo failed and
+   * that the caller gives up on. False when there is nothing to forget.
+   */
+  dropLast(): boolean {
+    if (!this.done.pop()) return false;
+    this.emit();
+    return true;
+  }
+
   /** Drop all edits and return to the base scene. */
   discard(): void {
     this.current = cloneScene(this.base);

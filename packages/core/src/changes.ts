@@ -111,11 +111,14 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
     if (!f) continue;
     const { x: bx, y: by, w: bw, h: bh } = b.layout;
     const { x: fx, y: fy, w: fw, h: fh } = f.layout;
+    // A mock (terminal UI, native GUI) places nodes by their layout. One that changed parent (group,
+    // ungroup) but kept its place on screen only has new coordinates relative to that parent.
+    const moved = b.parent !== f.parent && PLACED.has(final.target) ? !samePlace(base, final, id) : bx !== fx || by !== fy;
     if (bw !== fw || bh !== fh) {
-      edits.push(withMeta(final, f, { op: "resize", node: id, from: b.layout, to: f.layout }, resizeIntent(b, f)));
-    } else if (bx !== fx || by !== fy) {
+      edits.push(withMeta(final, f, { op: "resize", node: id, from: b.layout, to: f.layout }, resizeIntent(base, final, b, f)));
+    } else if (moved) {
       edits.push(
-        withMeta(final, f, { op: "move", node: id, from: { x: bx, y: by }, to: { x: fx, y: fy } }, moveIntent(final, b, f)),
+        withMeta(final, f, { op: "move", node: id, from: { x: bx, y: by }, to: { x: fx, y: fy } }, moveIntent(base, final, b, f)),
       );
     }
     if ((b.props.text ?? "") !== (f.props.text ?? "")) {
@@ -150,6 +153,27 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = []): Change[] 
   }
 
   return [...deletes, ...adds, ...reorders, ...edits, ...notes];
+}
+
+/** Targets whose layout places nodes (rather than being measured from a page that lays itself out). */
+const PLACED = new Set<Target>(["tui", "native"]);
+
+/** The node is at the same place relative to the root in both scenes. */
+function samePlace(base: Scene, final: Scene, id: string): boolean {
+  const a = absPos(base, id);
+  const b = absPos(final, id);
+  return a.x === b.x && a.y === b.y;
+}
+
+/** Where a node is relative to the root: its layout plus every ancestor's offset. */
+function absPos(scene: Scene, id: string): { x: number; y: number } {
+  let x = 0;
+  let y = 0;
+  for (let n = scene.nodes[id]; n && n.parent !== null; n = scene.nodes[n.parent]) {
+    x += n.layout.x;
+    y += n.layout.y;
+  }
+  return { x, y };
 }
 
 export function describeNode(n: SceneNode): string {
@@ -277,13 +301,23 @@ function positionIntent(scene: Scene, n: SceneNode): string {
   return parts.join(", ");
 }
 
-function moveIntent(scene: Scene, b: SceneNode, f: SceneNode): string {
-  const dx = f.layout.x - b.layout.x;
-  const dy = f.layout.y - b.layout.y;
+/** "3px right and 2px down", or "1 cell right" in a terminal UI (laid out in character cells). */
+function shift(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
+  // Layouts are relative to the parent: after a group or ungroup on a mock, compare places on screen instead.
+  const across = b.parent !== f.parent && PLACED.has(scene.target);
+  const from = across ? absPos(base, b.id) : b.layout;
+  const to = across ? absPos(scene, f.id) : f.layout;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const unit = (n: number) => (scene.target === "tui" ? ` cell${Math.abs(n) === 1 ? "" : "s"}` : "px");
   const parts: string[] = [];
-  if (dx) parts.push(`${Math.abs(dx)}px ${dx > 0 ? "right" : "left"}`);
-  if (dy) parts.push(`${Math.abs(dy)}px ${dy > 0 ? "down" : "up"}`);
-  let hint = `moved ${parts.join(" and ")}`;
+  if (dx) parts.push(`${Math.abs(dx)}${unit(dx)} ${dx > 0 ? "right" : "left"}`);
+  if (dy) parts.push(`${Math.abs(dy)}${unit(dy)} ${dy > 0 ? "down" : "up"}`);
+  return parts.join(" and ");
+}
+
+function moveIntent(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
+  let hint = `moved ${shift(base, scene, b, f)}`;
 
   // Name the closest sibling to anchor the new position semantically.
   const cx = f.layout.x + f.layout.w / 2;
@@ -307,19 +341,24 @@ function moveIntent(scene: Scene, b: SceneNode, f: SceneNode): string {
     const p = getNode(scene, f.parent).layout;
     const left = f.layout.x;
     const right = p.w - (f.layout.x + f.layout.w);
+    // Snap tolerance: a few pixels, or one character cell in a terminal.
+    const tol = scene.target === "tui" ? 1 : 4;
     // Only describe alignment when the element still fits inside its parent.
-    if (left >= -4 && right >= -4 && f.layout.w < p.w - 8) {
-      if (Math.abs(left - right) <= 4) hint += "; horizontally centered in parent";
-      else if (right <= 4) hint += "; aligned to the parent's right edge";
-      else if (left <= 4) hint += "; aligned to the parent's left edge";
-    } else if (left < -4 || right < -4) {
+    if (left >= -tol && right >= -tol && f.layout.w < p.w - 2 * tol) {
+      if (Math.abs(left - right) <= tol) hint += "; horizontally centered in parent";
+      else if (right <= tol) hint += "; aligned to the parent's right edge";
+      else if (left <= tol) hint += "; aligned to the parent's left edge";
+    } else if (left < -tol || right < -tol) {
       hint += "; now sticks out of its parent";
     }
   }
   return hint;
 }
 
-function resizeIntent(b: SceneNode, f: SceneNode): string {
+function resizeIntent(base: Scene, scene: Scene, b: SceneNode, f: SceneNode): string {
   const fmt = (n: number) => (n > 0 ? `+${n}` : `${n}`);
-  return `size ${b.layout.w}×${b.layout.h} → ${f.layout.w}×${f.layout.h} (${fmt(f.layout.w - b.layout.w)}w, ${fmt(f.layout.h - b.layout.h)}h)`;
+  const size = `size ${b.layout.w}×${b.layout.h} → ${f.layout.w}×${f.layout.h} (${fmt(f.layout.w - b.layout.w)}w, ${fmt(f.layout.h - b.layout.h)}h)`;
+  // Resizing from the left or top edge also moves the element.
+  const moved = shift(base, scene, b, f);
+  return moved ? `${size}; also moved ${moved}` : size;
 }
