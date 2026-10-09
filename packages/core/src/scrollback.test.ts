@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Scrollback } from "./scrollback.js";
+import { Scrollback, trimOutput } from "./scrollback.js";
 
 describe("Scrollback", () => {
   it("keeps the last `limit` characters", () => {
@@ -28,5 +28,17 @@ describe("Scrollback", () => {
       if (i % 17 === 0) expect(s.text()).toBe(ref);
     }
     expect(s.text()).toBe(ref);
+  });
+
+  it("cuts at a safe boundary once over the limit", () => {
+    const s = new Scrollback(12);
+    s.push("first line\n");
+    s.push("ab\x1b[1mcd\nnext");
+    expect(s.text()).toBe("next");
+    expect(s.text()).toBe(trimOutput("first line\nab\x1b[1mcd\nnext", 12));
+    const e = new Scrollback(6);
+    e.push("xyzab");
+    e.push("\x1b[1mcd");
+    expect(e.text()).toBe("\x1b[1mcd");
   });
 });

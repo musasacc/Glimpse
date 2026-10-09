@@ -87,6 +87,7 @@ interface Dock {
 const NO_TERMINAL: TerminalInfo = { command: null, running: false, mode: "pty", fallbackReason: null, autoRestart: true, exit: null, error: null };
 /** Keep this much terminal output for a pane that mounts later (the server keeps 256 KB). */
 const TERM_BUFFER = 512 * 1024;
+
 const DOCK_KEY = "glimpse.dock";
 
 class SceneMode {
@@ -401,8 +402,9 @@ class SceneMode {
     sendLive({ type: "term-input", data });
   }
 
-  resize(cols: number, rows: number): void {
-    sendLive({ type: "term-resize", cols, rows });
+  /** The terminal pane's size. `focus`: this window is the one the human is using now, so its size wins. */
+  resize(cols: number, rows: number, focus = false): void {
+    sendLive({ type: "term-resize", cols, rows, ...(focus && { focus: true }) });
   }
 
   setAutoRestart(enabled: boolean): void {

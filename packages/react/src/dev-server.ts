@@ -46,6 +46,11 @@ export interface ReactPreview {
   /** Serve a request under `base` (Vite's middlewares). `next` runs when Vite doesn't answer. */
   handle(req: IncomingMessage, res: ServerResponse, next?: (err?: unknown) => void): void;
   /**
+   * Whether the project's `server.proxy` (in its vite.config) sends this request URL on, as `vite` would. The
+   * app calls such paths root-absolute (fetch("/api/items")): pass them to `handle` unchanged, not under `base`.
+   */
+  proxies(url: string): boolean;
+  /**
    * Whether an HTTP upgrade is Vite's HMR (or HMR ping) websocket. Glimpse's
    * upgrade handler destroys sockets that aren't for /__glimpse/ws; it must
    * skip these instead, or HMR never connects.
@@ -92,6 +97,16 @@ export async function createReactPreview(opts: ReactPreviewOptions): Promise<Rea
   };
   if (opts.config) config = vite.mergeConfig(config, opts.config) as InlineConfig;
   const server = await vite.createServer(config);
+  // Matched like Vite's proxy middleware: a key starting with ^ is a regular expression, any other a prefix.
+  const proxyRules = Object.keys(server.config.server.proxy ?? {}).map((context) => {
+    if (!context.startsWith("^")) return (url: string) => url.startsWith(context);
+    try {
+      const re = new RegExp(context);
+      return (url: string) => re.test(url);
+    } catch {
+      return () => false;
+    }
+  });
 
   const fallback = (res: ServerResponse) => (err?: unknown) => {
     if (res.headersSent) return void res.end();
@@ -114,6 +129,7 @@ export async function createReactPreview(opts: ReactPreviewOptions): Promise<Rea
       }
       server.middlewares(req, res, next ?? fallback(res));
     },
+    proxies: (url) => proxyRules.some((match) => match(url)),
     isViteUpgrade(req) {
       const protocols = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((p) => p.trim());
       if (!protocols.includes("vite-hmr") && !protocols.includes("vite-ping")) return false;

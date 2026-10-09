@@ -1,6 +1,6 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import type { Layout, Scene, SceneNode, SceneTheme } from "@glimpse/core";
-import { samePreviewFor } from "./scene-geometry";
+import { samePreviewFor, selectedTab, shownPane } from "./scene-geometry";
 
 /**
  * Draws a native GUI mock: a desktop window in the chosen platform's look
@@ -96,7 +96,7 @@ function NativeNodeView({ id, scene, preview, base, rev }: NodeProps) {
   const n = scene.nodes[id];
   if (!n) return null;
   const l = preview?.get(id) ?? n.layout;
-  const pane = n.type === "tabs" ? n.children[num(n.props.selected) ?? 0] : undefined;
+  const pane = n.type === "tabs" ? shownPane(n) : undefined;
   return (
     <div className={`nat-node${n.hidden ? " is-hidden" : ""}`} data-scene-id={id} style={{ left: l.x, top: l.y, width: l.w, height: l.h }}>
       {widget(n, l, base)}
@@ -143,6 +143,25 @@ function css(n: SceneNode): CSSProperties {
     if (v !== undefined && v !== "") out[key.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = cssValue(key, v);
   }
   return out as CSSProperties;
+}
+
+/**
+ * Where the preview serves an image the scene names: a URL as it is, a path relative to the scene file's
+ * folder `base` (or to the project, with a leading slash), backslashes as slashes, each part encoded.
+ * Undefined for a path outside the project, which the preview can't serve.
+ */
+export function imageUrl(src: string, base: string): string | undefined {
+  const s = src.trim();
+  if (/^[a-z][a-z0-9+.-]+:/i.test(s) || s.startsWith("//")) return s;
+  if (/^[a-z]:/i.test(s)) return undefined; // a Windows absolute path
+  const path = s.split("\\").join("/");
+  const parts: string[] = [];
+  for (const part of (path.startsWith("/") ? path : `${base}/${path}`).split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part !== "..") parts.push(part);
+    else if (!parts.pop()) return undefined;
+  }
+  return parts.length ? `/preview/${parts.map(encodeURIComponent).join("/")}` : undefined;
 }
 
 function num(v: string | undefined): number | undefined {
@@ -282,11 +301,12 @@ function widget(n: SceneNode, l: Layout, base: string): ReactNode {
       );
     }
     case "tabs": {
-      const sel = num(n.props.selected) ?? 0;
+      const labels = lines(n.props.items);
+      const sel = selectedTab(n, labels.length);
       return (
         <div className={`nat-tabs${disabled}`} style={style}>
           <div className="nat-tabbar">
-            {lines(n.props.items).map((t, i) => (
+            {labels.map((t, i) => (
               <span key={i} className={i === sel ? "active" : ""}>
                 {t}
               </span>
@@ -378,7 +398,7 @@ function widget(n: SceneNode, l: Layout, base: string): ReactNode {
       );
     }
     case "image": {
-      const src = n.props.src && !/^[a-z]+:/i.test(n.props.src) ? `/preview/${[base, n.props.src].filter(Boolean).join("/")}` : undefined;
+      const src = n.props.src ? imageUrl(n.props.src, base) : undefined;
       return (
         <div className="nat-image" style={style}>
           {src ? <img src={src} alt={n.props.alt ?? ""} draggable={false} /> : <span>{n.props.alt ?? "Image"}</span>}

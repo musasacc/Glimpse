@@ -7,6 +7,9 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { Scrollback } from "@glimpse/core";
 
+/** Re-exported: the terminal's scrollback is cut with it (see Scrollback). */
+export { trimOutput } from "@glimpse/core";
+
 /**
  * Runs the real terminal app inside Glimpse, next to its scene mock.
  *
@@ -244,6 +247,30 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
         // The process exited between the check and the resize.
       }
     }
+  }
+
+  /**
+   * Make a full-screen app draw its whole screen again, for an editor that just caught up from the scrollback
+   * (which may hold only the latest updates of the screen): the pty is resized by a row and back, so the app
+   * gets SIGWINCH and repaints. Nothing happens for pipes.
+   */
+  redraw(): void {
+    const run = this.current;
+    if (!run?.pty || run.done) return;
+    const { cols, rows } = this.size;
+    try {
+      run.pty.resize(cols, rows > 2 ? rows - 1 : rows + 1);
+    } catch {
+      return; // the process exited between the check and the resize
+    }
+    setTimeout(() => {
+      if (this.current !== run || run.done) return;
+      try {
+        run.pty?.resize(this.size.cols, this.size.rows);
+      } catch {
+        // The process exited meanwhile.
+      }
+    }, 50).unref();
   }
 
   /**

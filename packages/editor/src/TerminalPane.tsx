@@ -123,6 +123,13 @@ export function TerminalPane({ target }: { target: SceneTarget }) {
     if (store.state.connected && sent.current.cols) sceneMode.resize(sent.current.cols, sent.current.rows);
   }, [store.state.connected]);
 
+  // Several editors (two tabs, the desktop app and a browser) share one app: the window in use sets its size.
+  useEffect(() => {
+    const claim = () => sent.current.cols && sceneMode.resize(sent.current.cols, sent.current.rows, true);
+    window.addEventListener("focus", claim);
+    return () => window.removeEventListener("focus", claim);
+  }, []);
+
   const command = t.command ?? (typeof sm.extras.meta?.command === "string" ? sm.extras.meta.command : null);
   const exited = !t.running && t.exit;
   const status = t.running ? "running" : exited ? `exited${exited.code !== null ? ` (${exited.code})` : exited.signal ? ` (${exited.signal})` : ""}` : t.command ? "stopped" : "not started";

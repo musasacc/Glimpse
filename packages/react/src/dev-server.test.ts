@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import { request } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -131,6 +131,38 @@ export default defineConfig({ plugins: [react()], server: { hmr: { clientPort: 4
       expect((await handshake(fx.port, "/preview/", "vite-hmr")).status).toBe(101);
     } finally {
       await fx.close();
+    }
+  }, 60_000);
+
+  it("knows which root-absolute requests the project's server.proxy sends on, and sends them", async () => {
+    const backend = createServer((req, res) => res.end(`backend ${req.method} ${req.url}`));
+    await new Promise<void>((ok) => backend.listen(0, "127.0.0.1", ok));
+    const target = `http://127.0.0.1:${(backend.address() as { port: number }).port}`;
+    const fx = await serveFixture("basic", {
+      viteConfig: `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+export default defineConfig({ plugins: [react()], server: { proxy: { "/api": "${target}", "^/v\\\\d/": "${target}" } } });
+`,
+    });
+    try {
+      expect(fx.preview.proxies("/api/items?x=1")).toBe(true);
+      expect(fx.preview.proxies("/v2/users")).toBe(true);
+      expect(fx.preview.proxies("/preview/src/App.tsx")).toBe(false);
+      expect(fx.preview.proxies("/logo.svg")).toBe(false);
+      // Handed to the preview unchanged (not under /preview/), Vite's proxy answers it.
+      const res = await new Promise<string>((ok, fail) => {
+        const srv = createServer((req, r) => fx.preview.handle(req, r));
+        srv.listen(0, "127.0.0.1", () => {
+          fetch(`http://127.0.0.1:${(srv.address() as { port: number }).port}/api/items?x=1`)
+            .then((r) => r.text())
+            .then(ok, fail)
+            .finally(() => srv.close());
+        });
+      });
+      expect(res).toBe("backend GET /api/items?x=1");
+    } finally {
+      await fx.close();
+      backend.close();
     }
   }, 60_000);
 

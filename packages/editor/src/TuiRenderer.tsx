@@ -1,7 +1,7 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import type { Layout, Scene, SceneNode } from "@glimpse/core";
-import { samePreviewFor, type Cell } from "./scene-geometry";
-import { BORDER_FG, cellWidth, fitCells, mix, SCREEN_BG, SCREEN_FG, textStyle, tuiColor, wrapCells, type TextStyle } from "./tui-colors";
+import { samePreviewFor, selectedTab, shownPane, type Cell } from "./scene-geometry";
+import { BORDER_FG, cellWidth, fitCells, graphemes, mix, padCells, SCREEN_BG, SCREEN_FG, textStyle, tuiColor, wrapCells, type TextStyle } from "./tui-colors";
 
 /**
  * Draws a terminal UI mock: every widget of the scene on a character-cell grid,
@@ -71,7 +71,7 @@ function TuiNodeView({ id, ctx }: { id: string; ctx: Ctx }) {
   const fg = tuiColor(n.style.color, bg) ?? ctx.fg;
   const inner: Ctx = { ...ctx, bg, fg };
   // Tabs show only the pane of the selected tab.
-  const pane = n.type === "tabs" ? n.children[index(n.props.selected) ?? 0] : undefined;
+  const pane = n.type === "tabs" ? shownPane(n) : undefined;
   return (
     <div
       className={`tui-node${n.hidden ? " is-hidden" : ""}`}
@@ -120,17 +120,18 @@ function glyphs(text: string, cell: Cell): ReactNode[] {
   const out: ReactNode[] = [];
   let run = "";
   let k = 0;
-  for (const ch of text) {
-    const cp = ch.codePointAt(0)!;
-    if (cp < 0x2000) {
-      run += ch;
+  // Grapheme by grapheme: an emoji sequence (👩‍💻, a flag, ✅︎) is one glyph in one box.
+  for (const g of graphemes(text)) {
+    const w = cellWidth(g);
+    if (g.codePointAt(0)! < 0x2000 && w === 1) {
+      run += g;
       continue;
     }
     if (run) out.push(run);
     run = "";
     out.push(
-      <span key={k++} className="tui-g" style={{ width: cellWidth(ch) * cell.w }}>
-        {ch}
+      <span key={k++} className="tui-g" style={{ width: w * cell.w }}>
+        {g}
       </span>,
     );
   }
@@ -476,9 +477,10 @@ function draw(n: SceneNode, size: Size, ctx: Ctx): ReactNode {
       );
 
     case "tabs": {
-      const sel = index(n.props.selected) ?? 0;
+      const labels = lines(n.props.items);
+      const sel = selectedTab(n, labels.length);
       let x = box.x;
-      const parts = lines(n.props.items).map((label, i) => {
+      const parts = labels.map((label, i) => {
         const at = x;
         const width = cellWidth(label) + 2;
         x += width + 1;
@@ -580,7 +582,7 @@ function Table({ n, box, pen, cell }: { n: SceneNode; box: Layout; pen: Pen; cel
   const rows = lines(n.props.items).map((r) => r.split("\t"));
   const cols = Math.max(header.length, ...rows.map((r) => r.length));
   const widths = Array.from({ length: cols }, (_, c) => Math.max(cellWidth(header[c] ?? ""), ...rows.map((r) => cellWidth(r[c] ?? ""))) + 2);
-  const line = (cells: string[]) => fitCells(widths.map((wd, c) => ` ${cells[c] ?? ""}`.padEnd(wd)).join(""), box.w);
+  const line = (cells: string[]) => fitCells(widths.map((wd, c) => padCells(` ${cells[c] ?? ""}`, wd)).join(""), box.w);
   const sel = index(n.props.selected);
   const at = header.length ? 1 : 0;
   return (

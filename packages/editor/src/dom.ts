@@ -62,7 +62,8 @@ export class DomBridge {
         const off = m && (child as HTMLElement).style.translate === m.translate ? m : { dx: 0, dy: 0 };
         this.origins.set(id, { x: scene.nodes[id]!.layout.x - off.dx, y: scene.nodes[id]!.layout.y - off.dy });
         scene.nodes[parentId]!.children.push(id);
-        walk(child, id, rect);
+        // An inline <svg> is one picture: its paths and groups aren't layers of their own.
+        if (!isSvgRoot(child)) walk(child, id, rect);
       }
     };
     walk(body, "root", body.getBoundingClientRect());
@@ -174,8 +175,9 @@ export class DomBridge {
           el.style.height = p.size.height;
           delete p.size;
         } else {
-          el.style.width = `${op.to.w}px`;
-          el.style.height = `${op.to.h}px`;
+          const size = cssSize(el, op.to.w, op.to.h);
+          el.style.width = size.width;
+          el.style.height = size.height;
         }
         tidyStyle(el);
         return;
@@ -350,8 +352,13 @@ function isEditable(el: Element): boolean {
   return !SKIP.has(el.tagName) && !el.hasAttribute("data-glimpse-internal");
 }
 
+function isSvgRoot(el: Element): boolean {
+  return el.localName === "svg";
+}
+
 function nodeType(el: Element): NodeType {
-  switch (el.tagName) {
+  // Elements of an HTML page report upper-case tag names, but SVG ones (an inline <svg>) lower-case.
+  switch (el.tagName.toUpperCase()) {
     case "BUTTON":
       return "button";
     case "A":
@@ -390,6 +397,20 @@ export function tagFor(type: NodeType): string {
   return { button: "button", text: "p", input: "input", image: "img", link: "a", list: "ul", nav: "nav", card: "div", box: "div" }[
     type as string
   ] ?? "div";
+}
+
+/**
+ * CSS width and height that give `el` a box of w×h on screen. Layouts are border boxes (getBoundingClientRect),
+ * but a content-box element's width and height leave out its padding and border.
+ */
+export function cssSize(el: Element, w: number, h: number): { width: string; height: string } {
+  const cs = el.ownerDocument.defaultView?.getComputedStyle(el);
+  if (!cs || cs.boxSizing !== "content-box") return { width: `${w}px`, height: `${h}px` };
+  const px = (v: string) => Number.parseFloat(v) || 0;
+  const dw = px(cs.paddingLeft) + px(cs.paddingRight) + px(cs.borderLeftWidth) + px(cs.borderRightWidth);
+  const dh = px(cs.paddingTop) + px(cs.paddingBottom) + px(cs.borderTopWidth) + px(cs.borderBottomWidth);
+  const round = (n: number) => Math.round(Math.max(0, n) * 100) / 100;
+  return { width: `${round(w - dw)}px`, height: `${round(h - dh)}px` };
 }
 
 /**
