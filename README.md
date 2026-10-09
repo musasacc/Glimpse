@@ -8,13 +8,13 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot-home.png" alt="Glimpse home: describe a UI for your agent" width="900" />
+  <img src="docs/screenshot-home.png" alt="Glimpse home: describe the UI you want" width="900" />
 </p>
 
 ---
 
-Tell Glimpse what you want, for example *"a website with 5 buttons and a moving donut"*. Your agent (Claude Code, Codex,
-Antigravity, Cursor, Gemini CLI, …) builds it, and you **watch it appear live**. Then, instead of describing changes
+Tell Glimpse what you want, for example *"a website with 5 buttons and a moving donut"*. Glimpse has the AI build it
+(Claude Code, Codex or your Claude API key) and you **watch it appear live**. Then, instead of describing changes
 in words, you **make** them: drag things around, delete buttons, add new ones, change text and colors, or point at an
 element and say what you want. Finally, either let **Glimpse write the changes into the code** itself, or
 **send them to your AI**, which applies them 1:1.
@@ -25,7 +25,7 @@ element and say what you want. Finally, either let **Glimpse write the changes i
 
 ## Features
 
-- **Ask from Glimpse.** Describe a UI on the home screen; your connected agent receives it and builds it.
+- **Just type.** Describe a UI on the home screen and Glimpse builds it. It uses Claude Code or Codex if one is installed, otherwise your Claude API key. Nothing to connect.
 - **Live mode.** Every file the AI saves shows up instantly. CSS is hot-swapped, HTML is morphed in place without a reload, and whatever the AI touched briefly glows. A live activity feed shows what's happening.
 - **Edit anything visually.** Select, drag to move, resize, nudge with the arrow keys, double-click to edit text, delete, duplicate, hide, lock, change the element type, and restyle (colors, font, spacing, radius, border, shadow, opacity).
 - **Add elements** (button, heading, text, link, input, image, card). New elements pick up the look of their neighbors.
@@ -33,11 +33,11 @@ element and say what you want. Finally, either let **Glimpse write the changes i
 - **Edit behavior.** "On click → open modal / go to page / call API / toggle element". Logic instructions go straight to the AI.
 - **Two ways to finish:**
   - **Edit source**: Glimpse writes text, style, attribute, delete, add and reorder edits straight into your files, with a diff preview and an automatic backup. Formatting is preserved.
-  - **Send to AI**: your agent gets numbered instructions with exact `file:line:col` locations and intent hints such as "now right of the logo", and applies them. Anything Edit source can't do safely (layout moves, logic, notes) is handed to the AI in the same click.
+  - **Send to AI**: the AI gets numbered instructions with exact `file:line:col` locations and intent hints such as "now right of the logo", and applies them. Anything Edit source can't do safely (layout moves, logic, notes) is handed to the AI in the same click.
 - **History** of every request and handoff, plus **undo/redo**, **desktop / tablet / mobile** widths, and **Edit / Interact** modes.
 - **Versions, compare and variants.** Scrub through every version, compare before/after with a slider, and ask for 2–4 variants of an element side by side.
 - **Not just web pages.** HTML, **React/Vite** apps (edits written into your JSX), **terminal UIs** and **native desktop GUIs** (an editable mock next to the real app running in Glimpse's terminal). See [Targets](#targets).
-- **Works with any agent**: a built-in **MCP server**, plus a CLI for agents without MCP. Also as a **desktop app**.
+- **Desktop app** for macOS, Windows and Linux, or `glimpse open` in the browser. Other agents (Cursor, Gemini CLI, …) can drive Glimpse over its **MCP server** or CLI.
 
 ## Install
 
@@ -76,9 +76,19 @@ Try it:
 glimpse open examples/donut
 ```
 
-## Connect your agent (MCP)
+## The AI
 
-Glimpse ships an MCP server. Add it once and your agent gets the tools `glimpse_open`, `glimpse_wait_for_done`,
+Glimpse picks the AI by itself (**AI settings** in the sidebar to change it):
+
+1. **Claude Code**, if the `claude` command is installed (uses your Claude subscription),
+2. **Codex**, if the `codex` command is installed,
+3. otherwise a **Claude API key** you paste once in AI settings.
+
+It runs in your project folder, and every file it writes shows up live. Press **Stop** to cancel a run.
+
+## Other agents (MCP)
+
+To drive Glimpse from an agent you already work in instead, add its MCP server. The agent gets the tools `glimpse_open`, `glimpse_wait_for_done`,
 `glimpse_get_changes`, `glimpse_status`, `glimpse_update`, `glimpse_close`, and for terminal UIs and native GUIs
 `glimpse_scene_schema` and `glimpse_scene_validate`.
 
