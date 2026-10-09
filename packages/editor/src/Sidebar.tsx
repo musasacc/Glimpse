@@ -4,7 +4,9 @@ import * as I from "./icons";
 import * as L from "./loop-icons";
 import { Layers } from "./Panels";
 import { ScenePalette } from "./ScenePalette";
-import { store, useStore, type View } from "./store";
+import { currentEngine, store, useStore, type View } from "./store";
+import { engineName } from "./agent";
+import { Mark } from "./Logo";
 
 
 const PALETTE: { label: string; icon: ReactNode; type: NodeType; tag: string; defaults: Partial<SceneNode> }[] = [
@@ -37,12 +39,16 @@ const PALETTE: { label: string; icon: ReactNode; type: NodeType; tag: string; de
 export function Sidebar() {
   const state = useStore();
   const go = (view: View) => store.set({ view });
+  const engine = currentEngine(state);
+  const ready = !!state.agentRun || (engine === "external" ? state.agentWaiting : engine !== "none");
 
   return (
     <nav className="sidebar" aria-label="Glimpse">
       <div className="side-top">
         <div className="brand">
-          <img src="/favicon.svg" alt="" />
+          <span className="brand-mark">
+            <Mark size={22} />
+          </span>
           glimpse
         </div>
         <button className="icon-btn" title="Hide sidebar" onClick={() => store.set({ sidebarOpen: false })}>
@@ -99,14 +105,19 @@ export function Sidebar() {
       </div>
 
       <div className="side-bottom">
-        <span className={`agent-dot${state.agentWaiting ? " on" : ""}`} />
+        <span className={`agent-dot${ready ? " on" : ""}${state.agentRun ? " busy" : ""}`} />
         <div className="grow">
-          <div className="agent-name">{state.agentWaiting ? "Agent listening" : "No agent listening"}</div>
-          <div className="agent-sub">{state.connected ? "Live · files sync instantly" : "Reconnecting…"}</div>
+          <div className="agent-name">{engineName(state.agentRun?.engine ?? engine)}</div>
+          <div className="agent-sub">
+            {!state.connected ? "Reconnecting…"
+            : state.agentRun ? "Building…"
+            : engine === "external" && !state.agentWaiting ? "Waiting for your agent"
+            : "Live · files sync instantly"}
+          </div>
         </div>
-        <a className="icon-btn" href="https://github.com/musasacc/Glimpse/blob/main/docs/agents.md" target="_blank" rel="noreferrer" title="Connect an agent">
-          <I.Help />
-        </a>
+        <button className="icon-btn" title="AI settings" aria-label="AI settings" onClick={() => store.openAiSettings()}>
+          <I.Settings />
+        </button>
       </div>
     </nav>
   );

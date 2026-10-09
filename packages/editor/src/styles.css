@@ -98,10 +98,15 @@ select {
   font-size: 16px;
   letter-spacing: -0.4px;
 }
-.brand img {
+.brand-mark {
+  display: grid;
+  place-items: center;
   width: 24px;
   height: 24px;
   border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
 }
 .side-nav {
   display: flex;
@@ -268,9 +273,9 @@ select {
   position: relative;
 }
 .watermark {
-  width: min(360px, 60%);
+  width: min(260px, 50%);
   color: #161616;
-  margin-bottom: -40px;
+  margin-bottom: -24px;
   pointer-events: none;
 }
 .greeting {
@@ -356,11 +361,38 @@ select {
   height: 28px;
   padding: 0 10px;
   border-radius: 8px;
+  border: 0;
+  background: transparent;
   color: var(--warn);
   font-size: 13px;
 }
+button.agent-chip {
+  cursor: pointer;
+}
+button.agent-chip:hover {
+  background: var(--hover);
+}
 .agent-chip.on {
   color: var(--ok);
+}
+.agent-chip.building {
+  color: var(--text);
+}
+.agent-chip.building .agent-dot,
+.agent-dot.busy {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+.stop-btn {
+  color: var(--muted);
+  height: 28px;
+  font-size: 13px;
+}
+.stop-btn svg {
+  color: var(--danger);
+}
+.stop-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 .menu-wrap {
   position: relative;
@@ -438,7 +470,7 @@ select {
   background: var(--hover);
   color: var(--text);
 }
-.home-hint,
+
 .home-notice {
   margin-top: 28px;
   max-width: 560px;
@@ -1089,6 +1121,170 @@ textarea.input {
   margin: 0 auto;
   color: #2a2a2a;
   animation: pulse 2.4s ease-in-out infinite;
+}
+
+/* AI settings dialog */
+.dialog.ai-settings {
+  width: min(560px, calc(100vw - 32px));
+}
+.ai-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ai-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.ai-option:hover {
+  background: var(--hover);
+}
+.ai-option.on {
+  border-color: var(--border-strong);
+  background: var(--panel-2);
+}
+.ai-option > button {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ai-option > button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: var(--radius);
+}
+.ai-radio {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border-radius: 50%;
+  border: 1.5px solid var(--faint);
+}
+.ai-option.on .ai-radio {
+  border-color: var(--text);
+  box-shadow: inset 0 0 0 3px var(--panel-2), inset 0 0 0 7px var(--text);
+}
+.ai-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ai-title {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+.ai-sub {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.ai-tag,
+.ai-found {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+.ai-tag {
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--muted);
+}
+.ai-found.ok {
+  color: var(--ok);
+}
+.ai-found a {
+  color: var(--muted);
+}
+.ai-key {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 4px 36px;
+}
+.ai-key .input {
+  flex: 1;
+  height: 30px;
+  font-family: var(--mono);
+}
+.ai-key .hint {
+  flex: 1;
+  line-height: 1.5;
+}
+.ai-external {
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.ai-external summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.ai-external summary::-webkit-details-marker {
+  display: none;
+}
+.ai-external summary svg {
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+}
+.ai-external[open] summary svg {
+  transform: none;
+}
+.ai-external .hint {
+  margin: 8px 0;
+  line-height: 1.6;
+}
+.ai-command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.ai-command code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  user-select: all;
+}
+.ai-notice {
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ai-error {
+  margin: 10px 0 0;
+  color: var(--warn);
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 /* Edit source dialog */

@@ -5,7 +5,9 @@ import * as L from "./loop-icons";
 import { enc, loop, readOnly, useLoop, variantPage } from "./loop";
 import { Modal } from "./Modal";
 import { isEnter, MOD } from "./platform";
-import { DEVICE_WIDTH, store, useStore } from "./store";
+import { currentEngine, DEVICE_WIDTH, store, useStore } from "./store";
+import { queuedNote } from "./agent";
+import { Mark } from "./Logo";
 import "./loop.css";
 
 const COUNTS = [2, 3, 4];
@@ -13,7 +15,7 @@ const COUNTS = [2, 3, 4];
 /** Variants are written as files, so the element has to be in one. */
 const NO_SOURCE = "Variants need an element that is in the files. Send or write this one to the source first.";
 const NO_REACT =
-  "Variants aren't available for React projects yet: Glimpse can't show a variant of a component outside your running app. Use Point & talk to ask your agent for alternatives.";
+  "Variants aren't available for React projects yet: Glimpse can't show a variant of a component outside your running app. Use Point & talk to ask the AI for alternatives.";
 
 /** Why "Variants…" can't be used on this element, or undefined when it can. */
 export function variantsBlocked(node: { source?: unknown }): string | undefined {
@@ -56,8 +58,8 @@ export function VariantsDialog({ nodeId, onClose }: { nodeId: string; onClose: (
       <header>
         <h2>Variants of {label}</h2>
         <p>
-          Your agent designs a few alternatives and you compare them side by side. Pick one and Glimpse puts it into the code.
-          {!state.agentWaiting && " No agent is listening right now. It'll get the request as soon as it runs `glimpse wait`."}
+          The AI designs a few alternatives and you compare them side by side. Pick one and Glimpse puts it into the code.
+          {queuedNote(currentEngine(state), state.agentWaiting)}
         </p>
       </header>
       <div className="body">
@@ -119,7 +121,7 @@ export function VariantBanners() {
                 </>
               ) : (
                 <>
-                  Waiting for your agent: {job.count} variants of <b>{job.label}</b> · {ready}/{job.count} ready
+                  Waiting for the AI: {job.count} variants of <b>{job.label}</b> · {ready}/{job.count} ready
                 </>
               )}
             </span>
@@ -191,7 +193,7 @@ export function VariantsView({ jobId }: { jobId: string }) {
             <section key={k} className={`vr-cell${ready ? "" : " is-waiting"}`}>
               <header>
                 <span className="vr-name">Variant {k}</span>
-                {!ready && <span className="meta">waiting for your agent…</span>}
+                {!ready && <span className="meta">waiting for the AI…</span>}
                 <span className="spacer" />
                 <button className="btn primary" disabled={!ready || busy !== null} onClick={() => void use(k)}>
                   {busy === k ? "Applying…" : "Use this"}
@@ -201,11 +203,8 @@ export function VariantsView({ jobId }: { jobId: string }) {
                 <ScaledFrame src={`/variant/${enc(job.id)}/${k}/${variantPage(job)}`} pageWidth={pageWidth} title={`Variant ${k} of ${job.label}`} rev={ls.cellRev[`${job.id}:${k}`] ?? 0} />
               ) : (
                 <div className="vr-wait">
-                  <svg viewBox="0 0 64 64" aria-hidden="true">
-                    <path d="M5 32C14 16 50 16 59 32C50 48 14 48 5 32Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-                    <circle cx="35" cy="31" r="8" fill="currentColor" />
-                  </svg>
-                  <span>Your agent hasn't written variant {k} yet</span>
+                  <Mark weight={3} />
+                  <span>The AI hasn't written variant {k} yet</span>
                 </div>
               )}
             </section>

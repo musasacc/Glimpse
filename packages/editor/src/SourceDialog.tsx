@@ -130,8 +130,8 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
             <h3>Needs AI ({preview.needsAi.length})</h3>
             <p className="hint">
               {sceneMode.state.active
-                ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: your agent does that.`
-                : "Moves, resizes, behaviors and notes need judgement about the code, so your agent does them."}
+                ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: the AI does that.`
+                : "Moves, resizes, behaviors and notes need judgement about the code, so the AI does them."}
             </p>
             {preview.needsAi.some((c) => c.src && repeats.has(c.src)) && (
               <p className="hint">
