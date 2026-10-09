@@ -6,6 +6,8 @@ import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, u
 import { loop, useLoopLive } from "./loop";
 import { watchUpdates, whenRendered } from "./hmr";
 import { PreviewError } from "./PreviewError";
+import { modalOpen } from "./Modal";
+import { isEnter } from "./platform";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -19,8 +21,8 @@ interface Live {
 /** A box prompt that has been drawn and is waiting for its instruction. */
 type Draft = { parent: string; rect: Layout };
 
-/** Lets editor shortcuts reach the canvas: R only works in edit mode, Escape cancels what is in progress. */
-const canvas = { mode: "edit" as Mode, cancel: () => {} };
+/** Lets editor shortcuts reach the canvas: Escape cancels what is in progress. */
+const canvas = { cancel: () => {} };
 
 /**
  * The preview iframe plus the editing overlay. The page is same-origin, so the
@@ -34,7 +36,6 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const [, setTick] = useState(0);
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  canvas.mode = mode;
   const live = useRef<Live>({ marquee: null, region: null }).current;
   const cancelGesture = useRef(() => {});
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -263,20 +264,34 @@ function ResizeHandle({ id }: { id: string }) {
     const handle = e.currentTarget as HTMLElement;
     handle.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
       el.style.width = `${Math.max(4, from.w + ev.clientX - start.x)}px`;
       el.style.height = `${Math.max(4, from.h + ev.clientY - start.y)}px`;
       store.set({});
     };
-    const up = (ev: PointerEvent) => {
+    const detach = () => {
       handle.removeEventListener("pointermove", move);
       handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", cancel);
+      handle.removeEventListener("lostpointercapture", cancel);
       el.style.width = prev.width;
       el.style.height = prev.height;
+    };
+    // A cancelled pointer (touch, pen, capture lost on a window switch) puts the element back as it was.
+    const cancel = () => {
+      detach();
+      store.set({});
+    };
+    const up = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      detach();
       const to = { ...from, w: Math.max(4, Math.round(from.w + ev.clientX - start.x)), h: Math.max(4, Math.round(from.h + ev.clientY - start.y)) };
       if (to.w !== from.w || to.h !== from.h) store.edit({ op: "resize", node: id, from, to });
     };
     handle.addEventListener("pointermove", move);
     handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", cancel);
+    handle.addEventListener("lostpointercapture", cancel);
   };
   return <span className="handle" onPointerDown={onPointerDown} />;
 }
@@ -392,6 +407,9 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
       if (h.mode() !== "edit" || e.button !== 0) return;
       if ((e.target as HTMLElement).isContentEditable) return;
       e.preventDefault();
+      // preventDefault keeps focus where it was: commit a field being typed in (the Inspector) before the selection moves.
+      const field = document.activeElement as HTMLElement | null;
+      if (field && (field.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(field.tagName))) field.blur();
       h.onPress();
       const start = (last = { x: e.clientX, y: e.clientY });
       // Box prompt: with the tool on, or Alt+drag anywhere.
@@ -454,7 +472,7 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
   });
 
   // Focus can stay in the page while a past version or a dialog covers it; shortcuts would act unseen.
-  doc.addEventListener("keydown", (e) => !loop.blocksEditorKeys && handleKey(e, h.openTalk), true);
+  doc.addEventListener("keydown", (e) => !loop.blocksEditorKeys && handleKey(e, h.openTalk, h.mode()), true);
   // Keep the overlay on its elements: page and inner scrolling, resizes, layout changes.
   doc.addEventListener("scroll", h.rerender, { capture: true, passive: true });
   win.addEventListener("resize", h.rerender);
@@ -503,7 +521,7 @@ export function editText(id: string): void {
   };
   const onBlur = () => finish(true);
   const onKey = (e: KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (isEnter(e) && !e.shiftKey) {
       e.preventDefault();
       el.blur();
     } else if (e.key === "Escape") {
@@ -526,11 +544,16 @@ function hasContent(doc: Document): boolean {
   return !!doc.body && (!!doc.body.innerText.trim() || !!doc.body.querySelector("img, svg, canvas, video, input, button"));
 }
 
-export function handleKey(e: KeyboardEvent, openTalk: () => void): void {
+export function handleKey(e: KeyboardEvent, openTalk: () => void, mode: Mode): void {
+  // A dialog is open: its keys are its own, not for the page behind it.
+  if (modalOpen()) return;
   const t = e.target as HTMLElement;
   if (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return;
   const mod = e.metaKey || e.ctrlKey;
   const key = e.key.toLowerCase();
+  // Interact mode: the page gets every key (arrows, Backspace…); only undo, redo and Escape from the editor's own UI.
+  const fromEditor = (t.ownerDocument ?? t) === document;
+  if (mode === "interact" && !(fromEditor && ((mod && (key === "z" || key === "y")) || e.key === "Escape"))) return;
   const id = store.state.selected;
   const any = store.selection.length > 0;
   if (mod && key === "z") {
@@ -553,7 +576,7 @@ export function handleKey(e: KeyboardEvent, openTalk: () => void): void {
   } else if (!mod && key === "t" && id) {
     e.preventDefault();
     openTalk();
-  } else if (!mod && !e.altKey && key === "r" && canvas.mode === "edit") {
+  } else if (!mod && !e.altKey && key === "r" && mode === "edit") {
     e.preventDefault();
     store.setTool(store.state.tool === "region" ? "select" : "region");
   } else if (e.key === "Escape") {

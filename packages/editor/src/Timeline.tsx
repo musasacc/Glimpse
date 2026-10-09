@@ -7,6 +7,7 @@ import { enc, KIND_TITLE, loop, readOnly, since, useLoop, type PublicSnapshot, t
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import { CanvasContextMenu, VariantBanners, VariantsDialog, VariantsView } from "./Variants";
 import { SceneVersion } from "./SceneVersions";
+import { Modal } from "./Modal";
 import "./loop.css";
 
 const KIND_ICON: Record<SnapshotKind, (p: { size?: number }) => ReactNode> = {
@@ -84,12 +85,19 @@ export function Timeline() {
     return () => clearInterval(t);
   }, []);
 
-  // Follow the newest version as they arrive.
+  const v = ls.view;
+  /** The strip shows its newest end (it starts there); kept up to date as the user scrolls it. */
+  const atEnd = useRef(true);
+
+  // Follow the newest version as they arrive, unless the user is looking further back.
   useLayoutEffect(() => {
-    if (list.current) list.current.scrollLeft = list.current.scrollWidth;
+    const el = list.current;
+    if (!el || !(v.kind === "live" || atEnd.current)) return;
+    el.scrollLeft = el.scrollWidth;
+    // Still keep the version being looked at in view.
+    if (v.kind !== "live") el.querySelector(".tl-card.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [ls.snapshots.length]);
 
-  const v = ls.view;
   const current = v.kind === "snapshot" ? v.id : v.kind === "compare" ? v.before : LIVE;
   const ids = [...ls.snapshots.map((s) => s.id), LIVE];
 
@@ -139,6 +147,10 @@ export function Timeline() {
         <div
           className="tl-list"
           ref={list}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            atEnd.current = el.scrollLeft + el.clientWidth >= el.scrollWidth - 24;
+          }}
           role="listbox"
           aria-label="Versions, oldest first"
           aria-orientation="horizontal"
@@ -266,11 +278,6 @@ function RestoreDialog({ id }: { id: string }) {
   const close = () => loop.set({ confirmRestore: null });
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && loop.set({ confirmRestore: null });
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  useEffect(() => {
     if (!s) loop.set({ confirmRestore: null });
   }, [s]);
 
@@ -287,34 +294,32 @@ function RestoreDialog({ id }: { id: string }) {
   };
 
   return (
-    <div className="scrim" onMouseDown={close}>
-      <div className="dialog" role="alertdialog" aria-label="Restore this version?" onMouseDown={(e) => e.stopPropagation()}>
-        <header>
-          <h2>Restore this version?</h2>
-          <p>
-            The project files go back to <b>{s.label}</b> from {new Date(s.at).toLocaleString()}. Glimpse first saves the current files as a new
-            version, so you can always come back.
-          </p>
-        </header>
-        {(pending > 0 || error) && (
-          <div className="body">
-            {pending > 0 && (
-              <p className="hint">
-                Your {pending} unsent edit{pending === 1 ? "" : "s"} will be replayed on the restored page where they still fit.
-              </p>
-            )}
-            {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-          </div>
-        )}
-        <footer>
-          <button className="btn" onClick={close}>
-            Cancel
-          </button>
-          <button className="btn primary" onClick={restore} disabled={busy} autoFocus>
-            <L.Restore size={14} /> {busy ? "Restoring…" : "Restore"}
-          </button>
-        </footer>
-      </div>
-    </div>
+    <Modal role="alertdialog" onClose={close} busy={busy}>
+      <header>
+        <h2>Restore this version?</h2>
+        <p>
+          The project files go back to <b>{s.label}</b> from {new Date(s.at).toLocaleString()}. Glimpse first saves the current files as a new
+          version, so you can always come back.
+        </p>
+      </header>
+      {(pending > 0 || error) && (
+        <div className="body">
+          {pending > 0 && (
+            <p className="hint">
+              Your {pending} unsent edit{pending === 1 ? "" : "s"} will be replayed on the restored page where they still fit.
+            </p>
+          )}
+          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
+        </div>
+      )}
+      <footer>
+        <button className="btn" onClick={close} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn primary" onClick={restore} disabled={busy} autoFocus>
+          <L.Restore size={14} /> {busy ? "Restoring…" : "Restore"}
+        </button>
+      </footer>
+    </Modal>
   );
 }

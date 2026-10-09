@@ -42,7 +42,7 @@ function row(p: RecentEntry): HTMLLIElement {
   const open = document.createElement("button");
   open.type = "button";
   open.className = "recent-item";
-  open.title = p.exists ? `Open ${p.path}` : `${p.path} was moved or deleted`;
+  open.title = p.exists ? `Open ${p.path}` : `${p.path} was moved or deleted. Click to locate it or remove it from the list`;
   const name = document.createElement("span");
   name.className = "recent-name";
   name.textContent = p.name;
@@ -60,7 +60,8 @@ function row(p: RecentEntry): HTMLLIElement {
   path.textContent = `\u200e${p.path}\u200e`;
   open.append(name, badge, path);
   open.addEventListener("click", () => {
-    if (p.exists) void run(() => api.openRecent(p.path));
+    // A missing folder: the main process offers to locate it or remove it from the list.
+    void run(() => api.openRecent(p.path));
   });
 
   const remove = document.createElement("button");

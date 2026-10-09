@@ -5,7 +5,7 @@ import type { Mode } from "./Canvas";
 import * as I from "./icons";
 import * as L from "./loop-icons";
 import { NativeWindow } from "./NativeRenderer";
-import { MOD } from "./platform";
+import { isEnter, MOD } from "./platform";
 import { captureFrame, renderThumbnail } from "./scene-capture";
 import { absBox, editableProp, unitSize, type Cell, type SceneTarget } from "./scene-geometry";
 import { sceneMode, useSceneMode } from "./scene-mode";
@@ -583,7 +583,7 @@ function InlineEditor({ node, rect, target, cell, zoom }: { node: SceneNode; rec
       onKeyDown={(e) => {
         e.stopPropagation();
         if (e.key === "Escape") finish(false);
-        else if (e.key === "Enter" && (!what.multiline ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
+        else if (isEnter(e) && (!what.multiline ? !e.shiftKey : e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           finish(true);
         }

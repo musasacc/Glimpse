@@ -4,6 +4,7 @@ import * as I from "./icons";
 import { handoffScreenshot } from "./loop";
 import { sceneMode } from "./scene-mode";
 import { store } from "./store";
+import { Modal } from "./Modal";
 import "./react.css";
 
 interface Preview {
@@ -111,67 +112,65 @@ export function SourceDialog({ list, onClose }: { list: ChangeList; onClose: () 
   const nothingToWrite = preview !== null && preview.files.length === 0;
 
   return (
-    <div className="scrim" onMouseDown={onClose}>
-      <div className="dialog wide" onMouseDown={(e) => e.stopPropagation()}>
-        <header>
-          <h2>Edit source</h2>
-          <p>Glimpse writes your edits straight into the files. Review the changes first; a backup is kept in <code>.glimpse/backups</code>.</p>
-        </header>
-        <div className="body">
-          {!preview && !error && <p className="hint">Working out the changes…</p>}
-          {preview && preview.files.map((f) => <DiffView key={f.file} file={f.file} diff={f.diff} />)}
-          {nothingToWrite && <p className="hint">None of these edits can be written safely by Glimpse. They need your AI.</p>}
-          {preview && preview.needsAi.length > 0 && (
-            <div className="needs-ai">
-              <h3>Needs AI ({preview.needsAi.length})</h3>
+    <Modal className="wide" onClose={onClose} busy={busy}>
+      <header>
+        <h2>Edit source</h2>
+        <p>Glimpse writes your edits straight into the files. Review the changes first; a backup is kept in <code>.glimpse/backups</code>.</p>
+      </header>
+      <div className="body">
+        {!preview && !error && <p className="hint">Working out the changes…</p>}
+        {preview && preview.files.map((f) => <DiffView key={f.file} file={f.file} diff={f.diff} />)}
+        {nothingToWrite && <p className="hint">None of these edits can be written safely by Glimpse. They need your AI.</p>}
+        {preview && preview.needsAi.length > 0 && (
+          <div className="needs-ai">
+            <h3>Needs AI ({preview.needsAi.length})</h3>
+            <p className="hint">
+              {sceneMode.state.active
+                ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: your agent does that.`
+                : "Moves, resizes, behaviors and notes need judgement about the code, so your agent does them."}
+            </p>
+            {preview.needsAi.some((c) => c.src && repeats.has(c.src)) && (
               <p className="hint">
-                {sceneMode.state.active
-                  ? `Glimpse writes your edits into ${sceneMode.state.file}, but the real code still has to follow: your agent does that.`
-                  : "Moves, resizes, behaviors and notes need judgement about the code, so your agent does them."}
+                So do edits of elements the page shows more than once (list items, shared components): writing them into the source would change every copy.
               </p>
-              {preview.needsAi.some((c) => c.src && repeats.has(c.src)) && (
-                <p className="hint">
-                  So do edits of elements the page shows more than once (list items, shared components): writing them into the source would change every copy.
-                </p>
-              )}
-              <ol className="changes">
-                {preview.needsAi.map((c, i) => (
-                  <li key={i}>
-                    <span className="op">{c.op}</span> {describeChange(c)}
-                    {c.src && repeats.has(c.src) && <span className="repeat-note">used in {repeats.get(c.src)} places → sent to AI</span>}
-                  </li>
-                ))}
-              </ol>
-              <label className="check">
-                <input type="checkbox" checked={sendRest} onChange={(e) => setSendRest(e.target.checked)} />
-                Send these {preview.needsAi.length} to your AI
-              </label>
-            </div>
-          )}
-          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-        </div>
-        <footer>
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn primary"
-            onClick={apply}
-            disabled={busy || !preview || ((nothingToWrite || written) && (!sendRest || preview.needsAi.length === 0))}
-          >
-            {nothingToWrite || written ? (
-              <>
-                <I.Send size={14} /> Send to AI
-              </>
-            ) : (
-              <>
-                <I.Code size={14} /> {busy ? "Writing…" : sendRest && preview && preview.needsAi.length > 0 ? "Apply & send the rest" : "Apply"}
-              </>
             )}
-          </button>
-        </footer>
+            <ol className="changes">
+              {preview.needsAi.map((c, i) => (
+                <li key={i}>
+                  <span className="op">{c.op}</span> {describeChange(c)}
+                  {c.src && repeats.has(c.src) && <span className="repeat-note">used in {repeats.get(c.src)} places → sent to AI</span>}
+                </li>
+              ))}
+            </ol>
+            <label className="check">
+              <input type="checkbox" checked={sendRest} onChange={(e) => setSendRest(e.target.checked)} />
+              Send these {preview.needsAi.length} to your AI
+            </label>
+          </div>
+        )}
+        {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       </div>
-    </div>
+      <footer>
+        <button className="btn" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          className="btn primary"
+          onClick={apply}
+          disabled={busy || !preview || ((nothingToWrite || written) && (!sendRest || preview.needsAi.length === 0))}
+        >
+          {nothingToWrite || written ? (
+            <>
+              <I.Send size={14} /> Send to AI
+            </>
+          ) : (
+            <>
+              <I.Code size={14} /> {busy ? "Writing…" : sendRest && preview && preview.needsAi.length > 0 ? "Apply & send the rest" : "Apply"}
+            </>
+          )}
+        </button>
+      </footer>
+    </Modal>
   );
 }
 

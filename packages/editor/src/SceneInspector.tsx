@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { formatSource, NODE_TYPE_DOCS, NODE_TYPES, type Layout, type NodeType, type Op, type SceneNode } from "@glimpse/core";
 import { canUngroup, ungroupSelection } from "./arrange";
-import { BehaviorSection } from "./Panels";
-import { MOD } from "./platform";
+import { BehaviorSection, ColorInput } from "./Panels";
+import { isEnter, MOD } from "./platform";
 import { editableProp, type SceneTarget } from "./scene-geometry";
 import { sceneMode, useSceneMode } from "./scene-mode";
 import { store, useStore } from "./store";
@@ -247,7 +247,7 @@ function TextField({ node, k, label, multiline, placeholder, hint }: { node: Sce
           placeholder={placeholder ?? hint}
           spellCheck={false}
           onBlur={(e) => commit(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.metaKey || e.ctrlKey) && (e.target as HTMLTextAreaElement).blur()}
+          onKeyDown={(e) => isEnter(e) && (e.metaKey || e.ctrlKey) && (e.target as HTMLTextAreaElement).blur()}
         />
       ) : (
         <input
@@ -256,7 +256,7 @@ function TextField({ node, k, label, multiline, placeholder, hint }: { node: Sce
           defaultValue={current}
           placeholder={placeholder}
           onBlur={(e) => commit(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
         />
       )}
     </div>
@@ -274,7 +274,7 @@ function NumberField({ node, k, label }: { node: SceneNode; k: string; label: st
         type="number"
         defaultValue={current}
         onBlur={(e) => setProp(node, k, e.target.value.trim() === "" ? null : e.target.value.trim())}
-        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
       />
     </div>
   );
@@ -300,7 +300,7 @@ function TableEditor({ node }: { node: SceneNode }) {
       className={`input${head ? " head" : ""}`}
       defaultValue={value}
       onBlur={(e) => e.target.value !== value && onCommit(e.target.value)}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+      onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
     />
   );
   return (
@@ -392,7 +392,7 @@ function LayoutInput({ node, k }: { node: SceneNode; k: keyof Layout }) {
         type="number"
         defaultValue={current}
         onBlur={(e) => commit(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+        onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
       />
     </label>
   );
@@ -433,10 +433,13 @@ const TEXT_STYLES = ["bold", "italic", "underline", "reverse", "dim", "strike"];
 /** Suggestions for terminal colors: Textual's theme variables and the ANSI names. */
 const TUI_COLORS = ["$primary", "$secondary", "$accent", "$success", "$warning", "$error", "$text", "$text-muted", "$surface", "$panel", "$background", "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white", "bright-black", "bright-white"];
 
-function setStyle(node: SceneNode, key: string, value: string): void {
+function setStyle(node: SceneNode, key: string, value: string, merge = false): void {
   const from = node.style[key] ?? null;
   const to = value.trim() === "" ? null : value.trim();
-  if (from !== to) store.edit({ op: "setStyle", node: node.id, key, from, to });
+  if (from === to) return;
+  const op = { op: "setStyle" as const, node: node.id, key, from, to };
+  if (merge) store.editMerged(`${node.id}:${key}`, op);
+  else store.edit(op);
 }
 
 function StyleSection({ node, target }: { node: SceneNode; target: SceneTarget }) {
@@ -484,7 +487,7 @@ function StyleInput({ node, f, target }: { node: SceneNode; f: StyleField; targe
     <div className="field">
       <label>{f.label}</label>
       <div className="color">
-        {f.color && <input type="color" value={toHex(swatch)} title="Pick a color" onChange={(e) => setStyle(node, f.key, e.target.value)} />}
+        {f.color && <ColorInput value={toHex(swatch)} label={f.label} title="Pick a color" onPick={(hex) => setStyle(node, f.key, hex, true)} />}
         <input
           key={`${node.id}:${f.key}:${current}`}
           className="input"
@@ -492,7 +495,7 @@ function StyleInput({ node, f, target }: { node: SceneNode; f: StyleField; targe
           placeholder={f.placeholder}
           list={f.color && target === "tui" ? "tui-colors" : undefined}
           onBlur={(e) => setStyle(node, f.key, e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
         />
       </div>
     </div>
@@ -545,7 +548,7 @@ function BorderField({ node }: { node: SceneNode }) {
           disabled={!kind || kind === "none"}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => save(kind, draft)}
-          onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+          onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
         />
       </div>
     </div>

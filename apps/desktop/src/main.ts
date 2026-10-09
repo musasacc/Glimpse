@@ -181,7 +181,7 @@ function registerIpc(): void {
   handle(IPC.openRecent, (_e, path) => {
     // Only folders the user picked before, never an arbitrary path from the page.
     if (typeof path !== "string" || !recent.has(path)) throw new Error("Not a recent project");
-    return openProject(path);
+    return isDir(path) ? openProject(path) : missingRecent(path);
   });
   handle(IPC.removeRecent, async (_e, path) => {
     if (typeof path !== "string") return;
@@ -192,6 +192,42 @@ function registerIpc(): void {
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
+
+function isDir(path: string): boolean {
+  return existsSync(path) && statSync(path).isDirectory();
+}
+
+/** A recent project whose folder was moved or deleted: find it again, or drop it from the list. */
+async function missingRecent(path: string): Promise<void> {
+  const parent = BrowserWindow.getFocusedWindow();
+  const options: Electron.MessageBoxOptions = {
+    type: "warning",
+    message: `“${folderName(path)}” can't be found`,
+    detail: `${path} was moved, renamed or deleted.`,
+    buttons: ["Locate…", "Remove from Recent", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+  };
+  const choice = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+  if (choice.response === 2) return;
+  if (choice.response === 0) {
+    const where = [dirname(path), dirname(dirname(path))].find(isDir);
+    const pick: Electron.OpenDialogOptions = {
+      title: `Locate “${folderName(path)}”`,
+      buttonLabel: "Open",
+      properties: ["openDirectory"],
+      ...(where ? { defaultPath: where } : {}),
+    };
+    const res = parent ? await dialog.showOpenDialog(parent, pick) : await dialog.showOpenDialog(pick);
+    if (res.canceled || !res.filePaths[0]) return;
+    await recent.remove(path);
+    await openProject(res.filePaths[0]);
+  } else {
+    await recent.remove(path);
+  }
+  buildMenu();
+  notifyLauncher();
+}
 
 async function openFolderDialog(): Promise<void> {
   const parent = BrowserWindow.getFocusedWindow();
@@ -253,12 +289,15 @@ async function createProjectWindow(dir: string, key: string): Promise<void> {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) throw new Error(`The folder ${dir} doesn't exist (anymore).`);
   const project = await servers.open(dir);
 
+  // Never larger than the screen's work area (a 1366×768 laptop at 125% has about 1093×580).
   const area = screen.getPrimaryDisplay().workAreaSize;
+  const minWidth = Math.min(1000, area.width);
+  const minHeight = Math.min(640, area.height);
   const win = new BrowserWindow({
-    width: Math.max(1000, Math.min(1440, area.width)),
-    height: Math.max(640, Math.min(900, area.height)),
-    minWidth: 1000,
-    minHeight: 640,
+    width: Math.max(minWidth, Math.min(1440, area.width)),
+    height: Math.max(minHeight, Math.min(900, area.height)),
+    minWidth,
+    minHeight,
     title: folderName(dir),
     backgroundColor: "#000000",
     show: false,

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { store } from "./store";
+import { isEnter } from "./platform";
 
 interface SpeechRecognitionLike {
   lang: string;
@@ -101,7 +102,7 @@ export function TalkPopover({
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           e.stopPropagation();
-          if (e.key === "Enter" && !e.shiftKey) {
+          if (isEnter(e) && !e.shiftKey) {
             e.preventDefault();
             pin();
           } else if (e.key === "Escape") onClose();
