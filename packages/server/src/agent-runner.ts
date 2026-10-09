@@ -3,7 +3,7 @@
  * (`glimpse wait`, the MCP server) is listening, Glimpse runs the AI itself — the Claude Code CLI, the Codex CLI
  * or the Anthropic API — in the project folder, one run at a time, and streams its progress to the editor.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
@@ -50,6 +50,49 @@ const API_MODEL = "claude-opus-5-5";
 const API_MAX_TOKENS = 64_000;
 const API_MAX_ITERATIONS = 40;
 const CODEX_LINES_PER_SEC = 10;
+/** How long an engine that failed to sign in is skipped by "auto". */
+const SIGNED_OUT_MS = 10 * 60_000;
+const ENGINE_NAMES: Record<BuiltInEngine, string> = { claude: "Claude Code", codex: "Codex", api: "Claude (API)" };
+const SIGN_IN_RE = /oauth|authenticat|not logged in|log ?in\b|unauthori[sz]ed|\b401\b/i;
+/** What a CLI prints for a bad command line: noise in the activity feed. */
+const USAGE_RE = /^(usage:|for more information|\s+codex exec\b|\s*codex exec \[)/i;
+
+/** The CLI's sign-in is missing or expired: what to do about it. */
+class SignInError extends Error {
+  constructor(readonly engine: "claude" | "codex") {
+    super(
+      engine === "claude"
+        ? "Claude Code isn't signed in (or the sign-in expired). Open Terminal, run `claude` and type /login, then send again."
+        : "Codex isn't signed in. Open Terminal and run `codex login`, then send again.",
+    );
+  }
+}
+
+/** The options this Codex accepts, from `codex exec --help` (they changed between versions). */
+const codexHelp = new Map<string, Promise<string>>();
+function readCodexHelp(bin: string): Promise<string> {
+  let help = codexHelp.get(bin);
+  if (!help) {
+    help = new Promise((resolve) => {
+      execFile(bin, ["exec", "--help"], { timeout: 5000, shell: process.platform === "win32", windowsHide: true }, (_err, stdout, stderr) =>
+        resolve(`${String(stdout)}\n${String(stderr)}`),
+      );
+    });
+    codexHelp.set(bin, help);
+  }
+  return help;
+}
+
+/** `codex exec` arguments for this Codex, and whether the prompt goes on stdin (Windows: no user text on a shell command line). */
+export async function codexArgs(bin: string, prompt: string, windows = process.platform === "win32"): Promise<{ args: string[]; stdin: boolean }> {
+  const help = await readCodexHelp(bin);
+  const args = ["exec"];
+  for (const flag of ["--full-auto", "--skip-git-repo-check"]) if (help.includes(flag)) args.push(flag);
+  if (!windows) return { args: [...args, prompt], stdin: false };
+  // Without a prompt argument (or with "-"), codex exec reads the instructions from stdin.
+  if (/stdin/i.test(help) && /\B-\B|`-`|'-'/.test(help)) args.push("-");
+  return { args, stdin: true };
+}
 
 /** Who handles a request, given the settings, what's installed and whether an external agent is listening. */
 export function resolveEngine(preferred: AgentEngine, available: DetectedAgents, externalWaiting: boolean): ResolvedEngine {
@@ -81,6 +124,8 @@ export class AgentRunner {
   private closing = false;
   private detected: { at: number; settings: AgentSettings; agents: DetectedAgents } | undefined;
   private detecting: Promise<{ settings: AgentSettings; agents: DetectedAgents }> | undefined;
+  /** Engines whose sign-in failed lately: "auto" skips them for a while. */
+  private signedOut = new Map<"claude" | "codex", number>();
 
   constructor(private readonly deps: AgentRunnerDeps) {}
 
@@ -103,6 +148,20 @@ export class AgentRunner {
   /** Forget the cached settings and detection (the settings changed). */
   refresh(): void {
     this.detected = undefined;
+    this.signedOut.clear();
+  }
+
+  /** Who'd run a handoff now: like resolveEngine, but "auto" skips engines that just failed to sign in. */
+  private resolve(settings: AgentSettings, agents: DetectedAgents): ResolvedEngine {
+    let usable = agents;
+    if (settings.engine === "auto") {
+      usable = { ...agents };
+      for (const [engine, at] of this.signedOut) {
+        if (Date.now() - at < SIGNED_OUT_MS) usable[engine] = false;
+        else this.signedOut.delete(engine);
+      }
+    }
+    return resolveEngine(settings.engine, usable, this.deps.externalWaiting());
   }
 
   async info(): Promise<AgentInfo> {
@@ -110,7 +169,7 @@ export class AgentRunner {
     const external = this.deps.externalWaiting();
     const run = this.current;
     return {
-      engine: resolveEngine(settings.engine, agents, external),
+      engine: this.resolve(settings, agents),
       preferred: settings.engine,
       available: { ...agents, external },
       running: run ? { seq: run.seq, engine: run.engine, startedAt: run.startedAt } : null,
@@ -137,7 +196,7 @@ export class AgentRunner {
     const list = (Array.isArray(handoffs) ? handoffs : [handoffs]).filter((h) => this.runnable(h) && !this.queue.includes(h.seq) && this.current?.seq !== h.seq);
     if (list.length === 0 || this.closing) return;
     const { settings, agents } = await this.detect();
-    if (!isBuiltIn(resolveEngine(settings.engine, agents, this.deps.externalWaiting()))) return;
+    if (!isBuiltIn(this.resolve(settings, agents))) return;
     for (const h of list) if (!this.queue.includes(h.seq)) this.queue.push(h.seq);
     this.infoChanged();
     this.pump();
@@ -186,7 +245,7 @@ export class AgentRunner {
         // An external agent took it meanwhile, or it was withdrawn.
         if (!h || !this.runnable(h)) continue;
         const { settings, agents } = await this.detect();
-        const engine = resolveEngine(settings.engine, agents, this.deps.externalWaiting());
+        const engine = this.resolve(settings, agents);
         if (this.current || this.closing) {
           this.queue.unshift(seq);
           return;
@@ -212,23 +271,40 @@ export class AgentRunner {
     };
     this.current = run;
     this.deps.roundEnd();
-    this.emit(run, "start", { claude: "Claude Code", codex: "Codex", api: "Claude (API)" }[engine]);
+    this.emit(run, "start", ENGINE_NAMES[engine]);
     this.infoChanged();
     const prompt = this.deps.prompt(h);
     const work =
       engine === "claude" ? this.runClaude(run, prompt)
       : engine === "codex" ? this.runCodex(run, prompt)
       : this.runApi(run, h, prompt, settings);
+    let fallback: BuiltInEngine | undefined;
     work
       .then((summary) => {
         if (run.stopped) throw new StoppedError();
         this.emit(run, "done", summary ? oneLine(summary) : undefined);
       })
-      .catch((err: unknown) => this.emit(run, "error", run.stopped || err instanceof StoppedError ? "Stopped" : describeError(err)))
+      .catch(async (err: unknown) => {
+        if (run.stopped || err instanceof StoppedError) return this.emit(run, "error", "Stopped");
+        if (err instanceof SignInError) {
+          this.signedOut.set(err.engine, Date.now());
+          // "Auto" picked an engine that isn't signed in: hand the same request to the next one.
+          if (settings.engine === "auto" && !this.closing) {
+            const { agents } = await this.detect();
+            const next = this.resolve(settings, agents);
+            if (isBuiltIn(next) && next !== engine) {
+              fallback = next;
+              return this.output(run, `${ENGINE_NAMES[engine]} isn't signed in, trying ${ENGINE_NAMES[next]}…`);
+            }
+          }
+        }
+        this.emit(run, "error", describeError(err));
+      })
       .finally(() => {
         this.deps.roundEnd();
         this.current = undefined;
         finish();
+        if (fallback && !this.closing) return this.start(h, fallback, settings);
         this.infoChanged();
         this.pump();
       });
@@ -250,7 +326,7 @@ export class AgentRunner {
   /* ── CLI engines ─────────────────────────────────────────────────────── */
 
   /** Run a CLI in the project folder with the prompt on stdin; resolves with its exit code. */
-  private spawnCli(run: Run, bin: string, args: string[], prompt: string, onLine: (line: string, stream: "out" | "err") => void): Promise<number | null> {
+  private spawnCli(run: Run, bin: string, args: string[], prompt: string | undefined, onLine: (line: string, stream: "out" | "err") => void): Promise<number | null> {
     const isWindows = process.platform === "win32";
     const env = baseEnv();
     // Started from inside a Claude Code session (MCP glimpse_open): the nested CLI is a session of its own.
@@ -296,7 +372,7 @@ export class AgentRunner {
       });
     }
     child.stdin.on("error", () => undefined); // the CLI may exit before reading it all
-    child.stdin.end(prompt);
+    child.stdin.end(prompt ?? "");
     return result;
   }
 
@@ -327,6 +403,7 @@ export class AgentRunner {
       }
     });
     if (run.stopped) throw new StoppedError();
+    if ((result?.isError || (!result && code !== 0)) && SIGN_IN_RE.test(`${result?.text ?? ""} ${lastErr}`)) throw new SignInError("claude");
     if (result?.isError) throw new Error(result.text ? oneLine(result.text) : "Claude Code reported an error");
     if (result) return result.text;
     if (code !== 0) throw new Error(lastErr ? oneLine(lastErr) : `claude exited with code ${code}`);
@@ -366,11 +443,17 @@ export class AgentRunner {
   private async runCodex(run: Run, prompt: string): Promise<string | undefined> {
     const bin = findAgentBinary("codex");
     if (!bin) throw new Error("Codex (the codex command) isn't installed");
+    const { args, stdin } = await codexArgs(bin, prompt);
     let windowStart = 0;
     let inWindow = 0;
     let dropped = false;
     let last = "";
-    const code = await this.spawnCli(run, bin, ["exec", "--full-auto", "--skip-git-repo-check", "-"], prompt, (line) => {
+    let firstError = "";
+    let signIn = false;
+    const code = await this.spawnCli(run, bin, args, stdin ? prompt : undefined, (line) => {
+      if (SIGN_IN_RE.test(line) && /fail|expired|error|not|invalid|please|required/i.test(line)) signIn = true;
+      if (!firstError && /^\s*error\b/i.test(line)) firstError = line;
+      if (USAGE_RE.test(line)) return;
       last = line;
       const now = Date.now();
       if (now - windowStart >= 1000) {
@@ -385,7 +468,11 @@ export class AgentRunner {
       }
     });
     if (run.stopped) throw new StoppedError();
-    if (code !== 0) throw new Error(last ? oneLine(last) : `codex exited with code ${code}`);
+    if (code !== 0) {
+      if (signIn) throw new SignInError("codex");
+      const why = firstError || last;
+      throw new Error(why ? `Codex: ${oneLine(why)}` : `codex exited with code ${code}`);
+    }
     return undefined;
   }
 

@@ -1,7 +1,7 @@
 {
   "name": "glimpse-desktop",
   "productName": "Glimpse",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Glimpse desktop app: see what your AI built, edit it visually, hand the changes back.",
   "author": "Glimpse contributors",

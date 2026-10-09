@@ -63,6 +63,12 @@ process.stdin.on("end", () => {
     setInterval(() => {}, 1000);
     return;
   }
+  if (process.env.FAKE_MODE === "auth") {
+    out({ type: "assistant", message: { content: [{ type: "text", text: "Failed to authenticate: OAuth session expired and could not be refreshed" }] } });
+    out({ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed" });
+    process.exitCode = 1;
+    return;
+  }
   if (process.env.FAKE_MODE === "fail") {
     out({ type: "result", subtype: "error_during_execution", is_error: true, result: "Something broke" });
     return;
@@ -76,6 +82,39 @@ process.stdin.on("end", () => {
   await writeFile(bin, isWindows ? `@"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
   await chmod(bin, 0o755);
   process.env.GLIMPSE_AGENT_CLAUDE_BIN = bin;
+  return bin;
+}
+
+/** A stand-in for a Codex whose `exec` has no --skip-git-repo-check and rejects unknown options like clap does. */
+async function fakeCodex(): Promise<string> {
+  const bin = join(tmp, isWindows ? "codex.cmd" : "codex");
+  const script = join(tmp, "fake-codex.cjs");
+  await writeFile(
+    script,
+    `const fs = require("fs");
+const args = process.argv.slice(2);
+if (args[0] === "exec" && args[1] === "--help") {
+  console.log("Run Codex non-interactively\\n\\nUsage: codex exec [OPTIONS] [PROMPT]\\n\\nArguments:\\n  [PROMPT]  Initial instructions. If not provided as an argument (or if \\\`-\\\` is used), instructions are read from stdin\\n\\nOptions:\\n      --full-auto  Low-friction sandboxed automatic execution");
+  process.exit(0);
+}
+const bad = args.slice(1).find((a) => a.startsWith("--") && a !== "--full-auto");
+if (args[0] !== "exec" || bad) {
+  console.error("error: unexpected argument '" + bad + "' found\\n\\nUsage: codex exec [OPTIONS] [PROMPT]\\n\\nFor more information, try '--help'.");
+  process.exit(2);
+}
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (d) => (input += d));
+process.stdin.on("end", () => {
+  fs.writeFileSync(process.env.FAKE_LOG, JSON.stringify({ args, input }));
+  console.log("codex: writing index.html");
+  fs.writeFileSync("index.html", "<h1>By Codex</h1>");
+});
+`,
+  );
+  await writeFile(bin, isWindows ? `@"${process.execPath}" "${script}" %*\r\n` : `#!/bin/sh\nexec "${process.execPath}" "${script}" "$@"\n`);
+  await chmod(bin, 0o755);
+  process.env.GLIMPSE_AGENT_CODEX_BIN = bin;
   return bin;
 }
 
@@ -227,6 +266,45 @@ describe("built-in agent", () => {
     expect(end).toMatchObject({ event: "error", text: "Something broke" });
     ed.close();
   }, 20_000);
+
+  it("runs Codex with the options its version has", async () => {
+    await fakeCodex();
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "Make a landing page" });
+    const end = await ed.until((m) => m.type === "agent-run" && (m.event === "done" || m.event === "error"));
+    expect(end).toMatchObject({ event: "done", engine: "codex" });
+    expect(await readFile(join(dir, "index.html"), "utf8")).toBe("<h1>By Codex</h1>");
+    const log = JSON.parse(await readFile(process.env.FAKE_LOG!, "utf8")) as { args: string[]; input: string };
+    expect(log.args.slice(0, 2)).toEqual(["exec", "--full-auto"]);
+    expect(log.args).not.toContain("--skip-git-repo-check");
+    expect(isWindows ? log.input : log.args[2]).toContain("Make a landing page");
+    ed.close();
+  }, 20_000);
+
+  it("explains an expired Claude Code sign-in and lets auto fall back to Codex", async () => {
+    await fakeClaude();
+    await fakeCodex();
+    process.env.FAKE_MODE = "auth";
+    srv = await startServer({ dir, port: 0 });
+    const ed = await editor();
+    await post("/api/request", { text: "Make a landing page" });
+    const end = await ed.until((m) => m.type === "agent-run" && (m.event === "done" || m.event === "error") && m.engine === "codex");
+    expect(end).toMatchObject({ event: "done", engine: "codex" });
+    const texts = ed.messages.filter((m) => m.type === "agent-run").map((m) => m.text);
+    expect(texts).toContain("Claude Code isn't signed in, trying Codex…");
+    expect(await readFile(join(dir, "index.html"), "utf8")).toBe("<h1>By Codex</h1>");
+    // Claude Code is skipped for a while, until the settings change.
+    expect(await (await fetch(`${srv.url}/api/agent`)).json()).toMatchObject({ engine: "codex" });
+
+    // Chosen explicitly, the sign-in error says what to do.
+    await post("/api/agent/settings", { engine: "claude" });
+    const before = ed.messages.length;
+    await post("/api/request", { text: "Again" });
+    const err = await ed.until((m) => ed.messages.indexOf(m) >= before && m.type === "agent-run" && m.event === "error");
+    expect(String(err.text)).toContain("run `claude` and type /login");
+    ed.close();
+  }, 30_000);
 
   it.skipIf(isWindows)("stops a run and its whole process tree", async () => {
     await fakeClaude();
