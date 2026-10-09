@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import type { Target } from "@glimpse/core";
-import { openBrowser, startServer, type Handoff } from "@glimpse/server";
+import { findRunningServer, openBrowser, startServer, type Handoff, type ServerInfo } from "@glimpse/server";
 import { runStdio } from "@glimpse/mcp";
 import { VERSION } from "./lib.js";
 
@@ -33,14 +33,6 @@ Usage
 Agents: add the MCP server (\`claude mcp add glimpse -- npx -y glimpse-ui mcp\`), or run
 \`glimpse open\` once and loop on \`glimpse wait\`, applying what it prints.
 `;
-
-/** <project>/.glimpse/server.json: how local tools (glimpse wait, the MCP server) find a running Glimpse. */
-interface ServerInfo {
-  url: string;
-  pid: number;
-  /** For privileged requests (x-glimpse-token), e.g. POST /api/terminal/run. */
-  token?: string;
-}
 
 async function main(): Promise<void> {
   const [command = "help", ...rest] = process.argv.slice(2);
@@ -122,7 +114,8 @@ async function open(args: string[]): Promise<void> {
 
   let stopping = false;
   const shutdown = async () => {
-    if (stopping) return;
+    // A second Ctrl+C while shutting down: stop right away.
+    if (stopping) process.exit(1);
     stopping = true;
     await rm(infoFile, { force: true });
     await srv.close();
@@ -208,12 +201,9 @@ function printHandoff(h: Handoff, json: boolean, dir: string): void {
 async function findServer(dir: string): Promise<ServerInfo> {
   const file = join(dir, ".glimpse", "server.json");
   if (!existsSync(file)) throw new Error(`Glimpse isn't open for ${dir}. Run \`glimpse open ${dir}\` first.`);
-  const info = JSON.parse(await readFile(file, "utf8")) as ServerInfo;
-  try {
-    await fetch(`${info.url}/api/session`);
-  } catch {
-    throw new Error(`Glimpse at ${info.url} isn't responding. Run \`glimpse open ${dir}\` again.`);
-  }
+  // Only a Glimpse that answers for this very folder: a crashed one's server.json may point at another project's port.
+  const info = await findRunningServer(dir);
+  if (!info) throw new Error(`The Glimpse for ${dir} isn't running any more. Run \`glimpse open ${dir}\` again.`);
   return info;
 }
 

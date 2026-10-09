@@ -120,7 +120,10 @@ export class ProjectServers {
       const info = JSON.parse(await readFile(join(dir, ".glimpse", "server.json"), "utf8")) as { url?: unknown; pid?: unknown };
       if (typeof info.url !== "string" || info.pid === this.pid) return undefined;
       const res = await fetch(`${info.url}/api/session`, { signal: AbortSignal.timeout(this.opts.probeTimeoutMs ?? 1500) });
-      return res.ok ? info.url : undefined;
+      if (!res.ok) return undefined;
+      // A crashed Glimpse's file can point at a port another project's Glimpse took since: only reuse one serving this folder.
+      const served = ((await res.json()) as { project?: { dir?: unknown } }).project?.dir;
+      return typeof served === "string" && dirKey(served) === dirKey(dir) ? info.url : undefined;
     } catch {
       return undefined; // missing, stale or unreadable
     }

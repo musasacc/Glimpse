@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyOp, createScene, OpLog, type Op, type Scene } from "@glimpse/core";
-import { followMoves, followOps, repeatedSources, undoAll } from "./hmr";
+import { followMoves, followOps, repeatedSources, sameEdit, undoAll } from "./hmr";
 
 /** A <nav> with one button per label, ids g1… in page order (as DomBridge numbers a fresh page). */
 function page(labels: string[], opts: { line?: (i: number) => number } = {}): Scene {
@@ -127,5 +127,21 @@ describe("undoAll", () => {
     undoAll(log);
     expect(log.canUndo).toBe(false);
     expect(texts(log.scene)).toEqual(["Glazed", "C", "Sprinkles"]);
+  });
+});
+
+describe("sameEdit", () => {
+  it("matches an op with the change it makes: kind, element, style key or note", () => {
+    const text: Op = { op: "setText", node: "g2", from: "a", to: "b" };
+    const color: Op = { op: "setStyle", node: "g2", key: "color", from: null, to: "red" };
+    const note: Op = { op: "comment", node: "g2", id: "c1", text: "bigger" };
+    const move: Op = { op: "move", node: "g3", from: { x: 0, y: 0 }, to: { x: 5, y: 0 } };
+    const needsAi = [
+      { ...move, src: "index.html:3:5" },
+      { ...note, label: 'button "a"' },
+      { op: "setStyle" as const, node: "g2", key: "padding", from: null, to: "4px" },
+    ];
+    expect([text, color, note, move].map((op) => needsAi.some((c) => sameEdit(c, op)))).toEqual([false, false, true, true]);
+    expect(sameEdit({ op: "comment", node: "g2", id: "c2", text: "x" }, note)).toBe(false);
   });
 });

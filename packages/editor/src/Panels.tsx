@@ -5,7 +5,7 @@ import { SelectionInspector } from "./EditTools";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { loop, useLoopLive } from "./loop";
-import { NO_SOURCE } from "./Variants";
+import { variantsBlocked } from "./Variants";
 import { MOD } from "./platform";
 import { SceneInspector } from "./SceneInspector";
 
@@ -204,8 +204,8 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
         <button
           className="btn"
           style={{ marginLeft: 6 }}
-          disabled={!node.source}
-          title={node.source ? "Ask your agent for a few alternative designs of this element" : NO_SOURCE}
+          disabled={!!variantsBlocked(node)}
+          title={variantsBlocked(node) ?? "Ask your agent for a few alternative designs of this element"}
           onClick={() => loop.openVariants(node.id)}
         >
           Variants…

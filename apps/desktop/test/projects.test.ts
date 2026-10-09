@@ -59,6 +59,23 @@ describe("ProjectServers", () => {
     assert.equal(existsSync(join(dir, ".glimpse", "server.json")), false, "server.json removed");
   });
 
+  it("doesn't reuse another folder's Glimpse that a stale server.json points at", async () => {
+    const dir = project();
+    const otherDir = project();
+    const other = await startGlimpse({ dir: otherDir, port: 0 });
+    try {
+      mkdirSync(join(dir, ".glimpse"), { recursive: true });
+      writeFileSync(join(dir, ".glimpse", "server.json"), JSON.stringify({ url: other.url, pid: 99999 }));
+      const servers = new ProjectServers({ start, pid: 4242 });
+      const p = await servers.open(dir);
+      assert.notEqual(p.url, other.url);
+      assert.equal(p.owned, true);
+      await servers.close(dir);
+    } finally {
+      await other.close();
+    }
+  });
+
   it("reuses a Glimpse that is already running for the folder and leaves it running", async () => {
     const dir = project();
     const foreign = await startGlimpse({ dir, port: 0 });

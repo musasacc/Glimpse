@@ -11,6 +11,14 @@ const COUNTS = [2, 3, 4];
 
 /** Variants are written as files, so the element has to be in one. */
 export const NO_SOURCE = "Variants need an element that is in the files. Send or write this one to the source first.";
+export const NO_REACT =
+  "Variants aren't available for React projects yet: Glimpse can't show a variant of a component outside your running app. Use Point & talk to ask your agent for alternatives.";
+
+/** Why "Variants…" can't be used on this element, or undefined when it can. */
+export function variantsBlocked(node: { source?: unknown }): string | undefined {
+  if (store.state.project?.target === "react") return NO_REACT;
+  return node.source ? undefined : NO_SOURCE;
+}
 
 /** "Variants…": ask the agent for a few alternative designs of one element, to pick from side by side. */
 export function VariantsDialog({ nodeId, onClose }: { nodeId: string; onClose: () => void }) {
@@ -335,7 +343,7 @@ export function CanvasContextMenu({ mode, openTalk }: { mode: Mode; openTalk: ()
       <button role="menuitem" onClick={run(openTalk)}>
         <L.Message size={14} /> Talk to AI <span className="kbd">T</span>
       </button>
-      <button role="menuitem" disabled={!node.source} title={node.source ? undefined : NO_SOURCE} onClick={run(() => loop.openVariants(menu.id))}>
+      <button role="menuitem" disabled={!!variantsBlocked(node)} title={variantsBlocked(node)} onClick={run(() => loop.openVariants(menu.id))}>
         <L.Grid size={14} /> Variants…
       </button>
       <button role="menuitem" onClick={run(() => store.duplicateSelected())}>

@@ -74,3 +74,40 @@ function rebaseOp(scene: Scene, op: Op): Op | null {
       return scene.nodes[op.parent] ? op : null;
   }
 }
+
+/** An id the scene file left out, which Glimpse numbered by position ("button-1", "sidebar.button-0"). */
+const AUTO_ID = /(^|\.)[a-z]+-\d+$/;
+
+/**
+ * Nodes without an id in the scene file are numbered by position, so when the agent inserts a widget before
+ * them, "button-1" names a different button in the new version. Find where such nodes went: a node whose id
+ * now holds a different widget (other type or text) moves to the one node under the same parent that looks
+ * like it did and is new there. Returns old id → new id, and the nodes that had more than one candidate (they
+ * keep their id, as before).
+ */
+export function followRenumbered(before: Scene, after: Scene): { moved: Map<string, string>; ambiguous: Set<string> } {
+  const moved = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  const look = (n: { type: string; props: Record<string, string> }) => `${n.type}\u0000${n.props.text ?? ""}`;
+  const same = (id: string) => {
+    const b = before.nodes[id];
+    const a = after.nodes[id];
+    return !!a && !!b && look(a) === look(b);
+  };
+  const queue = [before.rootId];
+  while (queue.length) {
+    const id = queue.shift()!;
+    const b = before.nodes[id];
+    if (!b) continue;
+    queue.push(...b.children);
+    if (b.parent === null || !AUTO_ID.test(id) || same(id)) continue;
+    const parent = moved.get(b.parent) ?? b.parent;
+    const candidates = (after.nodes[parent]?.children ?? []).filter((c) => {
+      const n = after.nodes[c]!;
+      return c !== id && look(n) === look(b) && !same(c);
+    });
+    if (candidates.length === 1) moved.set(id, candidates[0]!);
+    else if (candidates.length > 1) ambiguous.add(id);
+  }
+  return { moved, ambiguous };
+}

@@ -60,6 +60,7 @@ export function connectLive(): () => void {
           store.set({ reloadKey: store.state.reloadKey + 1 });
           break;
         case "handoff-delivered":
+        case "handoff-requeued":
           void store.refreshHandoffs();
           break;
         case "file-changed": {

@@ -40,6 +40,21 @@ describe("React projects without their dependencies", () => {
     expect(await page.text()).toContain("npm install");
   });
 
+  it("refuses variants requests, which can't render a React component yet", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "glimpse-react-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeFile(join(dir, "package.json"), JSON.stringify({ dependencies: { react: "^19.0.0" }, devDependencies: { vite: "^8.0.0" } }));
+    const srv = await serve(dir, { target: "react" });
+    const res = await fetch(`${srv.url}/api/variants`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label: "button", src: "src/App.tsx:3:5", count: 2 }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain("React");
+    expect(await srv.nextHandoff(undefined, 10)).toBeNull();
+  });
+
   it("switches an empty folder to React once the agent scaffolds one", async () => {
     const dir = await mkdtemp(join(tmpdir(), "glimpse-react-"));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));

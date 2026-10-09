@@ -94,7 +94,12 @@ export function groupProblem(): string | null {
   const ids = store.selection;
   if (!scene || ids.length === 0) return "Select the elements to group";
   const parent = scene.nodes[ids[0]!]!.parent;
-  return ids.every((id) => scene.nodes[id]!.parent === parent) ? null : "Only elements that sit side by side in the same parent can be grouped";
+  if (!ids.every((id) => scene.nodes[id]!.parent === parent)) return "Only elements that sit side by side in the same parent can be grouped";
+  // A wrapper takes a single cell of a grid, so the grouped elements would collapse into it.
+  const el = parent && !store.surface?.positioned ? store.bridge?.el(parent) : undefined;
+  if (el && /grid$/.test(el.ownerDocument.defaultView!.getComputedStyle(el).display))
+    return "Elements in a grid can't be grouped here: the group would take one cell. Use Point & talk to ask your AI";
+  return null;
 }
 
 /**

@@ -22,7 +22,10 @@ export const CLIENT_SCRIPT = String.raw`(() => {
     el.classList.remove("__glimpse-flash");
     void el.offsetWidth;
     el.classList.add("__glimpse-flash");
-    setTimeout(() => el.classList.remove("__glimpse-flash"), 1300);
+    setTimeout(() => {
+      el.classList.remove("__glimpse-flash");
+      if (!(el.getAttribute("class") || "").trim()) el.removeAttribute("class");
+    }, 1300);
   }
 
   function sameNode(a, b) {

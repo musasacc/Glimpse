@@ -57,6 +57,12 @@ describe("patchHtml", () => {
     expect(after).toContain('<button class="btn" hidden>Glazed</button>');
   });
 
+  it("keeps declarations whose values contain semicolons (data URLs, quoted strings)", () => {
+    const page = `<body>\n<p style="background: url('data:image/png;base64,AAAA'); content: &quot;a;b&quot;; color: red">x</p>\n</body>`;
+    const { after } = patchHtml(page, [{ op: "setStyle", node: "p", src: "index.html:2:1", key: "color", from: "red", to: "blue" }]);
+    expect(after).toContain(`<p style="background: url('data:image/png;base64,AAAA'); content: &quot;a;b&quot;; color: blue">x</p>`);
+  });
+
   it("removes the style attribute when it becomes empty", () => {
     const { after } = patch({ op: "setStyle", node: "m", src: maple, key: "color", from: "red", to: null });
     expect(after).toContain('<button class="btn">Maple</button>');

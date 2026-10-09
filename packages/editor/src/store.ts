@@ -1,11 +1,17 @@
 import { useSyncExternalStore } from "react";
-import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type Change, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
-import { followMoves, followOps, isVitePage, repeatedSources, undoAll } from "./hmr";
+import { followMoves, followOps, isVitePage, repeatedSources, sameEdit, undoAll } from "./hmr";
 import { shownPane } from "./scene-geometry";
 import { domSurface, type Surface } from "./surface";
 
 export type Device = "desktop" | "tablet" | "mobile";
+
+/** Steps of unsent edits (with the page they were made on) to put back after Edit source wrote the others. */
+export interface KeptEdits {
+  entries: { ops: Op[] }[];
+  before: Scene | null;
+}
 
 export const DEVICE_WIDTH: Record<Device, number | null> = { desktop: null, tablet: 820, mobile: 390 };
 
@@ -122,6 +128,11 @@ class Store {
   private morphedWhileWriting = false;
   /** Edit source wrote the files and the page becomes the new base once their morph has come through. */
   private commitTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Edits Edit source left out of the files and didn't send: once the page shows the written files, only these
+   * are replayed on it, and they stay unsent (see writingSource). `applied` once that happened.
+   */
+  private keepAfterWrite: (KeptEdits & { applied: boolean }) | null = null;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -163,11 +174,14 @@ class Store {
       this.set({});
       return;
     }
-    const before = isVitePage(doc) ? (this.heldBase ?? this.log?.base ?? null) : null;
+    // Likewise a reloaded HTML page: its new ids follow document order, so an element the AI added or removed
+    // above the edited ones would otherwise shift every replayed edit onto its neighbour.
+    const before = this.heldBase ?? this.log?.base ?? null;
     const pending = this.unsent();
     this.sent = [];
     this.bridge = new DomBridge(doc);
-    this.rebase(pending, before);
+    const kept = this.keptAfterWrite();
+    this.rebase(kept?.entries ?? pending, kept ? kept.before : before);
     if (this.commitTimer !== undefined) this.finishWrite();
   }
 
@@ -199,11 +213,13 @@ class Store {
       if (this.commitTimer !== undefined) this.finishWrite();
       return;
     }
-    const before = this.heldBase;
+    // An HTML page's morph pairs elements by position too: follow them from the page the edits were made on.
+    const before = this.heldBase ?? this.log?.base ?? null;
     const pending = this.unsent();
     // Edits made while React was updating went onto the page it was changing: take them off too, then replay all.
     if (held && this.log) undoAll(this.log);
-    this.rebase(pending, before);
+    const kept = this.keptAfterWrite();
+    this.rebase(kept?.entries ?? pending, kept ? kept.before : before);
     if (this.commitTimer !== undefined) this.finishWrite();
   }
 
@@ -239,9 +255,38 @@ class Store {
     return entries;
   }
 
+  /**
+   * The unsent steps behind some of the pending changes (matched by element and kind), for
+   * writingSource to keep unsent when the files get the rest. Call before any edits come off.
+   * (A step that also made a written change keeps only its other ops.)
+   */
+  editsFor(changes: readonly Change[]): KeptEdits {
+    const entries = [...(this.held ?? []), ...(this.log?.entries ?? [])]
+      .map((e) => ({ ops: e.ops.filter((op) => changes.some((c) => sameEdit(c, op))) }))
+      .filter((e) => e.ops.length > 0);
+    return { entries, before: this.heldBase ?? this.log?.base ?? null };
+  }
+
+  /** While Edit source writes, the edits to replay on the page once it shows the written files (see writingSource). */
+  private keptAfterWrite(): KeptEdits | null {
+    const keep = this.writing ? this.keepAfterWrite : null;
+    if (keep) keep.applied = true;
+    return keep;
+  }
+
   /** After a handoff, the current page (with the human's edits) becomes the new base. */
   commitHandoff(): void {
     if (!this.surface) return;
+    const keep = this.keepAfterWrite;
+    this.keepAfterWrite = null;
+    if (keep) {
+      // The page shows the written files with the edits that weren't sent on top: they stay unsent.
+      if (keep.applied) return this.set({ stale: false });
+      // The written files haven't reached the page yet: keep every edit unsent rather than lose some. Those the
+      // files have now change nothing once they arrive. (React has them all off the page: they go back on.)
+      if (this.isVitePage) this.putBackEdits();
+      return;
+    }
     // Edits taken off the page for a morph go back on before the page becomes the new base.
     if (this.held && !this.isVitePage) this.rebase(this.unsent());
     // React still renders the page without them: they come off before its next update (see beforeUpdate).
@@ -258,11 +303,16 @@ class Store {
    * for it (briefly), so the edits that went to the AI instead are replayed
    * through the morph rather than wiped by it.
    */
-  async writingSource<T>(write: () => Promise<T>): Promise<T> {
+  async writingSource<T>(write: () => Promise<T>, keep?: KeptEdits): Promise<T> {
     this.writing++;
     this.morphedWhileWriting = false;
+    // A scene mock is the new base as it is: the scene file has every edit (the code still has to follow).
+    this.keepAfterWrite = keep && keep.entries.length > 0 && !this.sceneSurface ? { ...keep, applied: false } : null;
     try {
-      const result = await write();
+      const result = await write().catch((e: unknown) => {
+        this.keepAfterWrite = null;
+        throw e;
+      });
       // A scene mock shows the edits itself: no page morphs, so it is the new base right away.
       if (this.morphedWhileWriting || this.sceneSurface) this.commitHandoff();
       else {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cloneScene, createScene, deleteOp, groupOps, OpLog, rebaseOps, type Op, type Scene, type SceneNode } from "./index.js";
+import { cloneScene, createScene, deleteOp, followRenumbered, groupOps, OpLog, parseSceneFile, rebaseOps, type Op, type Scene, type SceneNode } from "./index.js";
 
 function node(id: string, parent: string, extra: Partial<SceneNode> = {}): SceneNode {
   return { id, type: "button", parent, children: [], layout: { x: 0, y: 0, w: 10, h: 3 }, style: {}, props: {}, ...extra };
@@ -95,5 +95,34 @@ describe("rebaseOps", () => {
     const copy = cloneScene(newer);
     rebaseOps(newer, [{ op: "move", node: "ok", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }]);
     expect(newer).toEqual(copy);
+  });
+});
+
+describe("followRenumbered", () => {
+  const file = (texts: string[]) =>
+    parseSceneFile(
+      JSON.stringify({
+        target: "tui",
+        root: {
+          type: "root",
+          layout: { x: 0, y: 0, w: 80, h: 24 },
+          children: [{ type: "box", layout: { x: 0, y: 0, w: 80, h: 5 }, children: texts.map((text, i) => ({ type: "button", layout: { x: i * 10, y: 0, w: 9, h: 3 }, props: { text } })) }],
+        },
+      }),
+    ).scene;
+
+  it("follows widgets without ids that the agent's change renumbered", () => {
+    const before = file(["Save", "Quit"]);
+    const after = file(["New", "Save", "Quit"]);
+    const { moved, ambiguous } = followRenumbered(before, after);
+    expect(Object.fromEntries(moved)).toEqual({ "box-0.button-0": "box-0.button-1", "box-0.button-1": "box-0.button-2" });
+    expect(ambiguous.size).toBe(0);
+  });
+
+  it("leaves a widget the agent changed in place, and reports look-alikes it can't tell apart", () => {
+    expect(followRenumbered(file(["Save", "Quit"]), file(["Store", "Quit"])).moved.size).toBe(0);
+    const { moved, ambiguous } = followRenumbered(file(["OK", "Quit"]), file(["Help", "OK", "OK", "Quit"]));
+    expect(moved.get("box-0.button-1")).toBe("box-0.button-3");
+    expect([...ambiguous]).toEqual(["box-0.button-0"]);
   });
 });

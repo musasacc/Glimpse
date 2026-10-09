@@ -17,7 +17,7 @@ Nothing to install once `glimpse-ui` is on npm: agents run `npx -y glimpse-ui mc
 | Tool | What it does |
 |---|---|
 | `glimpse_open({ dir, target?, entry?, command? })` | Start Glimpse for a project (or reuse a running one) and open the browser. `command` runs the real app (TUI/native) in Glimpse's terminal, e.g. `"python app.py"`. For a TUI/native project it also reports the scene file's problems |
-| `glimpse_wait_for_done({ dir?, timeout_sec? })` | Wait for the human's next request or edits; returns "still editing" on timeout |
+| `glimpse_wait_for_done({ dir?, timeout_sec? })` | Wait for the human's next request or edits; returns "still editing" after `timeout_sec` (default 45, under common tool-call timeouts). A cancelled call never swallows what the human sends: the next call gets it |
 | `glimpse_get_changes({ dir? })` | The latest handoff, without waiting |
 | `glimpse_status({ message })` | Show a status line in Glimpse's activity feed |
 | `glimpse_update({ dir? })` | Force the preview to reload (normally not needed) |

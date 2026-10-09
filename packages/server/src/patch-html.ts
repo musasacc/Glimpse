@@ -267,13 +267,36 @@ function formatAttr(name: string, value: string): string {
 
 function parseStyle(css: string): Map<string, string> {
   const out = new Map<string, string>();
-  for (const decl of css.split(";")) {
+  for (const decl of splitDeclarations(css)) {
     const i = decl.indexOf(":");
     if (i < 0) continue;
     const k = decl.slice(0, i).trim();
     const v = decl.slice(i + 1).trim();
     if (k) out.set(k, v);
   }
+  return out;
+}
+
+/** Split a declaration list on its `;`s, but not those inside quotes, parentheses (`url(data:…;base64,…)`) or escapes. */
+function splitDeclarations(css: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < css.length; i++) {
+    const c = css[i]!;
+    if (c === "\\") i++;
+    else if (quote) {
+      if (c === quote) quote = null;
+    } else if (c === '"' || c === "'") quote = c;
+    else if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (c === ";" && depth === 0) {
+      out.push(css.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(css.slice(start));
   return out;
 }
 
