@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { engineName } from "./agent";
+import { engineLabel } from "./agent";
 import { Mark } from "./Logo";
 import { currentEngine, useStore } from "./store";
 
@@ -10,7 +10,7 @@ import { currentEngine, useStore } from "./store";
 export function WaitingForAi({ children }: { children: ReactNode }) {
   const state = useStore();
   const title =
-    state.agentRun ? `${engineName(state.agentRun.engine)} is building…`
+    state.agentRun ? `${engineLabel(state.agentRun.engine, state.agentInfo)} is building…`
     : currentEngine(state) === "external" && state.agentWaiting ? "Your agent is listening"
     : "Describe what you want on the Home screen";
   return (

@@ -668,6 +668,48 @@ kbd {
 .btn.primary:hover:not(:disabled) {
   background: #fff;
 }
+/* Direct API fields (provider, model, key) */
+.ai-api {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #0d0d0d;
+}
+.ai-api[hidden] {
+  display: none;
+}
+.ai-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 10px;
+}
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ai-field .input {
+  flex: none;
+  width: 100%;
+}
+select.input {
+  appearance: none;
+  padding-right: 24px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 9px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  font-family: inherit;
+}
+.ai-api .ai-key {
+  margin-top: 10px;
+}
 .ai-error {
   margin: 12px 0 0;
   color: var(--danger);

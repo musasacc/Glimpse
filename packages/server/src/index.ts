@@ -2,14 +2,23 @@ export { startServer, type GlimpseServer, type Handoff, type HandoffKind, type H
 export { detectProject, SCENE_FILE, type ProjectInfo } from "./detect.js";
 export {
   detectAgents,
+  detectOllama,
+  effectiveModel,
+  envApiKey,
   loadAgentSettings,
+  ollamaUrl,
   saveAgentSettings,
+  SettingsError,
+  validateSettingsPatch,
   type AgentEngine,
   type AgentSettings,
   type AgentSettingsPatch,
+  type ApiSettings,
   type DetectedAgents,
+  type OllamaStatus,
 } from "./agent-settings.js";
-export { type AgentInfo, type AgentRunEvent, type AgentRunState, type BuiltInEngine, type ResolvedEngine } from "./agent-types.js";
+export { API_PROVIDERS, KEY_PROVIDERS, PROVIDERS, QUALITIES, type ApiProvider, type KeyProvider, type ProviderInfo, type Quality } from "./agent-providers.js";
+export { type AgentApiInfo, type AgentInfo, type AgentRunEvent, type AgentRunState, type BuiltInEngine, type ResolvedEngine } from "./agent-types.js";
 export { injectClient } from "./inject.js";
 export { openBrowser } from "./browser.js";
 export { findRunningServer, projectDirKey, sameDir, servesProject, withProjectLock, type ServerInfo } from "./running.js";

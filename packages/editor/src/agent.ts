@@ -6,6 +6,41 @@
 
 export type Engine = "claude" | "codex" | "api" | "external" | "none";
 export type Preferred = "auto" | "claude" | "codex" | "api" | "external";
+export type ApiProvider = "anthropic" | "openai" | "gemini" | "openrouter" | "ollama";
+export type KeyProvider = Exclude<ApiProvider, "ollama">;
+export type Quality = "fast" | "balanced" | "best";
+
+export const API_PROVIDERS: readonly ApiProvider[] = ["anthropic", "openai", "gemini", "openrouter", "ollama"];
+export const KEY_PROVIDERS: readonly KeyProvider[] = ["anthropic", "openai", "gemini", "openrouter"];
+export const QUALITIES: readonly Quality[] = ["fast", "balanced", "best"];
+
+/** What the dialog shows per provider (the server's list of models wins when it sends one). */
+export const PROVIDER_META: Record<ApiProvider, { name: string; short: string; keyUrl?: string; keyHint?: string; defaultModel: string; models: string[] }> = {
+  anthropic: {
+    name: "Anthropic",
+    short: "Claude",
+    keyUrl: "https://console.anthropic.com/settings/keys",
+    keyHint: "sk-ant-…",
+    defaultModel: "claude-opus-5-5",
+    models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"],
+  },
+  openai: { name: "OpenAI", short: "GPT", keyUrl: "https://platform.openai.com/api-keys", keyHint: "sk-…", defaultModel: "gpt-5", models: ["gpt-5", "gpt-5-mini"] },
+  gemini: { name: "Google Gemini", short: "Gemini", keyUrl: "https://aistudio.google.com/apikey", keyHint: "AIza…", defaultModel: "gemini-2.5-pro", models: ["gemini-2.5-pro", "gemini-2.5-flash"] },
+  openrouter: { name: "OpenRouter", short: "OpenRouter", keyUrl: "https://openrouter.ai/keys", keyHint: "sk-or-…", defaultModel: "anthropic/claude-opus-5-5", models: ["anthropic/claude-opus-5-5"] },
+  ollama: { name: "Ollama", short: "Ollama", defaultModel: "llama3.2", models: [] },
+};
+
+export interface ApiInfo {
+  provider: ApiProvider;
+  /** The model it uses. */
+  model: string;
+  /** The model chosen in the settings ("" = the provider's default). */
+  chosenModel: string;
+  providers: Record<ApiProvider, { name: string; defaultModel: string; models: string[] }>;
+  keysSaved: Record<KeyProvider, boolean>;
+  envKeys: Record<KeyProvider, boolean>;
+  ollama: { baseUrl: string; running: boolean; models: string[] };
+}
 
 export interface AgentRun {
   seq: number;
@@ -20,6 +55,21 @@ export interface AgentInfo {
   available: { claude: boolean; codex: boolean; api: boolean; external: boolean };
   running: AgentRun | null;
   queued: number;
+  /** The Direct API settings; null from a server that only knows the Anthropic key. */
+  api: ApiInfo | null;
+  /** Behavior settings; null from an older server. */
+  behavior: { quality: Quality; allowCommands: boolean; maxSteps: number; customInstructions: string } | null;
+}
+
+/** A settings change (POST /api/agent/settings). Keys: a string saves one, null removes it. */
+export interface SettingsPatch {
+  engine?: Preferred;
+  anthropicApiKey?: string | null;
+  api?: { provider?: ApiProvider; model?: string | null; baseUrl?: string | null; keys?: Partial<Record<KeyProvider, string | null>> };
+  quality?: Quality;
+  allowCommands?: boolean;
+  maxSteps?: number;
+  customInstructions?: string | null;
 }
 
 export interface AgentRunMessage {
@@ -45,6 +95,32 @@ export function engineName(engine: Engine | null | undefined): string {
   return ENGINE_NAMES[engine ?? "external"] ?? ENGINE_NAMES.external;
 }
 
+/** A model id, shortened for a chip: "anthropic/claude-opus-5-5" → "claude-opus-5-5", "llama3.2:latest" → "llama3.2". */
+export function shortModel(model: string): string {
+  return model.replace(/^.*\//, "").replace(/:latest$/, "");
+}
+
+/**
+ * What the chip calls the AI: "Claude Code", "Codex", and for the Direct API the provider and model —
+ * "Claude · opus-5-5", "GPT · OpenAI", "Gemini", "Ollama · llama3", "OpenRouter · claude-opus-5-5".
+ */
+export function engineLabel(engine: Engine | null | undefined, info: Pick<AgentInfo, "api"> | null | undefined): string {
+  if (engine !== "api" || !info?.api) return engineName(engine);
+  const { provider, model } = info.api;
+  switch (provider) {
+    case "anthropic":
+      return `Claude · ${model.replace(/^claude-/, "")}`;
+    case "openai":
+      return /^gpt/i.test(model) ? "GPT · OpenAI" : `OpenAI · ${shortModel(model)}`;
+    case "gemini":
+      return "Gemini";
+    case "ollama":
+      return `Ollama · ${shortModel(model)}`;
+    case "openrouter":
+      return `OpenRouter · ${shortModel(model)}`;
+  }
+}
+
 /** Glimpse runs it itself (as opposed to an external agent, or nothing). */
 export function isBuiltIn(engine: Engine | null | undefined): boolean {
   return engine === "claude" || engine === "codex" || engine === "api";
@@ -56,6 +132,54 @@ export function isBuiltIn(engine: Engine | null | undefined): boolean {
  */
 export function queuedNote(engine: Engine, agentWaiting: boolean): string {
   return engine === "external" && !agentWaiting ? " It's queued until your agent picks it up." : "";
+}
+
+const isOneOf = <T extends string>(list: readonly T[], x: unknown): x is T => typeof x === "string" && (list as readonly string[]).includes(x);
+const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : []);
+const flags = (x: unknown): Record<KeyProvider, boolean> => {
+  const o = (x && typeof x === "object" ? x : {}) as Record<string, unknown>;
+  return Object.fromEntries(KEY_PROVIDERS.map((p) => [p, o[p] === true])) as Record<KeyProvider, boolean>;
+};
+
+function normalizeApi(x: unknown): ApiInfo | null {
+  if (!x || typeof x !== "object") return null;
+  const a = x as Record<string, unknown>;
+  if (!isOneOf(API_PROVIDERS, a.provider)) return null;
+  const rawProviders = (a.providers && typeof a.providers === "object" ? a.providers : {}) as Record<string, unknown>;
+  const providers = Object.fromEntries(
+    API_PROVIDERS.map((p) => {
+      const r = (rawProviders[p] && typeof rawProviders[p] === "object" ? rawProviders[p] : {}) as Record<string, unknown>;
+      const meta = PROVIDER_META[p];
+      return [
+        p,
+        {
+          name: typeof r.name === "string" ? r.name : meta.name,
+          defaultModel: typeof r.defaultModel === "string" && r.defaultModel ? r.defaultModel : meta.defaultModel,
+          models: Array.isArray(r.models) ? strings(r.models) : meta.models,
+        },
+      ];
+    }),
+  ) as ApiInfo["providers"];
+  const o = (a.ollama && typeof a.ollama === "object" ? a.ollama : {}) as Record<string, unknown>;
+  return {
+    provider: a.provider,
+    model: typeof a.model === "string" && a.model ? a.model : providers[a.provider].defaultModel,
+    chosenModel: typeof a.chosenModel === "string" ? a.chosenModel : "",
+    providers,
+    keysSaved: flags(a.keysSaved),
+    envKeys: flags(a.envKeys),
+    ollama: { baseUrl: typeof o.baseUrl === "string" && o.baseUrl ? o.baseUrl : "http://localhost:11434", running: o.running === true, models: strings(o.models) },
+  };
+}
+
+function normalizeBehavior(o: Record<string, unknown>): AgentInfo["behavior"] {
+  if (!isOneOf(QUALITIES, o.quality)) return null;
+  return {
+    quality: o.quality,
+    allowCommands: o.allowCommands === true,
+    maxSteps: typeof o.maxSteps === "number" && Number.isInteger(o.maxSteps) && o.maxSteps > 0 ? o.maxSteps : 40,
+    customInstructions: typeof o.customInstructions === "string" ? o.customInstructions : "",
+  };
 }
 
 function isEngine(x: unknown): x is Engine {
@@ -81,6 +205,8 @@ export function normalizeAgentInfo(x: unknown): AgentInfo | null {
     available: { claude: a.claude === true, codex: a.codex === true, api: a.api === true, external: a.external === true },
     running: normalizeRun(o.running),
     queued: typeof o.queued === "number" && o.queued > 0 ? o.queued : 0,
+    api: normalizeApi(o.api),
+    behavior: normalizeBehavior(o),
   };
 }
 
@@ -194,8 +320,8 @@ export async function getAgentInfo(): Promise<AgentInfo | null> {
   }
 }
 
-/** Choose the engine and/or set (a string) or remove (null) the Anthropic API key. Throws the server's error. */
-export async function saveAgentSettings(body: { engine?: Preferred; anthropicApiKey?: string | null }): Promise<AgentInfo> {
+/** Change the AI settings (engine, provider, keys, model, behavior). Throws the server's error. */
+export async function saveAgentSettings(body: SettingsPatch): Promise<AgentInfo> {
   const res = await fetch("/api/agent/settings", {
     method: "POST",
     headers: { "content-type": "application/json" },

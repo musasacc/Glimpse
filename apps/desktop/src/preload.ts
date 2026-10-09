@@ -22,6 +22,11 @@ const api: LauncherApi = {
     ipcRenderer.invoke(IPC.saveAi, {
       ...(patch?.engine !== undefined && { engine: String(patch.engine) }),
       ...(patch?.anthropicApiKey !== undefined && { anthropicApiKey: patch.anthropicApiKey === null ? null : String(patch.anthropicApiKey) }),
+      ...(patch?.provider !== undefined && { provider: String(patch.provider) }),
+      ...(patch?.model !== undefined && { model: patch.model === null ? null : String(patch.model) }),
+      ...(patch?.apiKey !== undefined && {
+        apiKey: { provider: String(patch.apiKey?.provider), key: patch.apiKey?.key === null ? null : String(patch.apiKey?.key) },
+      }),
     }),
 };
 

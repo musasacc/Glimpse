@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as I from "./icons";
 import { currentEngine, store, useStore } from "./store";
-import { engineName, isBuiltIn, stopAgent } from "./agent";
+import { engineLabel, isBuiltIn, stopAgent } from "./agent";
 import { Mark } from "./Logo";
 import { PreviewError } from "./PreviewError";
 import { isEnter } from "./platform";
@@ -137,7 +137,7 @@ export function Home() {
               <>
                 <span className="agent-chip on building" role="status">
                   <span className="agent-dot" />
-                  {engineName(run.engine)} is building…
+                  {engineLabel(run.engine, state.agentInfo)} is building…
                 </span>
                 <button className="ghost stop-btn" onClick={() => void stop()} disabled={stopping} title="Stop building">
                   <I.Stop size={14} /> {stopping ? "Stopping…" : "Stop"}
@@ -235,15 +235,15 @@ function EngineChip() {
   const external = engine === "external";
   const ready = external ? state.agentWaiting : engine !== "none";
   const title =
-    engine === "none" ? "Choose what builds your UI: Claude Code, Codex or a Claude API key"
+    engine === "none" ? "Choose what builds your UI: Claude Code, Codex, or a model's API (Claude, GPT, Gemini, OpenRouter, Ollama)"
     : external ?
       state.agentWaiting ? "Your agent is waiting for a request"
       : "Requests wait until your agent picks them up"
-    : `${engineName(engine)} builds your request on this machine`;
+    : `${engineLabel(engine, state.agentInfo)} builds your request on this machine`;
   return (
     <button className={`agent-chip${ready ? " on" : ""}`} title={`${title}. AI settings…`} onClick={() => store.openAiSettings()}>
       <span className="agent-dot" />
-      {engineName(engine)}
+      {engineLabel(engine, state.agentInfo)}
     </button>
   );
 }

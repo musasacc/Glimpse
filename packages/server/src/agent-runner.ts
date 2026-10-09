@@ -1,28 +1,37 @@
 /**
  * The built-in agent: when the human sends a request, edits or a variants job and no external agent
  * (`glimpse wait`, the MCP server) is listening, Glimpse runs the AI itself — the Claude Code CLI, the Codex CLI
- * or the Anthropic API — in the project folder, one run at a time, and streams its progress to the editor.
+ * or a model's API (Anthropic through its SDK; OpenAI, Gemini, OpenRouter and Ollama through the OpenAI SDK's
+ * Chat Completions) — in the project folder, one run at a time, and streams its progress to the editor.
  */
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { lstat, mkdir, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { z } from "zod";
+import { KEY_PROVIDERS, PROVIDERS, API_PROVIDERS, type ApiProvider, type KeyProvider, type Quality } from "./agent-providers.js";
 import {
+  clearOllamaCache,
   detectAgents,
+  detectOllama,
+  effectiveModel,
+  envApiKey,
   findAgentBinary,
   loadAgentSettings,
-  resolveAnthropicKey,
+  ollamaUrl,
+  resolveApiKey,
   type AgentEngine,
   type AgentSettings,
   type DetectedAgents,
+  type OllamaStatus,
 } from "./agent-settings.js";
 import type { Handoff } from "./server.js";
 import { baseEnv, killProcessTree, killProcessTreeSync, settled } from "./terminal.js";
-import type { AgentInfo, AgentRunEvent, AgentRunState, BuiltInEngine, ResolvedEngine } from "./agent-types.js";
+import type { AgentApiInfo, AgentInfo, AgentRunEvent, AgentRunState, BuiltInEngine, ResolvedEngine } from "./agent-types.js";
 
-export type { AgentInfo, AgentRunEvent, AgentRunState, BuiltInEngine, ResolvedEngine };
+export type { AgentApiInfo, AgentInfo, AgentRunEvent, AgentRunState, BuiltInEngine, ResolvedEngine };
 
 export interface AgentRunnerDeps {
   /** The project folder: where the agent runs and the only place it writes. */
@@ -46,13 +55,29 @@ const DETECT_TTL_MS = 30_000;
 const KEEP_OUTPUT_LINES = 40;
 const MAX_LINE = 300;
 const STOP_GRACE_MS = 3000;
-const API_MODEL = "claude-opus-5-5";
 const API_MAX_TOKENS = 64_000;
-const API_MAX_ITERATIONS = 40;
+/** Anthropic's effort for each quality setting (Opus 5.5 defaults to medium, so it is always sent). */
+const ANTHROPIC_EFFORT: Record<Quality, "low" | "medium" | "high"> = { fast: "low", balanced: "medium", best: "high" };
+/** OpenAI-style reasoning effort for each quality setting (sent to OpenAI and Gemini reasoning models only). */
+const REASONING_EFFORT: Record<Quality, "low" | "medium" | "high"> = { fast: "low", balanced: "medium", best: "high" };
 const CODEX_LINES_PER_SEC = 10;
 /** How long an engine that failed to sign in is skipped by "auto". */
 const SIGNED_OUT_MS = 10 * 60_000;
 const ENGINE_NAMES: Record<BuiltInEngine, string> = { claude: "Claude Code", codex: "Codex", api: "Claude (API)" };
+
+/** What a run is called in the activity feed ("Claude Code", "OpenAI · gpt-5", "Ollama · llama3.2"). */
+function engineLabel(engine: BuiltInEngine, settings: AgentSettings, model?: string): string {
+  if (engine !== "api") return ENGINE_NAMES[engine];
+  const p = settings.api.provider;
+  if (p === "anthropic") return model ? `Claude API · ${model}` : ENGINE_NAMES.api;
+  return model ? `${PROVIDERS[p].name} · ${model}` : PROVIDERS[p].name;
+}
+
+/** The request plus the human's standing instructions (AI settings → Behavior). */
+export function withInstructions(prompt: string, instructions: string | undefined): string {
+  const extra = instructions?.trim();
+  return extra ? `${prompt}\n\n## Standing instructions from the human (AI settings)\n\n${extra}\n` : prompt;
+}
 const SIGN_IN_RE = /oauth|authenticat|not logged in|log ?in\b|unauthori[sz]ed|\b401\b/i;
 /** What a CLI prints for a bad command line: noise in the activity feed. */
 const USAGE_RE = /^(usage:|for more information|\s+codex exec\b|\s*codex exec \[)/i;
@@ -122,21 +147,21 @@ export class AgentRunner {
   private queue: number[] = [];
   private current: Run | undefined;
   private closing = false;
-  private detected: { at: number; settings: AgentSettings; agents: DetectedAgents } | undefined;
-  private detecting: Promise<{ settings: AgentSettings; agents: DetectedAgents }> | undefined;
+  private detected: Detected | undefined;
+  private detecting: Promise<Detected> | undefined;
   /** Engines whose sign-in failed lately: "auto" skips them for a while. */
   private signedOut = new Map<"claude" | "codex", number>();
 
   constructor(private readonly deps: AgentRunnerDeps) {}
 
   /** Settings and detected engines, cached for a while (a CLI installed meanwhile shows up within 30 s). */
-  private async detect(): Promise<{ settings: AgentSettings; agents: DetectedAgents }> {
+  private async detect(): Promise<Detected> {
     if (this.detected && Date.now() - this.detected.at < DETECT_TTL_MS) return this.detected;
     this.detecting ??= (async () => {
       try {
         const settings = await loadAgentSettings();
-        const agents = await detectAgents(settings);
-        this.detected = { at: Date.now(), settings, agents };
+        const [agents, ollama] = await Promise.all([detectAgents(settings), detectOllama(ollamaUrl(settings))]);
+        this.detected = { at: Date.now(), settings, agents, ollama };
         return this.detected;
       } finally {
         this.detecting = undefined;
@@ -148,6 +173,7 @@ export class AgentRunner {
   /** Forget the cached settings and detection (the settings changed). */
   refresh(): void {
     this.detected = undefined;
+    clearOllamaCache();
     this.signedOut.clear();
   }
 
@@ -165,7 +191,7 @@ export class AgentRunner {
   }
 
   async info(): Promise<AgentInfo> {
-    const { settings, agents } = await this.detect();
+    const { settings, agents, ollama } = await this.detect();
     const external = this.deps.externalWaiting();
     const run = this.current;
     return {
@@ -174,6 +200,11 @@ export class AgentRunner {
       available: { ...agents, external },
       running: run ? { seq: run.seq, engine: run.engine, startedAt: run.startedAt } : null,
       queued: this.queue.length,
+      api: apiInfo(settings, ollama),
+      quality: settings.quality,
+      allowCommands: settings.allowCommands,
+      maxSteps: settings.maxSteps,
+      customInstructions: settings.customInstructions ?? "",
     };
   }
 
@@ -271,13 +302,15 @@ export class AgentRunner {
     };
     this.current = run;
     this.deps.roundEnd();
-    this.emit(run, "start", ENGINE_NAMES[engine]);
+    const model = engine === "api" ? effectiveModel(settings, this.detected?.ollama.models) : undefined;
+    this.emit(run, "start", engineLabel(engine, settings, model));
     this.infoChanged();
-    const prompt = this.deps.prompt(h);
+    const prompt = withInstructions(this.deps.prompt(h), settings.customInstructions);
     const work =
-      engine === "claude" ? this.runClaude(run, prompt)
+      engine === "claude" ? this.runClaude(run, prompt, settings)
       : engine === "codex" ? this.runCodex(run, prompt)
-      : this.runApi(run, h, prompt, settings);
+      : settings.api.provider === "anthropic" ? this.runAnthropic(run, h, prompt, settings, model!)
+      : this.runOpenAiCompatible(run, h, prompt, settings, model!);
     let fallback: BuiltInEngine | undefined;
     work
       .then((summary) => {
@@ -376,12 +409,12 @@ export class AgentRunner {
     return result;
   }
 
-  private async runClaude(run: Run, prompt: string): Promise<string | undefined> {
+  private async runClaude(run: Run, prompt: string, settings: AgentSettings): Promise<string | undefined> {
     const bin = findAgentBinary("claude");
     if (!bin) throw new Error("Claude Code (the claude command) isn't installed");
     let result: { text: string; isError: boolean } | undefined;
     let lastErr = "";
-    const code = await this.spawnCli(run, bin, ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"], prompt, (line, stream) => {
+    const code = await this.spawnCli(run, bin, claudeArgs(settings), prompt, (line, stream) => {
       if (stream === "err") {
         lastErr = line;
         return;
@@ -478,28 +511,61 @@ export class AgentRunner {
 
   /* ── API engine ──────────────────────────────────────────────────────── */
 
-  private async runApi(run: Run, h: Handoff, prompt: string, settings: AgentSettings): Promise<string | undefined> {
-    const apiKey = resolveAnthropicKey(settings);
-    if (!apiKey) throw new Error("No Anthropic API key: add one in Glimpse's settings");
-    const client = new Anthropic({ apiKey });
-    const tools = createProjectTools(this.deps.dir, h.kind === "variants" && h.variants ? { variantsDir: `.glimpse/variants/${h.variants.id}` } : {});
-    const content: Anthropic.Beta.BetaContentBlockParam[] = [];
+  /** Model text as activity lines: whole lines as they complete, a long unfinished one in pieces. */
+  private textFeed(run: Run): { push(delta: string): void; flush(): void } {
+    let pending = "";
+    const drain = (all: boolean) => {
+      let k: number;
+      while ((k = pending.indexOf("\n")) >= 0) {
+        this.output(run, pending.slice(0, k));
+        pending = pending.slice(k + 1);
+      }
+      if (all || pending.length > MAX_LINE) {
+        this.output(run, pending);
+        pending = "";
+      }
+    };
+    return {
+      push: (delta) => {
+        pending += delta;
+        drain(false);
+      },
+      flush: () => drain(true),
+    };
+  }
+
+  private projectTools(h: Handoff): ProjectTools {
+    return createProjectTools(this.deps.dir, h.kind === "variants" && h.variants ? { variantsDir: `.glimpse/variants/${h.variants.id}` } : {});
+  }
+
+  private async screenshotPng(h: Handoff): Promise<Buffer | null> {
     const shot = this.deps.screenshot(h);
-    const png = shot ? await readFile(shot).catch(() => null) : null;
+    return shot ? await readFile(shot).catch(() => null) : null;
+  }
+
+  private async runAnthropic(run: Run, h: Handoff, prompt: string, settings: AgentSettings, model: string): Promise<string | undefined> {
+    const apiKey = resolveApiKey(settings, "anthropic");
+    if (!apiKey) throw new Error("No Anthropic API key: add one in Glimpse's AI settings");
+    const client = new Anthropic({ apiKey });
+    const tools = this.projectTools(h);
+    const content: Anthropic.Beta.BetaContentBlockParam[] = [];
+    const png = await this.screenshotPng(h);
     if (png) content.push({ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } });
     content.push({ type: "text", text: prompt });
     const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: "user", content }];
+    // Haiku takes adaptive thinking but no effort setting.
+    const effort = /haiku/i.test(model) ? undefined : ANTHROPIC_EFFORT[settings.quality];
     let jsonRetries = 0;
     let lastText = "";
 
-    for (let i = 0; i < API_MAX_ITERATIONS; i++) {
+    for (let i = 0; i < settings.maxSteps; i++) {
       if (run.stopped) throw new StoppedError();
       const stream = client.beta.messages.stream(
         {
-          model: API_MODEL,
+          model,
           max_tokens: API_MAX_TOKENS,
           thinking: { type: "adaptive" },
-          output_config: { effort: "high" },
+          ...(effort && { output_config: { effort } }),
           betas: ["server-side-fallback-2026-07-01"],
           fallbacks: "default",
           system: API_SYSTEM_PROMPT,
@@ -508,34 +574,20 @@ export class AgentRunner {
         },
         { signal: run.abort.signal },
       );
-      let pending = "";
-      const flush = (all: boolean) => {
-        let k: number;
-        while ((k = pending.indexOf("\n")) >= 0) {
-          this.output(run, pending.slice(0, k));
-          pending = pending.slice(k + 1);
-        }
-        if (all || pending.length > MAX_LINE) {
-          this.output(run, pending);
-          pending = "";
-        }
-      };
-      stream.on("text", (delta) => {
-        pending += delta;
-        flush(false);
-      });
+      const feed = this.textFeed(run);
+      stream.on("text", (delta) => feed.push(delta));
       let message: Anthropic.Beta.BetaMessage;
       try {
         message = await stream.finalMessage();
         jsonRetries = 0; // the cap is on consecutive failures of one turn
       } catch (err) {
-        flush(true);
+        feed.flush();
         if (run.stopped || err instanceof Anthropic.APIUserAbortError) throw new StoppedError();
         // With eager input streaming, a tool input that isn't parseable JSON rejects here: re-issue the turn (twice at most).
-        if (err instanceof Anthropic.APIError || jsonRetries++ >= 2) throw err;
+        if (err instanceof Anthropic.APIError || jsonRetries++ >= 2) throw anthropicError(err, model);
         continue;
       }
-      flush(true);
+      feed.flush();
       const text = message.content.filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text").map((b) => b.text).join("\n").trim();
       if (text) lastText = text;
 
@@ -564,8 +616,138 @@ export class AgentRunner {
       }
       messages.push({ role: "user", content: results });
     }
-    throw new Error(`Stopped after ${API_MAX_ITERATIONS} steps without finishing`);
+    throw new Error(`Stopped after ${settings.maxSteps} steps without finishing`);
   }
+
+  /** OpenAI, Gemini, OpenRouter and Ollama: the same tool loop over Chat Completions (streamed). */
+  private async runOpenAiCompatible(run: Run, h: Handoff, prompt: string, settings: AgentSettings, model: string): Promise<string | undefined> {
+    const provider = settings.api.provider as Exclude<ApiProvider, "anthropic">;
+    const name = PROVIDERS[provider].name;
+    const apiKey = provider === "ollama" ? "ollama" : resolveApiKey(settings, provider);
+    if (!apiKey) throw new Error(`No ${name} API key: add one in Glimpse's AI settings`);
+    const baseURL = provider === "ollama" ? `${ollamaUrl(settings)}/v1` : PROVIDERS[provider].baseURL;
+    const client = new OpenAI({
+      apiKey,
+      ...(baseURL && { baseURL }),
+      ...(provider === "ollama" && { maxRetries: 0 }),
+      ...(provider === "openrouter" && { defaultHeaders: { "HTTP-Referer": "https://github.com/musasacc/Glimpse", "X-Title": "Glimpse" } }),
+    });
+    const tools = this.projectTools(h);
+    const fnTools: OpenAI.Chat.Completions.ChatCompletionTool[] = tools.specs.map((t) => ({
+      type: "function",
+      function: { name: t.name, description: t.description, parameters: t.schema },
+    }));
+    // Most local models can't see images: Ollama gets the text only.
+    const png = provider === "ollama" ? null : await this.screenshotPng(h);
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: API_SYSTEM_PROMPT },
+      {
+        role: "user",
+        content: png ? [{ type: "text", text: prompt }, { type: "image_url", image_url: { url: `data:image/png;base64,${png.toString("base64")}` } }] : prompt,
+      },
+    ];
+    const reasoning = (provider === "openai" && /^(o\d|gpt-5)/i.test(model)) || (provider === "gemini" && /gemini-(2\.5|[3-9])/i.test(model));
+    let lastText = "";
+
+    for (let i = 0; i < settings.maxSteps; i++) {
+      if (run.stopped) throw new StoppedError();
+      const feed = this.textFeed(run);
+      let text = "";
+      let finish: string | null = null;
+      const calls: { id: string; name: string; args: string }[] = [];
+      try {
+        const stream = await client.chat.completions.create(
+          { model, messages, tools: fnTools, stream: true, ...(reasoning && { reasoning_effort: REASONING_EFFORT[settings.quality] }) },
+          { signal: run.abort.signal },
+        );
+        for await (const chunk of stream) {
+          const choice = chunk.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta;
+          if (typeof delta?.content === "string" && delta.content) {
+            text += delta.content;
+            feed.push(delta.content);
+          }
+          for (const [k, tc] of (delta?.tool_calls ?? []).entries()) {
+            const index = typeof tc.index === "number" ? tc.index : k;
+            const call = (calls[index] ??= { id: "", name: "", args: "" });
+            if (tc.id) call.id = tc.id;
+            if (tc.function?.name) call.name += tc.function.name;
+            if (tc.function?.arguments) call.args += tc.function.arguments;
+          }
+          if (choice.finish_reason) finish = choice.finish_reason;
+        }
+      } catch (err) {
+        feed.flush();
+        if (run.stopped || err instanceof OpenAI.APIUserAbortError) throw new StoppedError();
+        throw openAiError(err, provider, model, settings);
+      }
+      feed.flush();
+      if (run.stopped) throw new StoppedError();
+      if (text.trim()) lastText = text.trim();
+      const toolCalls = calls.filter(Boolean).map((c, k) => ({ ...c, id: c.id || `call_${i}_${k}` }));
+
+      if (toolCalls.length === 0) {
+        if (finish === "length") throw new Error("The model's reply hit the output limit");
+        if (finish === "content_filter") throw new Error("The model declined this request");
+        return lastText || undefined;
+      }
+      // Arguments cut off at the output limit can't be trusted: never run them.
+      if (finish === "length") throw new Error("The model's reply hit the output limit while writing a file");
+
+      messages.push({
+        role: "assistant",
+        content: text || null,
+        tool_calls: toolCalls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.args || "{}" } })),
+      });
+      for (const call of toolCalls) {
+        if (run.stopped) throw new StoppedError();
+        let input: unknown;
+        try {
+          input = JSON.parse(call.args || "{}");
+        } catch {
+          input = undefined;
+        }
+        const r = input === undefined ? invalid(call.args) : await tools.run(call.name, input);
+        if (r.activity) this.output(run, r.activity);
+        messages.push({ role: "tool", tool_call_id: call.id, content: r.isError ? `Error: ${r.content}` : r.content });
+      }
+    }
+    throw new Error(`Stopped after ${settings.maxSteps} steps without finishing`);
+  }
+}
+
+interface Detected {
+  at: number;
+  settings: AgentSettings;
+  agents: DetectedAgents;
+  ollama: OllamaStatus;
+}
+
+/** Claude Code's command line: edits only by default; with "allow commands" it may run shell commands too. */
+export function claudeArgs(settings: Pick<AgentSettings, "allowCommands">): string[] {
+  const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"];
+  if (settings.allowCommands) args.push("--allowedTools", "Bash");
+  return args;
+}
+
+/** What the editor may know about the API settings: never a key, only whether one is saved or in the environment. */
+export function apiInfo(settings: AgentSettings, ollama: OllamaStatus): AgentApiInfo {
+  const flags = (f: (p: KeyProvider) => boolean) => Object.fromEntries(KEY_PROVIDERS.map((p) => [p, f(p)])) as Record<KeyProvider, boolean>;
+  return {
+    provider: settings.api.provider,
+    model: effectiveModel(settings, ollama.models),
+    chosenModel: settings.api.model ?? "",
+    providers: Object.fromEntries(
+      API_PROVIDERS.map((p) => [
+        p,
+        { name: PROVIDERS[p].name, defaultModel: p === "ollama" ? (ollama.models[0] ?? PROVIDERS.ollama.defaultModel) : PROVIDERS[p].defaultModel, models: p === "ollama" ? [...ollama.models] : [...PROVIDERS[p].models] },
+      ]),
+    ) as AgentApiInfo["providers"],
+    keysSaved: flags((p) => !!settings.api.keys[p]),
+    envKeys: flags((p) => !!envApiKey(p)),
+    ollama: { baseUrl: ollamaUrl(settings), running: ollama.running, models: [...ollama.models] },
+  };
 }
 
 const API_SYSTEM_PROMPT = [
@@ -594,7 +776,17 @@ export interface ToolResult {
   activity?: string;
 }
 
+export interface ToolSpec {
+  name: string;
+  description: string;
+  /** JSON schema of the input. */
+  schema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+}
+
 export interface ProjectTools {
+  /** Provider-neutral: name, description, input schema. */
+  specs: ToolSpec[];
+  /** The same tools for the Anthropic API. */
   definitions: Anthropic.Beta.BetaTool[];
   run(name: string, input: unknown): Promise<ToolResult>;
 }
@@ -609,32 +801,21 @@ class PathError extends Error {}
 export function createProjectTools(dir: string, opts: { variantsDir?: string } = {}): ProjectTools {
   const allowed = opts.variantsDir?.split("\\").join("/").replace(/\/+$/, "");
   const fileProp = { type: "string", description: "Path relative to the project folder, e.g. index.html or src/app.js" };
-  const definitions: Anthropic.Beta.BetaTool[] = [
+  const specs: ToolSpec[] = [
     {
       name: "list_files",
       description: "List the project's files (recursively, without dot folders and node_modules).",
-      eager_input_streaming: true,
-      input_schema: { type: "object", properties: { dir: { type: "string", description: "Folder relative to the project folder (default: the whole project)" } } },
+      schema: { type: "object", properties: { dir: { type: "string", description: "Folder relative to the project folder (default: the whole project)" } } },
     },
-    {
-      name: "read_file",
-      description: "Read a text file of the project.",
-      eager_input_streaming: true,
-      input_schema: { type: "object", properties: { path: fileProp }, required: ["path"] },
-    },
+    { name: "read_file", description: "Read a text file of the project.", schema: { type: "object", properties: { path: fileProp }, required: ["path"] } },
     {
       name: "write_file",
       description: "Create or overwrite a file of the project with the complete new contents.",
-      eager_input_streaming: true,
-      input_schema: { type: "object", properties: { path: fileProp, contents: { type: "string", description: "The whole file" } }, required: ["path", "contents"] },
+      schema: { type: "object", properties: { path: fileProp, contents: { type: "string", description: "The whole file" } }, required: ["path", "contents"] },
     },
-    {
-      name: "delete_file",
-      description: "Delete a file of the project.",
-      eager_input_streaming: true,
-      input_schema: { type: "object", properties: { path: fileProp }, required: ["path"] },
-    },
+    { name: "delete_file", description: "Delete a file of the project.", schema: { type: "object", properties: { path: fileProp }, required: ["path"] } },
   ];
+  const definitions: Anthropic.Beta.BetaTool[] = specs.map((t) => ({ name: t.name, description: t.description, eager_input_streaming: true, input_schema: t.schema }));
 
   /** The project-relative path (forward slashes) and absolute path for `p`, or a PathError. */
   async function confine(p: string, mode: "read" | "write"): Promise<{ rel: string; abs: string }> {
@@ -732,7 +913,7 @@ export function createProjectTools(dir: string, opts: { variantsDir?: string } =
     }
   }
 
-  return { definitions, run };
+  return { specs, definitions, run };
 }
 
 /** The SDK's tolerant parser can hand over a silently truncated input: say so, so the model sends it again. */
@@ -750,4 +931,24 @@ function describeError(err: unknown): string {
   if (err instanceof Anthropic.RateLimitError) return "Rate limited by the Anthropic API — try again in a minute";
   if (err instanceof Anthropic.APIError) return oneLine(`API error ${err.status ?? ""}: ${err.message}`.replace(/ +:/, ":"));
   return oneLine(err instanceof Error ? err.message : String(err)) || "The agent failed";
+}
+
+/** An Anthropic error the runner explains itself (an unknown model); the rest describeError words. */
+function anthropicError(err: unknown, model: string): unknown {
+  if (err instanceof Anthropic.NotFoundError) return new Error(`Anthropic doesn't know the model "${model}": pick another in the AI settings`);
+  return err;
+}
+
+/** An error of an OpenAI-compatible provider, in words: a rejected key, a rate limit, an unknown model, Ollama not running. */
+export function openAiError(err: unknown, provider: Exclude<ApiProvider, "anthropic">, model: string, settings: AgentSettings): Error {
+  const name = PROVIDERS[provider].name;
+  if (provider === "ollama" && err instanceof OpenAI.APIConnectionError)
+    return new Error(`Ollama isn't running at ${ollamaUrl(settings)}: start it (open the Ollama app, or run \`ollama serve\`), then send again`);
+  if (err instanceof OpenAI.APIConnectionError) return new Error(`Couldn't reach ${name}: check the connection and try again`);
+  if (err instanceof OpenAI.AuthenticationError || err instanceof OpenAI.PermissionDeniedError) return new Error(`The ${name} API key was rejected`);
+  if (err instanceof OpenAI.RateLimitError) return new Error(`Rate limited by ${name} — try again in a minute`);
+  if (err instanceof OpenAI.NotFoundError || (err instanceof OpenAI.APIError && /model.*(not found|does not exist)|unknown model/i.test(err.message)))
+    return new Error(provider === "ollama" ? `Ollama doesn't have the model "${model}": run \`ollama pull ${model}\`, or pick another` : `${name} doesn't know the model "${model}": pick another in the AI settings`);
+  if (err instanceof OpenAI.APIError) return new Error(oneLine(`${name} API error ${err.status ?? ""}: ${err.message}`.replace(/ +:/, ":")));
+  return err instanceof Error ? err : new Error(String(err));
 }

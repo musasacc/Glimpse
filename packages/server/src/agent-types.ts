@@ -1,4 +1,5 @@
-/** The built-in agent's public types (kept apart from the runner, so they don't pull in the Anthropic SDK's types). */
+/** The built-in agent's public types (kept apart from the runner, so they don't pull in the SDKs' types). */
+import type { ApiProvider, KeyProvider, Quality } from "./agent-providers.js";
 import type { AgentEngine } from "./agent-settings.js";
 
 export type BuiltInEngine = "claude" | "codex" | "api";
@@ -16,6 +17,31 @@ export interface AgentInfo {
   running: { seq: number; engine: BuiltInEngine; startedAt: number } | null;
   /** Handoffs waiting for the built-in agent behind the running one. */
   queued: number;
+  /** The Direct API engine's settings. Keys never leave the server: only whether one is saved or set in the environment. */
+  api: AgentApiInfo;
+  quality: Quality;
+  /** Claude Code may run shell commands too. */
+  allowCommands: boolean;
+  /** Steps the API engine takes at most. */
+  maxSteps: number;
+  /** Appended to every request ("" when none). */
+  customInstructions: string;
+}
+
+export interface AgentApiInfo {
+  provider: ApiProvider;
+  /** The model it uses (the chosen one, else the default). */
+  model: string;
+  /** The model chosen in the settings ("" when the default is used). */
+  chosenModel: string;
+  /** Per provider: its default model and suggestions for the picker. */
+  providers: Record<ApiProvider, { name: string; defaultModel: string; models: string[] }>;
+  /** A key saved in Glimpse's settings, per provider. */
+  keysSaved: Record<KeyProvider, boolean>;
+  /** A key in the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY / GOOGLE_API_KEY, OPENROUTER_API_KEY). */
+  envKeys: Record<KeyProvider, boolean>;
+  /** Ollama's address, whether it answers there, and its installed models. */
+  ollama: { baseUrl: string; running: boolean; models: string[] };
 }
 
 /** Websocket message about a built-in run. A stopped run ends with `error` and text "Stopped". */

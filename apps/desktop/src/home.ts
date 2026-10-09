@@ -1,9 +1,11 @@
-// The home window's logic that doesn't need Electron: what builds a request (AI engine), checking what the page
+// The home window's logic that doesn't need Electron: what builds a request (AI engine and Direct API provider), checking what the page
 // sends, naming a new project folder after the request, and handing the request to a project's Glimpse server.
 import { join } from "node:path";
-import type { AiEngine, AiInfo, BuildTarget, HomeRequest, ResolvedAiEngine, SaveAiPatch } from "./api.js";
+import type { AiEngine, AiInfo, AiKeyProvider, AiProvider, AiProviderInfo, BuildTarget, HomeRequest, ResolvedAiEngine, SaveAiPatch } from "./api.js";
 
 export const AI_ENGINES: readonly AiEngine[] = ["auto", "claude", "codex", "api", "external"];
+export const AI_PROVIDERS: readonly AiProvider[] = ["anthropic", "openai", "gemini", "openrouter", "ollama"];
+export const AI_KEY_PROVIDERS: readonly AiKeyProvider[] = ["anthropic", "openai", "gemini", "openrouter"];
 export const BUILD_TARGETS: readonly BuildTarget[] = ["html", "react", "tui", "native"];
 
 /** Same names as the editor's engine chip (packages/editor/src/agent.ts). */
@@ -22,37 +24,130 @@ export function resolveEngine(preferred: AiEngine, available: { claude: boolean;
   return available[preferred] ? preferred : "none";
 }
 
-/** What the home page may know about the AI settings: never the API key itself, only whether one is saved. */
-export function aiInfo(settings: { engine: AiEngine; anthropicApiKey?: string }, available: { claude: boolean; codex: boolean; api: boolean }): AiInfo {
+/** The settings fields the home page's info is made of (glimpse-ui's AgentSettings, of which only key presence is used). */
+export interface AiSettingsLike {
+  engine: AiEngine;
+  api?: { provider: AiProvider; model?: string; keys: Partial<Record<AiKeyProvider, string>> };
+  /** Settings of glimpse-ui before the providers. */
+  anthropicApiKey?: string;
+}
+
+/** What the main process found out about the providers: names, default models, keys in the environment, Ollama. */
+export interface AiProviderFacts {
+  providers: Record<AiProvider, { name: string; defaultModel: string; models: readonly string[] }>;
+  envKeys: Record<AiKeyProvider, boolean>;
+  ollama: { running: boolean; models: string[] };
+}
+
+const shortModel = (m: string) => m.replace(/^.*\//, "").replace(/:latest$/, "");
+
+/** The chip's name for the Direct API, as the editor's engineLabel: "Claude · opus-5-5", "GPT · OpenAI", "Gemini", "Ollama · llama3". */
+export function apiLabel(provider: AiProvider, model: string): string {
+  switch (provider) {
+    case "anthropic":
+      return `Claude · ${model.replace(/^claude-/, "")}`;
+    case "openai":
+      return /^gpt/i.test(model) ? "GPT · OpenAI" : `OpenAI · ${shortModel(model)}`;
+    case "gemini":
+      return "Gemini";
+    case "ollama":
+      return `Ollama · ${shortModel(model)}`;
+    case "openrouter":
+      return `OpenRouter · ${shortModel(model)}`;
+  }
+}
+
+/** What the home page may know about the AI settings: never an API key itself, only whether one is saved. */
+export function aiInfo(settings: AiSettingsLike, available: { claude: boolean; codex: boolean; api: boolean }, facts?: AiProviderFacts): AiInfo {
   const engine = resolveEngine(settings.engine, available);
+  const provider = settings.api?.provider ?? "anthropic";
+  const keys: Partial<Record<AiKeyProvider, string>> = { ...(settings.anthropicApiKey && { anthropic: settings.anthropicApiKey }), ...settings.api?.keys };
+  const defaults = (p: AiProvider) => (p === "ollama" ? (facts?.ollama.models[0] ?? facts?.providers.ollama.defaultModel ?? "llama3.2") : (facts?.providers[p].defaultModel ?? ""));
+  const model = settings.api?.model || defaults(provider) || "claude-opus-5-5";
+  const providers: AiProviderInfo[] = AI_PROVIDERS.map((p) => {
+    const keySaved = p !== "ollama" && !!keys[p];
+    const envKey = p !== "ollama" && !!facts?.envKeys[p];
+    return {
+      id: p,
+      name: facts?.providers[p].name ?? p,
+      defaultModel: defaults(p),
+      models: p === "ollama" ? [...(facts?.ollama.models ?? [])] : [...(facts?.providers[p].models ?? [])],
+      keySaved,
+      envKey,
+      ready: p === "ollama" ? !!facts?.ollama.running : keySaved || envKey,
+    };
+  });
   return {
     preferred: settings.engine,
     engine,
-    label: ENGINE_LABELS[engine],
+    label: engine === "api" && (settings.api || facts) ? apiLabel(provider, model) : ENGINE_LABELS[engine],
     available: { claude: available.claude, codex: available.codex, api: available.api },
-    keySaved: !!settings.anthropicApiKey,
+    keySaved: provider !== "ollama" && !!keys[provider],
+    provider,
+    model,
+    chosenModel: settings.api?.model ?? "",
+    providers,
   };
 }
 
-const MAX_KEY = 500;
+const MAX_KEY = 400;
+const MAX_MODEL = 200;
 const MAX_REQUEST = 20_000;
+
+function parseKey(v: unknown): string {
+  const key = typeof v === "string" ? v.trim() : "";
+  if (!key || key.length > MAX_KEY || /\s/.test(key)) throw new Error("That doesn't look like an API key");
+  return key;
+}
 
 /** The settings change the page asked for, checked (anything unexpected is an error, not ignored). */
 export function parseSaveAi(input: unknown): SaveAiPatch {
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected { engine?, anthropicApiKey? }");
-  const { engine, anthropicApiKey } = input as Record<string, unknown>;
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected { engine?, provider?, model?, apiKey? }");
+  const o = input as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (!["engine", "anthropicApiKey", "provider", "model", "apiKey"].includes(k)) throw new Error(`Unknown setting: ${k}`);
+  const { engine, anthropicApiKey, provider, model, apiKey } = o;
   const patch: SaveAiPatch = {};
   if (engine !== undefined) {
     if (typeof engine !== "string" || !(AI_ENGINES as readonly string[]).includes(engine)) throw new Error(`Unknown engine: ${String(engine)}`);
     patch.engine = engine as AiEngine;
   }
   if (anthropicApiKey === null) patch.anthropicApiKey = null;
-  else if (anthropicApiKey !== undefined) {
-    const key = typeof anthropicApiKey === "string" ? anthropicApiKey.trim() : "";
-    if (!key || key.length > MAX_KEY || /\s/.test(key)) throw new Error("That doesn't look like an API key");
-    patch.anthropicApiKey = key;
+  else if (anthropicApiKey !== undefined) patch.anthropicApiKey = parseKey(anthropicApiKey);
+  if (provider !== undefined) {
+    if (typeof provider !== "string" || !(AI_PROVIDERS as readonly string[]).includes(provider)) throw new Error(`Unknown provider: ${String(provider)}`);
+    patch.provider = provider as AiProvider;
+  }
+  if (model !== undefined) {
+    if (model === null || (typeof model === "string" && !model.trim())) patch.model = null;
+    else if (typeof model !== "string" || model.trim().length > MAX_MODEL || /[\s\u0000-\u001f\u007f]/.test(model.trim())) throw new Error("That doesn't look like a model name");
+    else patch.model = model.trim();
+  }
+  if (apiKey !== undefined) {
+    if (!apiKey || typeof apiKey !== "object" || Array.isArray(apiKey)) throw new Error("Expected apiKey: { provider, key }");
+    const { provider: p, key, ...rest } = apiKey as Record<string, unknown>;
+    if (Object.keys(rest).length) throw new Error("Expected apiKey: { provider, key }");
+    if (typeof p !== "string" || !(AI_KEY_PROVIDERS as readonly string[]).includes(p)) throw new Error(`No API key for ${String(p)}`);
+    patch.apiKey = { provider: p as AiKeyProvider, key: key === null ? null : parseKey(key) };
   }
   return patch;
+}
+
+/** The page's change as a glimpse-ui settings patch (saveAgentSettings). */
+export function toSettingsPatch(patch: SaveAiPatch): {
+  engine?: AiEngine;
+  anthropicApiKey?: string | null;
+  api?: { provider?: AiProvider; model?: string | null; keys?: Partial<Record<AiKeyProvider, string | null>> };
+} {
+  const api = {
+    ...(patch.provider !== undefined && { provider: patch.provider }),
+    ...(patch.model !== undefined && { model: patch.model }),
+    ...(patch.apiKey && { keys: { [patch.apiKey.provider]: patch.apiKey.key } }),
+  };
+  return {
+    ...(patch.engine !== undefined && { engine: patch.engine }),
+    ...(patch.anthropicApiKey !== undefined && { anthropicApiKey: patch.anthropicApiKey }),
+    ...(Object.keys(api).length > 0 && { api }),
+  };
 }
 
 /** The request the page sends: non-empty text and a known target. */

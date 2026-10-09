@@ -66,21 +66,50 @@ export type AiEngine = "auto" | "claude" | "codex" | "api" | "external";
 /** Who would actually build a request; "none" when nothing can. */
 export type ResolvedAiEngine = "claude" | "codex" | "api" | "external" | "none";
 
+/** The Direct API's providers (glimpse-ui's ApiProvider). */
+export type AiProvider = "anthropic" | "openai" | "gemini" | "openrouter" | "ollama";
+export type AiKeyProvider = Exclude<AiProvider, "ollama">;
+
+export interface AiProviderInfo {
+  id: AiProvider;
+  name: string;
+  defaultModel: string;
+  /** Suggestions for the model field (Ollama: its installed models). */
+  models: string[];
+  /** A key is saved in Glimpse's settings (never the key itself). Always false for Ollama. */
+  keySaved: boolean;
+  /** A key is set in the environment (OPENAI_API_KEY…). */
+  envKey: boolean;
+  /** It could run now: a key (saved or in the environment), or Ollama answering. */
+  ready: boolean;
+}
+
 export interface AiInfo {
   preferred: AiEngine;
   engine: ResolvedAiEngine;
-  /** "Claude Code", "Codex", "Claude API", "Your agent" or "Set up AI". */
+  /** "Claude Code", "Codex", "Claude · opus-5-5", "GPT · OpenAI", "Gemini", "Ollama · llama3", "Your agent" or "Set up AI". */
   label: string;
-  /** What is installed or configured on this machine (`api`: a key in the settings or ANTHROPIC_API_KEY). */
+  /** What is installed or configured on this machine (`api`: the chosen provider has a key, or Ollama answers). */
   available: { claude: boolean; codex: boolean; api: boolean };
-  /** An API key is saved in Glimpse's settings (the key itself never reaches the page). */
+  /** The chosen provider's key is saved in Glimpse's settings (the key itself never reaches the page). */
   keySaved: boolean;
+  /** The Direct API's provider, the model it uses, and the model chosen in the settings ("" = the default). */
+  provider: AiProvider;
+  model: string;
+  chosenModel: string;
+  providers: AiProviderInfo[];
 }
 
-/** `anthropicApiKey: null` removes the saved key. */
+/**
+ * `anthropicApiKey: null` removes the saved Anthropic key (older pages). `apiKey` saves (string) or removes (null) a
+ * provider's key; `model: null` goes back to the provider's default.
+ */
 export interface SaveAiPatch {
   engine?: AiEngine;
   anthropicApiKey?: string | null;
+  provider?: AiProvider;
+  model?: string | null;
+  apiKey?: { provider: AiKeyProvider; key: string | null };
 }
 
 /** IPC channel names (ipcMain.handle / ipcRenderer.invoke). */
