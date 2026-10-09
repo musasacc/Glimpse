@@ -10,6 +10,7 @@ import { PreviewError } from "./PreviewError";
 import { modalOpen } from "./Modal";
 import { isEnter } from "./platform";
 import { WaitingForAi } from "./Waiting";
+import { RegionBox } from "./EditTools";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -150,7 +151,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const hovRect = state.tool === "select" && hovered && !multi.includes(hovered) ? rectOf(hovered) : null;
   const ops = store.log?.ops ?? [];
   const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
-  const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+  const regions = store.regions;
   const draftRect = draft ? regionRect({ op: "region", id: "draft", text: "", ...draft }) : null;
 
   if (state.previewError) {
@@ -197,12 +198,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
           <div className="overlay">
             {regions.map((r, i) => {
               const box = regionRect(r);
-              return box ? (
-                <div key={r.id} className="region" style={rectStyle(box)}>
-                  <span className="region-num">{i + 1}</span>
-                  <span className="region-text">{r.text}</span>
-                </div>
-              ) : null;
+              return box ? <RegionBox key={r.id} region={r} num={i + 1} rect={box} selected={state.note === r.id} /> : null;
             })}
             {hovRect && <div className="box hover" style={rectStyle(hovRect)} />}
             {multi.map((id) => {
@@ -582,6 +578,10 @@ export function handleKey(e: KeyboardEvent, openTalk: () => void, mode: Mode): v
     e.preventDefault();
     if (e.shiftKey) ungroupSelection();
     else groupSelection();
+  } else if (!mod && (e.key === "Delete" || e.key === "Backspace") && store.state.note) {
+    // A selected box prompt: take it away (undo brings it back).
+    e.preventDefault();
+    store.removeNote(store.state.note);
   } else if (!mod && (e.key === "Delete" || e.key === "Backspace") && any) {
     e.preventDefault();
     store.deleteSelected();

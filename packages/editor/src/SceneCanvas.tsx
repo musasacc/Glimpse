@@ -13,6 +13,7 @@ import { absBox, editableProp, unitSize, type Cell, type SceneTarget } from "./s
 import { sceneMode, useSceneMode } from "./scene-mode";
 import { store, useHovered, useStore } from "./store";
 import { TalkPopover } from "./Talk";
+import { RegionBox } from "./EditTools";
 import { TuiScreen } from "./TuiRenderer";
 import { TuiWindow } from "./SceneView";
 import "@fontsource/jetbrains-mono/latin-400.css";
@@ -82,7 +83,8 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
       const w = fr.offsetWidth;
       const h = fr.offsetHeight;
       if (!w || !h) return;
-      const z = Math.max(0.25, Math.min(1, (el.clientWidth - 48) / w, (el.clientHeight - 48) / h));
+      // Whole thousandths: a resize that changes the fit by a hair doesn't re-scale (and re-raster) the mock.
+      const z = Math.floor(Math.max(0.25, Math.min(1, (el.clientWidth - 48) / w, (el.clientHeight - 48) / h)) * 1000) / 1000;
       setZoom((old) => (Math.abs(old - z) > 0.001 ? z : old));
       setSize((old) => (old.w !== w || old.h !== h ? { w, h } : old));
       const next = originOf(fr, screen.current);
@@ -311,7 +313,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
 
   const ops = store.log?.ops ?? [];
   const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
-  const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
+  const regions = store.regions;
   const multi = store.selection;
   const single = multi.length <= 1;
   const selected = state.selected ? scene?.nodes[state.selected] : undefined;
@@ -352,7 +354,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
             <div
               className={`scene-board${mode === "edit" && state.tool === "region" ? " drawing" : ""}`}
               ref={board}
-              style={{ width: size.w * zoom || undefined, height: size.h * zoom || undefined }}
+              style={{ width: Math.round(size.w * zoom) || undefined, height: Math.round(size.h * zoom) || undefined }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
@@ -379,12 +381,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
                 <div className="overlay scene-overlay">
                   {regions.map((r, i) => {
                     const box = toPx(regionRect(r));
-                    return box ? (
-                      <div key={r.id} className="region" style={rectStyle(box)}>
-                        <span className="region-num">{i + 1}</span>
-                        <span className="region-text">{r.text}</span>
-                      </div>
-                    ) : null;
+                    return box ? <RegionBox key={r.id} region={r} num={i + 1} rect={box} selected={state.note === r.id} /> : null;
                   })}
                   {hovRect && <div className="box hover" style={rectStyle(hovRect)} />}
                   {multi.map((id) => {

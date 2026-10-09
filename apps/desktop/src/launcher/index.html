@@ -16,7 +16,20 @@
     <div class="app">
       <aside class="side" aria-label="Projects">
         <div class="brand">
-          <img class="brand-mark" src="mark.svg" width="28" height="28" alt="" />
+          <!-- The editor's sidebar mark (packages/editor/src/Logo.tsx at 26 px): drawn at half scale so its frame sits
+               on whole pixels, the gap around the cursor cut out of the frame. -->
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="26" height="26" viewBox="8 8 52 52" shape-rendering="geometricPrecision" focusable="false">
+              <defs>
+                <mask id="brand-gap" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64">
+                  <rect width="64" height="64" fill="#fff" />
+                  <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="#000" stroke="#000" stroke-width="4" stroke-linejoin="round" />
+                </mask>
+              </defs>
+              <rect x="14" y="14" width="28" height="28" rx="7" fill="none" stroke="currentColor" stroke-width="4" mask="url(#brand-gap)" />
+              <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="currentColor" stroke="none" />
+            </svg>
+          </span>
           <span class="brand-name">Glimpse</span>
         </div>
         <button id="open-folder" class="side-btn" type="button" title="Open a project folder">
@@ -42,7 +55,7 @@
               <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="#000" stroke="#000" stroke-width="4.7" stroke-linejoin="round" />
             </mask>
           </defs>
-          <rect x="13" y="13" width="30" height="30" rx="7" fill="none" stroke="currentColor" stroke-width="1.2" mask="url(#watermark-gap)" />
+          <rect x="14" y="14" width="28" height="28" rx="7" fill="none" stroke="currentColor" stroke-width="1.2" mask="url(#watermark-gap)" />
           <path d="M31 31 L53 39.5 L43.5 42.5 L49.5 52 L45 54.5 L39.2 45 L32.5 51.5 Z" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
         </svg>
         <h1 id="greeting" class="greeting">What are we building?</h1>

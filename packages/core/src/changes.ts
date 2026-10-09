@@ -1,4 +1,4 @@
-import type { Op } from "./ops.js";
+import { liveRegions, type Op } from "./ops.js";
 import { formatSource, getNode, type Layout, type Scene, type SceneNode, type Target } from "./scene.js";
 import type { OpLog } from "./oplog.js";
 import { boxes, describePlace, type Measure } from "./placement.js";
@@ -159,12 +159,13 @@ export function diffScenes(base: Scene, final: Scene, ops: Op[] = [], measure?: 
     if (!!b.locked !== !!f.locked) edits.push(withMeta(final, f, { op: "setLocked", node: id, from: !!b.locked, to: !!f.locked }));
   }
 
-  // Annotations, skipping ones attached to elements that no longer exist.
+  // Annotations, skipping ones attached to elements that no longer exist (and box prompts taken away).
+  const regions = new Set(liveRegions(ops));
   for (const op of ops) {
     if (op.op === "comment" || op.op === "behavior") {
       const n = final.nodes[op.node];
       if (n) notes.push(withMeta(final, n, op));
-    } else if (op.op === "region") {
+    } else if (op.op === "region" && regions.has(op)) {
       // Named after (and located at) the element the box was drawn in.
       const parent = final.nodes[op.parent];
       if (parent) notes.push(withMeta(final, parent, op));

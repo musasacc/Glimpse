@@ -13,15 +13,27 @@
   border-radius: 2px;
 }
 
-/* Box prompts ("AI, put X here"): dashed cyan areas with a number badge. */
+/* Box prompts ("AI, put X here"): dashed cyan areas with a number badge. The area lets clicks through (draw and
+   select under it); its badge, text and × take them. */
 .region {
   position: absolute;
   border: 1.5px dashed var(--accent);
   border-radius: 4px;
   background: rgba(92, 225, 255, 0.06);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+  animation: fade-in var(--dur-med) var(--ease-out) backwards;
 }
 .region.drawing {
   background: rgba(92, 225, 255, 0.12);
+  animation: none;
+}
+.region.selected {
+  border-style: solid;
+  background: rgba(92, 225, 255, 0.1);
+  box-shadow: 0 0 0 3px var(--accent-dim);
 }
 .region-num {
   position: absolute;
@@ -35,20 +47,73 @@
   font: 700 11px/20px var(--font);
   text-align: center;
   box-shadow: 0 0 0 3px #000;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
 }
 .region-text {
   position: absolute;
   top: 6px;
   left: 16px;
-  max-width: calc(100% - 22px);
+  max-width: calc(100% - 44px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   padding: 1px 6px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.78);
+  background: #050505;
+  border: 1px solid transparent;
   color: var(--accent);
   font: 500 11px/16px var(--font);
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.region-text:hover,
+.region.selected .region-text {
+  border-color: rgba(92, 225, 255, 0.5);
+}
+.region-del {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  background: #000;
+  color: var(--accent);
+  cursor: pointer;
+  pointer-events: auto;
+  opacity: 0.7;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.region:hover .region-del,
+.region.selected .region-del,
+.region-del:focus-visible {
+  opacity: 1;
+}
+.region-del:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #000;
+}
+.note-text {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px dashed rgba(92, 225, 255, 0.5);
+  border-radius: 6px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* Toolbar */

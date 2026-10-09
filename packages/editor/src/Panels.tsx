@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { NodeType, Op, SceneNode } from "@glimpse/core";
 import { canUngroup, ungroupSelection } from "./arrange";
-import { SelectionInspector } from "./EditTools";
+import { NoteInspector, SelectionInspector } from "./EditTools";
 import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { loop, useLoopLive } from "./loop";
@@ -84,6 +84,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
       </div>
     );
   }
+  if (state.note) return <NoteInspector id={state.note} />;
   if (store.selection.length > 1) return <SelectionInspector />;
   if (store.sceneSurface) return <SceneInspector openTalk={openTalk} />;
   if (!node) {

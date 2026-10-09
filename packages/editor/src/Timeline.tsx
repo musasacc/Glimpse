@@ -126,7 +126,7 @@ export function Timeline() {
     <section className="timeline" aria-label="Versions">
       <div className="tl-head">
         <div className="tl-title">
-          <I.History size={13} /> Versions
+          <I.History size={14} /> Versions
           {ls.snapshots.length > 0 && <span className="tl-count">{ls.snapshots.length}</span>}
         </div>
         <button
@@ -203,7 +203,7 @@ function SnapshotCard({ s, active, rev, onClick }: { s: PublicSnapshot; active: 
           <Icon size={20} />
         )}
         <span className="tl-badge" data-kind={s.kind} title={KIND_TITLE[s.kind]}>
-          <Icon size={11} />
+          <Icon size={12} />
         </span>
       </span>
       <span className="tl-label ellipsis">{s.label}</span>

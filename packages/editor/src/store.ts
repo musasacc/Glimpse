@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { buildChangeList, deleteManyOps, duplicateManyOps, OpLog, type Change, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
+import { buildChangeList, deleteManyOps, liveRegions, removeRegionOp, duplicateManyOps, OpLog, type Change, type ChangeList, type NodeType, type Op, type Scene, type SceneNode } from "@glimpse/core";
 import { DomBridge, tagFor } from "./dom";
 import { followMoves, followOps, isVitePage, repeatedSources, sameEdit, undoAll } from "./hmr";
 import { shownPane } from "./scene-geometry";
@@ -55,6 +55,8 @@ interface State {
   /** Every selected element, the primary included. Setting only `selected` resets it to that one. */
   multi: string[];
   hovered: string | null;
+  /** The selected box prompt (its region op's id); selecting elements clears it, and the other way round. */
+  note: string | null;
   tool: Tool;
   device: Device;
   activity: ActivityItem[];
@@ -95,6 +97,7 @@ class Store {
     selected: null,
     multi: [],
     hovered: null,
+    note: null,
     tool: "select",
     device: "desktop",
     activity: [],
@@ -169,6 +172,8 @@ class Store {
   set(patch: Partial<State>): void {
     // A plain single selection (most callers) replaces the multi-selection.
     if ("selected" in patch && !("multi" in patch)) patch = { ...patch, multi: patch.selected ? [patch.selected] : [] };
+    // Selecting (or clearing) elements leaves the selected box prompt too.
+    if (("selected" in patch || "multi" in patch) && !("note" in patch)) patch = { ...patch, note: null };
     const hoverChanged = "hovered" in patch && patch.hovered !== this.state.hovered;
     // The pointer moving onto another element only re-renders what draws the hover box, not the whole editor.
     if (Object.keys(patch).length === 1 && "hovered" in patch) {
@@ -535,13 +540,32 @@ class Store {
   }
 
   /** Forget selected elements that are gone (e.g. undoing the step that created them); follow those that `moved`. */
-  private existingSelection(moved?: Map<string, string>): Pick<State, "selected" | "multi"> {
+  private existingSelection(moved?: Map<string, string>): Pick<State, "selected" | "multi" | "note"> {
     const nodes = this.scene?.nodes ?? {};
     const follow = (id: string) => moved?.get(id) ?? id;
     const multi = this.state.multi.map(follow).filter((id) => nodes[id]);
     const current = this.state.selected && follow(this.state.selected);
     const selected = current && nodes[current] ? current : (multi[0] ?? null);
-    return { selected, multi };
+    const note = this.state.note && this.regions.some((r) => r.id === this.state.note) ? this.state.note : null;
+    return { selected, multi, note };
+  }
+
+  /** The box prompts on the page now, numbered in this order. */
+  get regions() {
+    return liveRegions(this.log?.ops ?? []);
+  }
+
+  /** Select a box prompt (and no elements), or none. */
+  selectNote(id: string | null): void {
+    this.set({ note: id, selected: null, multi: [] });
+  }
+
+  /** Take a box prompt away as one undo step; its instruction no longer goes to the AI. */
+  removeNote(id: string): void {
+    const region = this.regions.find((r) => r.id === id);
+    if (!region) return;
+    this.edit(removeRegionOp(region));
+    if (this.state.note === id) this.set({ note: null });
   }
 
   setTool(tool: Tool): void {
@@ -580,7 +604,7 @@ class Store {
     this.log = this.frozen = null;
     this.held = this.heldBase = null;
     clearTimeout(this.heldTimer);
-    this.set({ selected: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
+    this.set({ selected: null, note: null, hovered: null, tool: "select", stale: false, reloadKey: this.state.reloadKey + 1 });
   }
 
   /**

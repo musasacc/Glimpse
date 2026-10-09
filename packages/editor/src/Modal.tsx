@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import { animateOut } from "./motion";
 
 /** How many modal dialogs are on screen: editor shortcuts stay off while any is (they'd act on the page behind it). */
 let open = 0;
@@ -27,8 +28,15 @@ export function Modal({
   children: React.ReactNode;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
+  const scrim = useRef<HTMLDivElement>(null);
+  const leaving = useRef(false);
   const titleId = useId();
-  const closeIfIdle = () => !busy && onClose();
+  // Escape and the scrim close it with a short fade (the dialog's own buttons close it at once, as they act).
+  const closeIfIdle = () => {
+    if (busy || leaving.current) return;
+    leaving.current = true;
+    animateOut(scrim.current, "leaving", 140, onClose);
+  };
 
   useEffect(() => {
     open++;
@@ -66,7 +74,7 @@ export function Modal({
   };
 
   return (
-    <div className="scrim" onMouseDown={closeIfIdle} onKeyDown={onKeyDown}>
+    <div ref={scrim} className="scrim" onMouseDown={closeIfIdle} onKeyDown={onKeyDown}>
       <div
         ref={dialog}
         className={`dialog ${className}`.trim()}

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { describeNode, type Align } from "@glimpse/core";
+import { createPortal } from "react-dom";
+import { describeNode, type Align, type RegionOp } from "@glimpse/core";
 import { alignSelection, canArrange, distributeSelection, groupProblem, groupSelection } from "./arrange";
 import * as I from "./icons";
 import { Modal } from "./Modal";
@@ -137,5 +138,119 @@ function DiscardDialog({ steps, onClose }: { steps: number; onClose: () => void 
         </button>
       </footer>
     </Modal>
+  );
+}
+
+/**
+ * A box prompt drawn on the canvas (page or mock). The box itself lets clicks through to what is under it; its
+ * number and text select it (then Delete removes it), × removes it, and a right-click on them offers Remove.
+ */
+export function RegionBox({ region, num, rect, selected }: { region: RegionOp; num: number; rect: { left: number; top: number; width: number; height: number }; selected: boolean }) {
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const select = (e: React.MouseEvent | React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    store.selectNote(region.id);
+  };
+  const remove = () => {
+    setMenu(null);
+    store.removeNote(region.id);
+  };
+  return (
+    <div className={`region${selected ? " selected" : ""}`} style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}>
+      <span
+        className="region-num live-ui"
+        title={region.text}
+        onPointerDown={select}
+        onMouseDown={(e) => e.stopPropagation()}
+        onContextMenu={(e) => {
+          select(e);
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        {num}
+      </span>
+      <span
+        className="region-text live-ui"
+        title={`${region.text}\nClick to select · Del removes it`}
+        onPointerDown={select}
+        onMouseDown={(e) => e.stopPropagation()}
+        onContextMenu={(e) => {
+          select(e);
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
+        {region.text}
+      </span>
+      <button
+        type="button"
+        className="region-del live-ui"
+        title="Remove this box prompt (Del)"
+        aria-label={`Remove box prompt ${num}`}
+        onPointerDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          remove();
+        }}
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </button>
+      {menu && <RegionMenu at={menu} text={region.text} onRemove={remove} onClose={() => setMenu(null)} />}
+    </div>
+  );
+}
+
+/** Right-click menu of a box prompt (in the editor's document, so the canvas can't clip it). */
+function RegionMenu({ at, text, onRemove, onClose }: { at: { x: number; y: number }; text: string; onRemove: () => void; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const page = store.bridge?.doc;
+    window.addEventListener("pointerdown", onClose);
+    window.addEventListener("blur", onClose);
+    window.addEventListener("resize", onClose);
+    window.addEventListener("keydown", onKey);
+    page?.addEventListener("mousedown", onClose);
+    return () => {
+      window.removeEventListener("pointerdown", onClose);
+      window.removeEventListener("blur", onClose);
+      window.removeEventListener("resize", onClose);
+      window.removeEventListener("keydown", onKey);
+      page?.removeEventListener("mousedown", onClose);
+    };
+  }, [onClose]);
+  const left = Math.max(4, Math.min(at.x, window.innerWidth - 224));
+  const top = Math.max(4, Math.min(at.y, window.innerHeight - 100));
+  return createPortal(
+    <div className="menu ctx-menu" role="menu" style={{ left, top }} onPointerDown={(e) => e.stopPropagation()} onContextMenu={(e) => e.preventDefault()}>
+      <div className="ctx-title ellipsis">Box prompt: {text}</div>
+      <button role="menuitem" className="danger" onClick={onRemove}>
+        <I.Trash size={14} /> Remove box prompt <span className="kbd">Del</span>
+      </button>
+    </div>,
+    document.body,
+  );
+}
+
+/** Inspector for a selected box prompt: what it asks for, and Remove. */
+export function NoteInspector({ id }: { id: string }) {
+  useStore();
+  const regions = store.regions;
+  const i = regions.findIndex((r) => r.id === id);
+  const region = regions[i];
+  if (!region) return null;
+  return (
+    <div className="section">
+      <h3>Box prompt {i + 1}</h3>
+      <p className="note-text">{region.text}</p>
+      <div className="row">
+        <button className="btn danger" onClick={() => store.removeNote(id)}>
+          <I.Trash size={14} /> Remove <span className="kbd">Del</span>
+        </button>
+      </div>
+      <div className="hint">Removing it takes its instruction out of what goes to the AI. {MOD}Z brings it back.</div>
+    </div>
   );
 }

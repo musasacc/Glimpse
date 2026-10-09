@@ -1301,9 +1301,12 @@
 .scene-version {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at 1px 1px, #141414 1px, transparent 0) 0 0 / 22px 22px,
-    var(--bg);
+  /* The canvas's dot grid (styles.css .canvas): whole-pixel dots. */
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(transparent 1px, var(--bg) 1px),
+    linear-gradient(90deg, #1c1c1c 1px, transparent 1px);
+  background-size: 22px 22px;
 }
 .scene-version > .side-empty {
   display: grid;
