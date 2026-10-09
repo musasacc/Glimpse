@@ -199,15 +199,6 @@ examples/
 - Terminal UIs and native GUIs are described in `glimpse.scene.json`; the real TUI runs in a pseudo-terminal (node-pty, optional; plain pipes without it).
 - The server only answers its own pages: other websites can't call its API or open its websocket, and running a command needs the token in `.glimpse/server.json`. The previewed project runs at the editor's origin (the editor reaches into its page), so open projects you would also run: Glimpse keeps the page's own requests away from its API and never serves `.git/`, `.env` or other dotfiles, but a page that sets out to can script the editor.
 
-## Roadmap
-
-- [x] **Phase 1: foundation.** Core model, server, editor, CLI, live mode, Send to AI, point & talk, behavior.
-- [x] **Phase 2: HTML end to end.** Home screen with requests to the agent, source locations, **Edit source** with diff preview, MCP server, element palette, history, cross-platform CI.
-- [x] **Phase 3: loop features.** **Timeline of versions** (scrub and restore), **before/after slider**, **variants** ("show me 3 versions of this header"), draw-a-box prompts, group/align, screenshots in handoffs.
-- [x] **Phase 4: React/Vite.** Vite plugin, JSX source mapping, JSX patcher, the preview on the project's own Vite with HMR.
-- [x] **Phase 5: TUI + native GUI.** Scene file format and schema, cell-grid and widget-mock renderers, the real app in a live terminal, scene tools for agents.
-- [x] **Phase 6: polish.** Publishable `glimpse-ui` bundle for npm, desktop app (Electron: `.dmg`, `.exe`, `.AppImage`, `.deb`), release CI, per-agent guides.
-
 ## Development
 
 ```bash
