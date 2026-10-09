@@ -49,27 +49,33 @@ export class DomBridge {
     this.register(body, "root");
     const bodySrc = parseSrc(body.getAttribute(SRC_ATTR));
     if (bodySrc) scene.nodes.root!.source = bodySrc;
-    const walk = (el: Element, parentId: string) => {
+    // Each element's box is measured once and reused as its children's parent box.
+    const walk = (el: Element, parentId: string, prect: DOMRect) => {
       for (const child of Array.from(el.children)) {
         if (!isEditable(child)) continue;
         const id = this.ids.get(child) ?? this.newId();
         this.register(child, id);
-        scene.nodes[id] = this.snapshot(child, id, parentId);
+        const rect = child.getBoundingClientRect();
+        scene.nodes[id] = this.snapshot(child, id, parentId, rect, prect);
         // A moved element is measured with the editor's translate in it; its origin is where it was without.
         const m = this.moved.get(child);
         const off = m && (child as HTMLElement).style.translate === m.translate ? m : { dx: 0, dy: 0 };
         this.origins.set(id, { x: scene.nodes[id]!.layout.x - off.dx, y: scene.nodes[id]!.layout.y - off.dy });
         scene.nodes[parentId]!.children.push(id);
-        walk(child, id);
+        walk(child, id, rect);
       }
     };
-    walk(body, "root");
+    walk(body, "root", body.getBoundingClientRect());
     return scene;
   }
 
-  snapshot(el: Element, id: string, parent: string | null): SceneNode {
-    const rect = el.getBoundingClientRect();
-    const prect = el.parentElement?.getBoundingClientRect() ?? { left: 0, top: 0 };
+  snapshot(
+    el: Element,
+    id: string,
+    parent: string | null,
+    rect: DOMRect = el.getBoundingClientRect(),
+    prect: { left: number; top: number } = el.parentElement?.getBoundingClientRect() ?? { left: 0, top: 0 },
+  ): SceneNode {
     const html = el as HTMLElement;
     const style: Record<string, string> = {};
     for (let i = 0; i < html.style.length; i++) {

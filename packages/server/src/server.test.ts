@@ -55,6 +55,24 @@ describe("server", () => {
     ws.close();
   }, 10_000);
 
+  it("sends a previewed page's live client only file changes", async () => {
+    const ws = new WebSocket(`${srv.url.replace("http", "ws")}/__glimpse/ws?role=preview`);
+    const types: string[] = [];
+    const changed = new Promise<void>((ok) => {
+      ws.on("message", (raw) => {
+        const msg = JSON.parse(String(raw));
+        types.push(msg.type);
+        if (msg.type === "file-changed") ok();
+      });
+    });
+    await new Promise((ok) => ws.once("open", ok));
+    await fetch(`${srv.url}/api/status`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "working" }) });
+    await writeFile(join(dir, "style.css"), "button{color:blue}");
+    await changed;
+    expect(types).toEqual(["file-changed"]);
+    ws.close();
+  }, 10_000);
+
   it("hands the change list to a waiting agent", async () => {
     const waiting = fetch(`${srv.url}/api/handoff/next?after=0&timeout=5`).then((r) => r.json());
     const changeList: ChangeList = {

@@ -269,3 +269,18 @@ export function editableProp(n: SceneNode): { key: string; multiline: boolean } 
       return n.children.length ? null : { key: "text", multiline: !!n.props.multiline };
   }
 }
+
+/**
+ * Whether two drag previews (layout overrides by id) draw node `id` and
+ * everything inside it the same, so a mock can skip re-rendering that subtree.
+ */
+export function samePreviewFor(scene: Scene, id: string, a: ReadonlyMap<string, Layout> | undefined, b: ReadonlyMap<string, Layout> | undefined): boolean {
+  if (a === b) return true;
+  for (const map of [a, b]) {
+    for (const k of map?.keys() ?? []) {
+      if (a?.get(k) === b?.get(k)) continue;
+      for (let p: string | null = k; p !== null; p = scene.nodes[p]?.parent ?? null) if (p === id) return false;
+    }
+  }
+  return true;
+}

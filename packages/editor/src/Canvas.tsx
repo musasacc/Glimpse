@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { describeNode, topLevel, type Layout, type Op } from "@glimpse/core";
-import { DEVICE_WIDTH, store, useStore } from "./store";
+import { DEVICE_WIDTH, store, useHovered, useStore } from "./store";
 import { TalkPopover } from "./Talk";
-import { elementsIn, groupSelection, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
+import { groupSelection, marqueeHits, nudgeSelection, regionRect, regionTarget, ungroupSelection, type Rect } from "./arrange";
 import { loop, useLoopLive } from "./loop";
 import { watchUpdates, whenRendered } from "./hmr";
 import { PreviewError } from "./PreviewError";
@@ -28,6 +28,7 @@ const canvas = { mode: "edit" as Mode, cancel: () => {} };
  */
 export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: boolean; setTalkOpen: (v: boolean) => void }) {
   const state = useStore();
+  const hovered = useHovered();
   // A version, comparison or variants may cover the page; its notices belong to the page.
   const pageShown = useLoopLive();
   const iframe = useRef<HTMLIFrameElement>(null);
@@ -41,8 +42,16 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   /** The React app crashed while rendering and left a blank page: why, until it renders again. */
   const [crash, setCrash] = useState<string | null>(null);
 
-  // Re-render the overlay when the page scrolls or resizes.
-  const rerender = () => setTick((t) => t + 1);
+  // Re-render the overlay when the page scrolls or resizes, at most once per frame.
+  const frame = useRef(0);
+  const rerender = () => {
+    if (frame.current) return;
+    frame.current = requestAnimationFrame(() => {
+      frame.current = 0;
+      setTick((t) => t + 1);
+    });
+  };
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
 
   useEffect(() => {
     canvas.cancel = () => {
@@ -135,7 +144,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   const selRect = rectOf(state.selected);
   const multi = store.selection;
   const single = multi.length <= 1;
-  const hovRect = state.tool === "select" && state.hovered && !multi.includes(state.hovered) ? rectOf(state.hovered) : null;
+  const hovRect = state.tool === "select" && hovered && !multi.includes(hovered) ? rectOf(hovered) : null;
   const ops = store.log?.ops ?? [];
   const pins = ops.filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
   const regions = ops.filter((o): o is Extract<Op, { op: "region" }> => o.op === "region");
@@ -209,7 +218,7 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
               return (
                 <div key={id} className={`box selected${single ? "" : " multi"}`} style={rectStyle(r)}>
                   {primary && <span className="label">{single ? describeNode(selected) : `${multi.length} selected`}</span>}
-                  {primary && single && <ResizeHandle id={id} />}
+                  {primary && single && <ResizeHandle id={id} onResize={rerender} />}
                 </div>
               );
             })}
@@ -249,7 +258,7 @@ function rectStyle(r: Rect) {
 }
 
 /** Drag the corner handle to resize the selected element. */
-function ResizeHandle({ id }: { id: string }) {
+function ResizeHandle({ id, onResize }: { id: string; onResize: () => void }) {
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -265,7 +274,8 @@ function ResizeHandle({ id }: { id: string }) {
     const move = (ev: PointerEvent) => {
       el.style.width = `${Math.max(4, from.w + ev.clientX - start.x)}px`;
       el.style.height = `${Math.max(4, from.h + ev.clientY - start.y)}px`;
-      store.set({});
+      // Only the overlay follows the element; nothing else changes until the resize is recorded.
+      onResize();
     };
     const up = (ev: PointerEvent) => {
       handle.removeEventListener("pointermove", move);
@@ -290,8 +300,8 @@ interface Point {
 type Gesture =
   /** Dragging the selected elements. `single` is set when the press landed on one of several selected elements. */
   | { kind: "move"; start: Point; ids: string[]; from: Map<string, Point>; moved: boolean; single: string | null }
-  /** Rubber-band selection from the empty page background; `base` is kept (Shift adds). */
-  | { kind: "marquee"; start: Point; base: string[] }
+  /** Rubber-band selection from the empty page background; `base` is kept (Shift adds). `hits` measured the page once. */
+  | { kind: "marquee"; start: Point; base: string[]; hits: (rect: Rect) => string[] }
   /** Drawing a box prompt. */
   | { kind: "region"; start: Point };
 
@@ -341,7 +351,7 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
       }
     } else if (g.kind === "marquee") {
       h.live.marquee = between(g.start, p);
-      const ids = [...new Set([...g.base, ...elementsIn(h.live.marquee)])];
+      const ids = [...new Set([...g.base, ...g.hits(h.live.marquee)])];
       if (ids.join() !== store.state.multi.join()) store.selectMany(ids);
     } else {
       h.live.region = between(g.start, p);
@@ -405,7 +415,7 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
       const scene = store.scene;
       if (!id || !scene) {
         // Empty page background: marquee selection.
-        g = { kind: "marquee", start, base: e.shiftKey ? store.selection : [] };
+        g = { kind: "marquee", start, base: e.shiftKey ? store.selection : [], hits: marqueeHits() };
         if (!e.shiftKey) store.select(null);
         return;
       }
@@ -456,7 +466,15 @@ function installPageHandlers(doc: Document, h: PageHooks): () => void {
   // Focus can stay in the page while a past version or a dialog covers it; shortcuts would act unseen.
   doc.addEventListener("keydown", (e) => !loop.blocksEditorKeys && handleKey(e, h.openTalk), true);
   // Keep the overlay on its elements: page and inner scrolling, resizes, layout changes.
-  doc.addEventListener("scroll", h.rerender, { capture: true, passive: true });
+  doc.addEventListener(
+    "scroll",
+    () => {
+      // The boxes a marquee measured moved with the page.
+      if (g?.kind === "marquee") g.hits = marqueeHits();
+      h.rerender();
+    },
+    { capture: true, passive: true },
+  );
   win.addEventListener("resize", h.rerender);
   new win.ResizeObserver(() => h.rerender()).observe(doc.documentElement);
   return cancel;

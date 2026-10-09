@@ -24,6 +24,7 @@ export class OpLog {
   private done: LogEntry[] = [];
   private undone: LogEntry[] = [];
   private listeners = new Set<() => void>();
+  private rev = 0;
 
   constructor(
     base: Scene,
@@ -43,6 +44,11 @@ export class OpLog {
 
   get ops(): Op[] {
     return this.done.flatMap((e) => e.ops);
+  }
+
+  /** Bumped on every change, so what is derived from the log (the change list) can be cached. */
+  get revision(): number {
+    return this.rev;
   }
 
   get canUndo(): boolean {
@@ -121,6 +127,7 @@ export class OpLog {
   }
 
   private emit(): void {
+    this.rev++;
     for (const fn of this.listeners) fn();
   }
 }

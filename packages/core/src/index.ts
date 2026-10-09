@@ -8,3 +8,4 @@ export * from "./rebase.js";
 export * from "./scene-file.js";
 export * from "./scene-schema.js";
 export * from "./scene-guide.js";
+export * from "./scrollback.js";
