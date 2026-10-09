@@ -157,7 +157,8 @@ describe("variants", () => {
     expect(await (await fetch(`${srv.url}/snapshot/${body.backup.id}/index.html`)).text()).toContain("<button>Hi</button>");
     expect((await post(`/api/variants/v1/choose`, { k: 1 })).status).toBe(404);
     live.close();
-  });
+    // Waits on real file-watch events, which macOS runners deliver slowly.
+  }, 15_000);
 
   it("discards a job and never reuses its id", async () => {
     const job = await createJob(2);
