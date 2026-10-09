@@ -12,6 +12,18 @@ import { fileURLToPath } from "node:url";
 import { startServer, type GlimpseServer, type ServerOptions } from "@glimpse/server";
 
 export {
+  detectAgents,
+  loadAgentSettings,
+  saveAgentSettings,
+  type AgentEngine,
+  type AgentInfo,
+  type AgentRunEvent,
+  type AgentRunState,
+  type AgentSettings,
+  type AgentSettingsPatch,
+  type BuiltInEngine,
+  type DetectedAgents,
+  type ResolvedEngine,
   detectProject,
   openBrowser,
   sameDir,

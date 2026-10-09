@@ -7,8 +7,10 @@ import { dirname, extname, join, normalize, posix, relative, resolve, sep } from
 import type { Duplex } from "node:stream";
 import { watch, type FSWatcher } from "chokidar";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import { changeListToPrompt, type ChangeList, type Scene, type Target } from "@glimpse/core";
+import { changeListToPrompt, SCENE_AUTHORING_GUIDE, type ChangeList, type Scene, type Target } from "@glimpse/core";
 import { createReactPreview, isJsxChange, mergePatchPlans, planJsxPatch, ReactPreviewError, resolveVite, type ReactPreview } from "@glimpse/react";
+import { AgentRunner } from "./agent-runner.js";
+import { AGENT_ENGINES, saveAgentSettings, type AgentEngine, type AgentSettingsPatch } from "./agent-settings.js";
 import { detectProject, SCENE_FILE, type ProjectInfo } from "./detect.js";
 import {
   decodePngDataUrl,
@@ -235,6 +237,17 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
   const seqFloor = loaded.lastSeq;
   /** Variants jobs being chosen or discarded right now. */
   const busyJobs = new Set<string>();
+  /** The built-in agent: runs requests itself when no external agent is listening. */
+  const runner = new AgentRunner({
+    dir,
+    broadcast: (msg) => broadcast(msg),
+    externalWaiting: () => externalWaiting(),
+    handoff: (seq) => handoffs.find((h) => h.seq === seq),
+    claim: (h) => markDelivered(h),
+    roundEnd: () => endAiRound(),
+    prompt: (h) => builtInPrompt(h),
+    screenshot: (h) => (h.screenshot ? join(stateDir, "handoffs", `${h.seq}.png`) : undefined),
+  });
   const host = opts.host ?? "127.0.0.1";
 
   const isScene = () => project.target === "tui" || project.target === "native";
@@ -617,7 +630,51 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     }
 
     if (path === "/api/session" && req.method === "GET") {
-      send(res, 200, { ...(await projectState()), agentWaiting: waiters.size > 0, lastSeq: handoffs.at(-1)?.seq ?? 0 });
+      send(res, 200, {
+        ...(await projectState()),
+        agentWaiting: waiters.size > 0,
+        agentInfo: await runner.info(),
+        agentRun: runner.state(),
+        lastSeq: handoffs.at(-1)?.seq ?? 0,
+      });
+      return;
+    }
+
+    if (path === "/api/agent" && req.method === "GET") {
+      send(res, 200, await runner.info());
+      return;
+    }
+
+    if (path === "/api/agent/settings" && req.method === "POST") {
+      const body = (await readJson(req)) as { engine?: unknown; anthropicApiKey?: unknown } | null;
+      const engine = body?.engine;
+      const key = body?.anthropicApiKey;
+      if (
+        !body ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        (engine !== undefined && !(AGENT_ENGINES as readonly unknown[]).includes(engine)) ||
+        (key !== undefined && key !== null && (typeof key !== "string" || !/^\S{1,400}$/.test(key.trim())))
+      ) {
+        send(res, 400, { error: `Expected { engine?: ${AGENT_ENGINES.join(" | ")}, anthropicApiKey?: string | null }` });
+        return;
+      }
+      const patch: AgentSettingsPatch = {};
+      if (engine !== undefined) patch.engine = engine as AgentEngine;
+      if (key !== undefined) patch.anthropicApiKey = key === null ? null : (key as string).trim();
+      await saveAgentSettings(patch);
+      runner.refresh();
+      const info = await runner.info();
+      broadcast({ type: "agent-info", info });
+      // Requests that waited because nothing could run them (no engine chosen, no key yet) start now.
+      await runner.enqueue(pendingHandoffs());
+      send(res, 200, info);
+      return;
+    }
+
+    if (path === "/api/agent/stop" && req.method === "POST") {
+      runner.stop();
+      send(res, 200, { ok: true });
       return;
     }
 
@@ -1332,7 +1389,48 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     if (notify) offer(handoff);
     await persist(handoff);
     broadcast({ type: "handoff", ...summarize(handoff) });
+    // No agent listening: Glimpse runs it itself (if an engine is available; otherwise it waits as before).
+    if (notify && !handoff.delivered && handoff.kind !== "source") void runner.enqueue(handoff).catch(() => undefined);
     return handoff;
+  }
+
+  /** Handoffs no agent has received yet. */
+  function pendingHandoffs(): Handoff[] {
+    return handoffs.filter((h) => !h.delivered && !h.cancelled && h.kind !== "source");
+  }
+
+  /** The built-in agent took it: the same bookkeeping as an external agent taking it. */
+  function markDelivered(h: Handoff): void {
+    h.delivered = true;
+    persist(h).catch((err: unknown) => console.warn(`glimpse: couldn't save handoff #${h.seq} (${err instanceof Error ? err.message : String(err)})`));
+    broadcast({ type: "handoff-delivered", seq: h.seq });
+  }
+
+  /** An external agent listens, or did a moment ago (agents poll in chunks, so it is between two polls). */
+  function externalWaiting(): boolean {
+    return waiters.size > 0 || lastWaiting;
+  }
+
+  /** What the built-in agent is told: where it runs, then the handoff itself, without the "wait for the human" step. */
+  function builtInPrompt(h: Handoff): string {
+    const preamble = [
+      `You are running inside Glimpse, a visual editor that previews this project live. The current directory is the project folder (${dir}).`,
+      `Make the changes by writing the files directly; Glimpse shows every save to the human as it happens. Keep ${entryRel()} as the file Glimpse previews unless asked otherwise.`,
+      "Don't wait for the human or call any glimpse wait tool: finish the task and stop.",
+    ].join("\n");
+    let body: string;
+    if (h.kind === "request" && h.request) {
+      body = requestPrompt(h.request.text, h.request.target ?? project.target, project, { builtIn: true });
+    } else if (h.kind === "variants") {
+      const job = h.variants && variants.get(h.variants.id);
+      body = job ? variantsPrompt(job, project, { builtIn: true }) : h.prompt;
+    } else {
+      body = h.prompt;
+    }
+    if (h.screenshot && !body.includes("Screenshot of the human's edited version")) {
+      body += `\n\nScreenshot of the human's edited version: ${join(dir, h.screenshot).split(sep).join("/")}`;
+    }
+    return `${preamble}\n\n${body}`;
   }
 
   /** Hand an undelivered handoff to a waiting agent, if one is listening for it. */
@@ -1435,6 +1533,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       if (waiting !== lastWaiting) {
         lastWaiting = waiting;
         broadcast({ type: "agent", waiting });
+        runner.infoChanged();
+        // The external agent went away: what it left waiting runs with the built-in agent, if one is available.
+        if (!waiting && !closing) void runner.enqueue(pendingHandoffs()).catch(() => undefined);
       }
     }, waiters.size > 0 ? 0 : 1500).unref();
   }
@@ -1530,6 +1631,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
       type: "hello",
       ...state,
       agentWaiting: waiters.size > 0,
+      agentInfo: await runner.info(),
+      agentRun: runner.state(),
       terminal: { ...terminalState(), ...(usesTerminal && { pty: await ptyAvailable() }) },
     };
   }
@@ -1622,7 +1725,8 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         waiters.delete(w);
         w.resolve(null);
       }
-      // The app first, so it can't outlive Glimpse.
+      // The built-in agent and the app first, so they can't outlive Glimpse.
+      await runner.close();
       unbridge();
       clearTimeout(restartTimer);
       await terminal.stop();
@@ -1696,7 +1800,7 @@ function sourcePrompt(list: ChangeList, files: string[]): string {
   ].join("\n");
 }
 
-function requestPrompt(text: string, target: Target, project: ProjectInfo): string {
+function requestPrompt(text: string, target: Target, project: ProjectInfo, opts: { builtIn?: boolean } = {}): string {
   const what = { html: "a web page (HTML/CSS/JS)", react: "a React app", tui: "a terminal UI", native: "a native desktop GUI" }[target];
   return [
     `The human asked for this in Glimpse:`,
@@ -1706,9 +1810,11 @@ function requestPrompt(text: string, target: Target, project: ProjectInfo): stri
     `Build it as ${what} in ${project.dir}` + (target === "html" ? ` (entry: ${project.entry}).` : "."),
     "Glimpse shows every file you save live, so the human watches it appear.",
     target === "tui" || target === "native"
-      ? "Also write glimpse.scene.json describing the layout so the human can edit it visually (call glimpse_scene_schema for the format), with meta.command set to how the app is run."
+      ? opts.builtIn
+        ? `Also write glimpse.scene.json describing the layout so the human can edit it visually, with meta.command set to how the app is run. The format:\n\n${SCENE_AUTHORING_GUIDE}`
+        : "Also write glimpse.scene.json describing the layout so the human can edit it visually (call glimpse_scene_schema for the format), with meta.command set to how the app is run."
       : "",
-    "When you're done, wait for the human's edits again (glimpse wait / glimpse_wait_for_done).",
+    opts.builtIn ? "" : "When you're done, wait for the human's edits again (glimpse wait / glimpse_wait_for_done).",
   ]
     .filter((l, i, a) => l !== "" || a[i - 1] !== "")
     .join("\n")

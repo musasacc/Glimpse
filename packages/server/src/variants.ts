@@ -169,7 +169,7 @@ export function parseVariantPath(rel: string): { id: string; k: number; path: st
 }
 
 /** The instructions the agent gets for a variants job. */
-export function variantsPrompt(job: VariantJob, project: { dir: string; entry: string }): string {
+export function variantsPrompt(job: VariantJob, project: { dir: string; entry: string }, opts: { builtIn?: boolean } = {}): string {
   const file = (job.src && /^(.+):\d+:\d+$/.exec(job.src)?.[1]) || project.entry;
   const where = job.src ? ` at ${job.src}` : "";
   const folder = `.glimpse/variants/${job.id}`;
@@ -183,7 +183,7 @@ export function variantsPrompt(job: VariantJob, project: { dir: string; entry: s
     `For each variant k = 1..${job.count}, write every file it changes into ${folder}/<k>/ using the same relative path as in the project,`,
     `e.g. ${folder}/2/${file} (absolute: ${abs}/${folder}/2/${file}). Write whole files, not diffs; files you don't write there are taken from the project.`,
     "Never modify the real project files. Glimpse shows the variants side by side as you write them; the human picks one and Glimpse copies it into the project.",
-    "When you're done, wait for the human again (glimpse wait / glimpse_wait_for_done).",
+    opts.builtIn ? "" : "When you're done, wait for the human again (glimpse wait / glimpse_wait_for_done).",
   ]
     .filter((l, i, a) => l !== "" || a[i - 1] !== "")
     .join("\n")

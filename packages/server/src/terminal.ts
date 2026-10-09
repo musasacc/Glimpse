@@ -374,7 +374,7 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
     this.buffer.clear();
     // The app runs in its own process group, so it wouldn't go down with Glimpse: take it along on exit.
     if (run.pid > 0) {
-      run.onProcessExit = () => killTreeSync(run.pid);
+      run.onProcessExit = () => killProcessTreeSync(run.pid);
       process.once("exit", run.onProcessExit);
     }
   }
@@ -412,7 +412,7 @@ export class TerminalSession extends EventEmitter<TerminalEvents> {
 }
 
 /** Last-moment cleanup while Glimpse itself exits (only synchronous work is possible then). */
-function killTreeSync(pid: number): void {
+export function killProcessTreeSync(pid: number): void {
   try {
     if (isWindows) spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     else process.kill(-pid, "SIGKILL");
@@ -421,7 +421,8 @@ function killTreeSync(pid: number): void {
   }
 }
 
-function baseEnv(env: TerminalStartOptions["env"]): Record<string, string> {
+/** The environment for a child process: Glimpse's own plus `env`, without undefined values. */
+export function baseEnv(env?: TerminalStartOptions["env"]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries({ ...process.env, ...env })) if (v !== undefined) out[k] = v;
   return out;
@@ -440,7 +441,7 @@ function signalName(signal: number): string {
 }
 
 /** Resolves true when `p` settles within `ms`, false otherwise. */
-async function settled(p: Promise<void>, ms: number): Promise<boolean> {
+export async function settled(p: Promise<void>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<false>((r) => (timer = setTimeout(() => r(false), ms)));
   try {
@@ -453,25 +454,36 @@ async function settled(p: Promise<void>, ms: number): Promise<boolean> {
 /** Signal the run's whole process tree. Only ever the pid Glimpse started (and its group). */
 async function killTree(run: Run, signal: NodeJS.Signals): Promise<void> {
   if (run.pid <= 0) return;
+  await killProcessTree(run.pid, signal);
   if (isWindows) {
-    await new Promise<void>((resolve) => {
-      const k = spawn("taskkill", ["/pid", String(run.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-      k.on("exit", () => resolve());
-      k.on("error", () => resolve());
-    });
     try {
       run.pty?.kill();
     } catch {
       // already gone
     }
+  }
+}
+
+/**
+ * Signal a process Glimpse started and everything it started: its process group on POSIX (so it must have
+ * been spawned detached), `taskkill /T /F` on Windows.
+ */
+export async function killProcessTree(pid: number, signal: NodeJS.Signals): Promise<void> {
+  if (pid <= 0) return;
+  if (isWindows) {
+    await new Promise<void>((resolve) => {
+      const k = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      k.on("exit", () => resolve());
+      k.on("error", () => resolve());
+    });
     return;
   }
   try {
     // Negative pid: the process group. The pty's shell is a session leader, and pipes run detached.
-    process.kill(-run.pid, signal);
+    process.kill(-pid, signal);
   } catch {
     try {
-      process.kill(run.pid, signal);
+      process.kill(pid, signal);
     } catch {
       // already gone
     }
