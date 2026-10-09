@@ -1,3 +1,4 @@
+import { getAgentInfo, normalizeAgentInfo, normalizeAgentRun, normalizeRunMessage } from "./agent";
 import { loop } from "./loop";
 import { store, type ProjectInfo } from "./store";
 
@@ -67,6 +68,12 @@ export function connectLive(): () => void {
         case "hello": {
           const first = store.state.project === null;
           store.set({ project: msg.project, agentWaiting: !!msg.agentWaiting, entryExists: msg.entryExists !== false, previewError: msg.previewError ?? null });
+          // Newer servers run the AI themselves; an older one sends neither (agentInfo stays null: an external agent).
+          const info = normalizeAgentInfo(msg.agentInfo);
+          store.setAgentInfo(info);
+          store.catchUpRun(normalizeAgentRun(msg.agentRun) ?? info?.running ?? null);
+          // A hello without it may still come from a server with the API: ask (an older one answers 404 → null).
+          if (!info) void getAgentInfo().then((i) => i && store.setAgentInfo(i));
           // Start on the editor when there is already a page to edit.
           if (first && msg.entryExists !== false) store.set({ view: "editor" });
           break;
@@ -74,6 +81,16 @@ export function connectLive(): () => void {
         case "agent":
           store.set({ agentWaiting: !!msg.waiting });
           break;
+        case "agent-info": {
+          const info = normalizeAgentInfo(msg.info);
+          if (info) store.setAgentInfo(info);
+          break;
+        }
+        case "agent-run": {
+          const run = normalizeRunMessage(msg);
+          if (run) store.agentRunEvent(run);
+          break;
+        }
         case "project":
           // Detection changed, e.g. the agent turned an empty folder into a terminal UI or a React app.
           applyProjectState(msg);

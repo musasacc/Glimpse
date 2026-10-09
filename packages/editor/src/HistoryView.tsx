@@ -44,7 +44,7 @@ export function HistoryView() {
     <section className="history">
       <header className="view-head">
         <h2>History</h2>
-        <p>Every request and every round of edits you've sent to your agent.</p>
+        <p>Every request and every round of edits you've sent to the AI.</p>
       </header>
       {state.handoffs.length === 0 ? (
         <div className="history-empty">
@@ -67,7 +67,7 @@ export function HistoryView() {
                   </span>
                   <span className="title ellipsis">{h.title}</span>
                   <span className="meta">
-                    #{h.seq} · {ago(h.createdAt)} · {h.cancelled ? "withdrawn" : h.delivered ? "received" : "waiting for agent"}
+                    #{h.seq} · {ago(h.createdAt)} · {h.cancelled ? "withdrawn" : h.delivered ? "received" : "waiting"}
                   </span>
                 </button>
               </li>
@@ -78,7 +78,7 @@ export function HistoryView() {
               <>
                 <div className="meta">
                   #{open.seq} · {new Date(open.createdAt).toLocaleString()} ·{" "}
-                  {open.cancelled ? "withdrawn before an agent got it" : open.delivered ? "received by agent" : "queued"}
+                  {open.cancelled ? "withdrawn before the AI got it" : open.delivered ? "received" : "queued"}
                   {open.screenshot && " · with screenshot"}
                 </div>
                 <pre>{open.prompt}</pre>

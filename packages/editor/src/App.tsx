@@ -10,7 +10,9 @@ import { HistoryView } from "./HistoryView";
 import { SourceDialog } from "./SourceDialog";
 import { Modal } from "./Modal";
 import * as I from "./icons";
-import { store, useStore, type Device } from "./store";
+import { currentEngine, store, useStore, type Device } from "./store";
+import { queuedNote } from "./agent";
+import { AiSettings } from "./AiSettings";
 import { connectLive } from "./live";
 import { handoffScreenshot, initLoop, loop, useTimelineOpen } from "./loop";
 import { LoopStage, LoopToolbar } from "./Timeline";
@@ -44,6 +46,7 @@ export function App() {
           </button>
         )}
       </main>
+      {state.aiSettingsOpen && <AiSettings />}
     </div>
   );
 }
@@ -237,8 +240,8 @@ function SendDialog({ list: opened, onClose }: { list: ChangeList; onClose: () =
       <header>
         <h2>Send instructions to AI</h2>
         <p>
-          Your agent receives these {list.changes.length} changes and applies them to the real code. Watch it happen live.
-          {!state.agentWaiting && " No agent is listening right now. It'll get them as soon as it runs `glimpse wait`."}
+          The AI applies these {list.changes.length} changes to the real code. Watch it happen live.
+          {queuedNote(currentEngine(state), state.agentWaiting)}
         </p>
       </header>
       <div className="body">

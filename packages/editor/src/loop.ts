@@ -306,7 +306,7 @@ class Loop {
   async requestVariants(input: { src?: string; label: string; count: number; hint?: string }): Promise<void> {
     const res = await api<{ job: VariantJob; seq: number }>("/api/variants", input);
     this.upsertJob(res.job);
-    store.activity("handoff", `Asked your agent for ${input.count} variants of ${input.label} (#${res.seq})`);
+    store.activity("handoff", `Asked the AI for ${input.count} variants of ${input.label} (#${res.seq})`);
     void store.refreshHandoffs();
   }
 

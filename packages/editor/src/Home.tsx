@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as I from "./icons";
-import { store, useStore } from "./store";
+import { currentEngine, store, useStore } from "./store";
+import { engineName, isBuiltIn, stopAgent } from "./agent";
+import { Mark } from "./Logo";
 import { PreviewError } from "./PreviewError";
 import { isEnter } from "./platform";
 
@@ -27,8 +29,8 @@ function greeting(): string {
 }
 
 /**
- * Home: describe a UI and hand it to the connected AI agent. The agent builds
- * it and every file it saves shows up live in the editor.
+ * Home: describe a UI and hand it to the AI (one Glimpse runs itself, or an external agent). It builds it and
+ * every file it saves shows up live in the editor.
  */
 export function Home() {
   const state = useStore();
@@ -52,21 +54,31 @@ export function Home() {
     if (state.project?.target) setTarget(state.project.target as Target);
   }, [state.project?.target]);
 
-  const send = async () => {
-    const t = text.trim();
+  const send = async (t: string, tgt: Target) => {
     if (!t || busy) return;
+    // Nothing can run it yet: set the AI up first, and the request goes out once that's saved.
+    if (currentEngine(store.state) === "none") {
+      store.openAiSettings(() => void send(t, tgt));
+      return;
+    }
     setBusy(true);
     setNotice(null);
     try {
       const res = await fetch("/api/request", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: t, target }),
+        body: JSON.stringify({ text: t, target: tgt }),
       });
       const body = (await res.json()) as { seq?: number; delivered?: boolean; error?: string };
       if (!res.ok) throw new Error(body.error ?? res.statusText);
       setText("");
-      store.activity("handoff", body.delivered ? "Sent your request to the agent" : "Request queued; the agent gets it as soon as it listens");
+      const s = store.state;
+      if (isBuiltIn(currentEngine(s))) {
+        // Its run reports itself ("… is building"); behind another one, it waits its turn.
+        if (s.agentRun || (s.agentInfo?.queued ?? 0) > 0) store.activity("handoff", "Request queued; it starts when the current build is done");
+      } else {
+        store.activity("handoff", body.delivered ? "Sent your request" : "Request queued until your agent picks it up");
+      }
       void store.refreshHandoffs();
       store.set({ view: "editor" });
     } catch (e) {
@@ -75,16 +87,28 @@ export function Home() {
       setBusy(false);
     }
   };
+  const submit = () => void send(text.trim(), target);
+
+  const [stopping, setStopping] = useState(false);
+  const stop = async () => {
+    setStopping(true);
+    setNotice(null);
+    try {
+      await stopAgent();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStopping(false);
+    }
+  };
 
   const current = TARGETS.find((t) => t.id === target)!;
   const folder = state.project?.dir.split(/[\\/]/).filter(Boolean).at(-1) ?? "No project";
+  const run = state.agentRun;
 
   return (
     <section className="home">
-      <svg className="watermark" viewBox="0 0 64 64" aria-hidden="true">
-        <path d="M5 32C14 16 50 16 59 32C50 48 14 48 5 32Z" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
-        <circle cx="35" cy="31" r="9" fill="none" stroke="currentColor" strokeWidth="1.2" />
-      </svg>
+      <Mark className="watermark" weight={1.2} outline />
       <h1 className="greeting">{greeting()}</h1>
 
       <div className="composer">
@@ -99,20 +123,29 @@ export function Home() {
             ref={input}
             rows={3}
             value={text}
-            placeholder="Describe the UI you want. Your AI agent builds it, and you watch it appear live…"
+            placeholder="Describe the UI you want…"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
               if (isEnter(e) && !e.shiftKey) {
                 e.preventDefault();
-                void send();
+                submit();
               }
             }}
           />
           <div className="composer-foot">
-            <span className={`agent-chip${state.agentWaiting ? " on" : ""}`} title={state.agentWaiting ? "An agent is waiting for your request" : "Requests are queued until an agent runs `glimpse wait` or connects over MCP"}>
-              <span className="agent-dot" />
-              {state.agentWaiting ? "Agent ready" : "No agent listening"}
-            </span>
+            {run ? (
+              <>
+                <span className="agent-chip on building" role="status">
+                  <span className="agent-dot" />
+                  {engineName(run.engine)} is building…
+                </span>
+                <button className="ghost stop-btn" onClick={() => void stop()} disabled={stopping} title="Stop building">
+                  <I.Stop size={14} /> {stopping ? "Stopping…" : "Stop"}
+                </button>
+              </>
+            ) : (
+              <EngineChip />
+            )}
             <div className="spacer" />
             <div
               className="menu-wrap"
@@ -167,7 +200,7 @@ export function Home() {
                 </div>
               )}
             </div>
-            <button className="send-btn" disabled={!text.trim() || busy} onClick={() => void send()} title="Send to your agent (Enter)">
+            <button className="send-btn" disabled={!text.trim() || busy} onClick={submit} title={run ? "Queue another request (Enter)" : "Send (Enter)"}>
               <I.ArrowUp />
             </button>
           </div>
@@ -191,12 +224,26 @@ export function Home() {
           </button>
         ))}
       </div>
-
-      {!state.agentWaiting && (
-        <p className="home-hint">
-          Connect your agent: tell Claude Code, Codex or any agent to run <code>glimpse wait</code>, or add the MCP server (<code>glimpse mcp</code>).
-        </p>
-      )}
     </section>
+  );
+}
+
+/** What builds the request, with its state; a click opens the AI settings. */
+function EngineChip() {
+  const state = useStore();
+  const engine = currentEngine(state);
+  const external = engine === "external";
+  const ready = external ? state.agentWaiting : engine !== "none";
+  const title =
+    engine === "none" ? "Choose what builds your UI: Claude Code, Codex or a Claude API key"
+    : external ?
+      state.agentWaiting ? "Your agent is waiting for a request"
+      : "Requests wait until your agent picks them up"
+    : `${engineName(engine)} builds your request on this machine`;
+  return (
+    <button className={`agent-chip${ready ? " on" : ""}`} title={`${title}. AI settings…`} onClick={() => store.openAiSettings()}>
+      <span className="agent-dot" />
+      {engineName(engine)}
+    </button>
   );
 }

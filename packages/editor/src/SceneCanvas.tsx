@@ -5,6 +5,7 @@ import type { Mode } from "./Canvas";
 import * as I from "./icons";
 import * as L from "./loop-icons";
 import { NativeWindow } from "./NativeRenderer";
+import { WaitingForAi } from "./Waiting";
 import { isEnter, MOD } from "./platform";
 import { captureFrame, renderThumbnail } from "./scene-capture";
 import { absBox, editableProp, unitSize, type Cell, type SceneTarget } from "./scene-geometry";
@@ -302,18 +303,9 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
   if (sm.status === "missing" || (!state.entryExists && !scene)) {
     return (
       <div className="canvas">
-        <div className="waiting">
-          <div className="waiting-eye">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <path d="M5 32C14 16 50 16 59 32C50 48 14 48 5 32Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-              <circle cx="35" cy="31" r="8" fill="currentColor" />
-            </svg>
-          </div>
-          <h3>{state.agentWaiting ? "Your agent is listening" : "Waiting for your agent to describe the UI"}</h3>
-          <p>
-            As soon as it saves <code>{sm.file}</code>, the {target === "tui" ? "terminal UI" : "window"} appears here to edit.
-          </p>
-        </div>
+        <WaitingForAi>
+          The {target === "tui" ? "terminal UI" : "window"} appears here to edit as soon as <code>{sm.file}</code> is saved.
+        </WaitingForAi>
       </div>
     );
   }
@@ -343,7 +335,7 @@ export function SceneCanvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkO
                 <L.Message size={14} />
                 <span>
                   <code>{sm.file}</code> isn't valid JSON{sm.invalid.line ? ` (line ${sm.invalid.line}, column ${sm.invalid.column})` : ""}. Showing the last good version
-                  until the agent fixes it.
+                  until the AI fixes it.
                 </span>
               </div>
             )}

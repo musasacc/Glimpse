@@ -4,6 +4,7 @@ import { DomBridge, tagFor } from "./dom";
 import { followMoves, followOps, isVitePage, repeatedSources, sameEdit, undoAll } from "./hmr";
 import { shownPane } from "./scene-geometry";
 import { domSurface, type Surface } from "./surface";
+import { engineName, RunFeed, type AgentInfo, type AgentRun, type AgentRunMessage, type Engine } from "./agent";
 
 export type Device = "desktop" | "tablet" | "mobile";
 
@@ -60,6 +61,12 @@ interface State {
   view: View;
   /** An agent is currently waiting for something from Glimpse (glimpse wait / MCP). */
   agentWaiting: boolean;
+  /** What runs the AI (newer servers run it themselves); null: unknown, or a server that can't (an external agent's). */
+  agentInfo: AgentInfo | null;
+  /** The AI Glimpse runs is building right now. */
+  agentRun: AgentRun | null;
+  /** The AI settings dialog is open. */
+  aiSettingsOpen: boolean;
   /** The project's entry page exists yet (false until the agent builds it). */
   entryExists: boolean;
   /** Why the React preview can't run (e.g. "… run npm install"); null when it's fine. */
@@ -93,6 +100,9 @@ class Store {
     activity: [],
     view: "home",
     agentWaiting: false,
+    agentInfo: null,
+    agentRun: null,
+    aiSettingsOpen: false,
     entryExists: true,
     previewError: null,
     handoffs: [],
@@ -138,6 +148,10 @@ class Store {
    * are replayed on it, and they stay unsent (see writingSource). `applied` once that happened.
    */
   private keepAfterWrite: (KeptEdits & { applied: boolean }) | null = null;
+  /** What the running AI prints, as activity rows (coalesced, see RunFeed). */
+  private runFeed = new RunFeed((...texts) => this.activity("info", ...texts));
+  /** Runs once the AI settings are saved with something that can run it (Home's request that waited for it). */
+  private afterSettings: (() => void) | null = null;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -633,6 +647,74 @@ class Store {
     return this.log && this.commitTimer === undefined ? buildChangeList(this.log, note) : null;
   }
 
+  /** The server's agent info changed (or there is none: an older server). */
+  setAgentInfo(info: AgentInfo | null): void {
+    const patch: Partial<State> = { agentInfo: info };
+    // The info knows what runs: a run that ended while we were away isn't shown as running any more.
+    if (info && !info.running && this.state.agentRun) patch.agentRun = null;
+    this.set(patch);
+  }
+
+  /** The run the server is in as we (re)connect (hello): show it, with its latest lines, unless we already do. */
+  catchUpRun(run: (AgentRun & { output?: string[] }) | null): void {
+    if (!run) {
+      if (this.state.agentRun) {
+        this.runFeed.flush();
+        this.set({ agentRun: null });
+      }
+      return;
+    }
+    if (this.state.agentRun?.seq === run.seq) return;
+    this.runFeed.reset();
+    this.activity("ai-status", `${engineName(run.engine)} is building…`);
+    for (const line of run.output ?? []) this.runFeed.push(line);
+    this.runFeed.flush();
+    this.set({ agentRun: { seq: run.seq, engine: run.engine, startedAt: run.startedAt } });
+  }
+
+  /** A run of the AI Glimpse runs started, printed something, finished or failed (or was stopped). */
+  agentRunEvent(msg: AgentRunMessage): void {
+    const current = this.state.agentRun;
+    switch (msg.event) {
+      case "start":
+        this.runFeed.reset();
+        this.activity("ai-status", `${engineName(msg.engine)} is building…`);
+        this.set({ agentRun: { seq: msg.seq, engine: msg.engine, startedAt: msg.at ?? new Date().toISOString() } });
+        break;
+      case "output":
+        if (msg.text) this.runFeed.push(msg.text);
+        // Output of a run whose start we missed (reconnected mid-run): it is running.
+        if (!current) this.set({ agentRun: { seq: msg.seq, engine: msg.engine, startedAt: msg.at ?? new Date().toISOString() } });
+        break;
+      case "done":
+      case "error": {
+        this.runFeed.flush();
+        const text = msg.text?.trim();
+        if (msg.event === "done") this.activity("handoff", "Done");
+        else if (text === "Stopped") this.activity("info", "Stopped");
+        else this.activity("warn", text || `${engineName(msg.engine)} stopped with an error`);
+        // An older run's end doesn't end a newer one.
+        if (!current || current.seq <= msg.seq) this.set({ agentRun: null });
+        break;
+      }
+    }
+  }
+
+  /** Open the AI settings; `then` runs once they're saved with an AI that can run (e.g. send the waiting request). */
+  openAiSettings(then?: () => void): void {
+    this.afterSettings = then ?? null;
+    this.set({ aiSettingsOpen: true });
+  }
+
+  /** Close the AI settings; `saved`: what the server says now, after saving. */
+  closeAiSettings(saved?: AgentInfo): void {
+    const then = this.afterSettings;
+    this.afterSettings = null;
+    if (saved) this.setAgentInfo(saved);
+    this.set({ aiSettingsOpen: false });
+    if (saved && saved.engine !== "none") then?.();
+  }
+
   /** Add rows to the activity feed (several at once re-render once), newest last. */
   activity(kind: ActivityItem["kind"], ...texts: string[]): void {
     if (texts.length === 0) return;
@@ -643,6 +725,11 @@ class Store {
 }
 
 export const store = new Store();
+
+/** What runs the AI now; an older server (no agent info) means an external agent, as before. */
+export function currentEngine(state: Pick<State, "agentInfo">): Engine {
+  return state.agentInfo?.engine ?? "external";
+}
 
 export function useStore(): State {
   return useSyncExternalStore(store.subscribe, store.getSnapshot);

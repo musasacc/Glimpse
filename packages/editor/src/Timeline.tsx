@@ -158,7 +158,7 @@ export function Timeline() {
           onKeyDown={onKeyDown}
         >
           {ls.snapshots.length === 0 && (
-            <div className="tl-empty">No versions yet. Glimpse keeps one each time your agent finishes a round, or press Save version.</div>
+            <div className="tl-empty">No versions yet. Glimpse keeps one each time the AI finishes a round, or press Save version.</div>
           )}
           {ls.snapshots.map((s) => (
             <SnapshotCard key={s.id} s={s} active={s.id === current} rev={ls.thumbRev[s.id] ?? 0} onClick={() => go(s.id)} />

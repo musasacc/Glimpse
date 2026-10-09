@@ -220,7 +220,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
           className="btn"
           style={{ marginLeft: 6 }}
           disabled={!!variantsBlocked(node)}
-          title={variantsBlocked(node) ?? "Ask your agent for a few alternative designs of this element"}
+          title={variantsBlocked(node) ?? "Ask the AI for a few alternative designs of this element"}
           onClick={() => loop.openVariants(node.id)}
         >
           Variants…
@@ -297,7 +297,7 @@ export function Activity() {
       </div>
       {state.activity.length === 0 && (
         <div className="hint" style={{ padding: "0 12px" }}>
-          When your AI agent edits files, every change shows up here and in the page instantly.
+          When the AI edits files, every change shows up here and in the page instantly.
         </div>
       )}
       {state.activity.map((a) => (

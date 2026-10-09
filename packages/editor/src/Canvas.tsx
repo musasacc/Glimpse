@@ -9,6 +9,7 @@ import { cssSize } from "./dom";
 import { PreviewError } from "./PreviewError";
 import { modalOpen } from "./Modal";
 import { isEnter } from "./platform";
+import { WaitingForAi } from "./Waiting";
 import "./editing.css";
 
 export type Mode = "edit" | "interact";
@@ -163,18 +164,9 @@ export function Canvas({ mode, talkOpen, setTalkOpen }: { mode: Mode; talkOpen: 
   if (!state.entryExists) {
     return (
       <div className="canvas">
-        <div className="waiting">
-          <div className="waiting-eye">
-            <svg viewBox="0 0 64 64" aria-hidden="true">
-              <path d="M5 32C14 16 50 16 59 32C50 48 14 48 5 32Z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
-              <circle cx="35" cy="31" r="8" fill="currentColor" />
-            </svg>
-          </div>
-          <h3>{state.agentWaiting ? "Your agent is listening" : "Waiting for your agent to build something"}</h3>
-          <p>
-            As soon as it saves <code>{state.project?.entry ?? "index.html"}</code>, the page appears here live.
-          </p>
-        </div>
+        <WaitingForAi>
+          It appears here live as soon as <code>{state.project?.entry ?? "index.html"}</code> is saved.
+        </WaitingForAi>
       </div>
     );
   }
