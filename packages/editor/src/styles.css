@@ -738,6 +738,10 @@ code {
   background: var(--accent-dim);
   color: var(--text);
 }
+.layer:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
 .layer .tag {
   font-family: var(--mono);
   font-size: 11px;
@@ -872,7 +876,9 @@ textarea.input {
     radial-gradient(circle at 1px 1px, #141414 1px, transparent 0) 0 0 / 22px 22px,
     var(--bg);
   display: flex;
-  justify-content: center;
+  /* safe: a device frame wider than the canvas starts at its left edge and scrolls, instead of overflowing both
+     sides where the left part can't be reached. */
+  justify-content: safe center;
   padding: 24px;
 }
 .frame {
@@ -997,6 +1003,9 @@ textarea.input {
 }
 .dialog header {
   padding: 16px 18px 6px;
+}
+.dialog:focus {
+  outline: none;
 }
 .dialog header h2 {
   margin: 0;
@@ -1156,4 +1165,28 @@ html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) :is(.side-top, .
 html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .main > .floating,
 html[data-glimpse-desktop="mac"]:not([data-glimpse-fullscreen]) .scrim {
   -webkit-app-region: no-drag;
+}
+
+/* ── Small windows ──────────────────────────────────── */
+/* Narrower side panels leave the canvas room (a 1000 px window gave it about 440 px). */
+@media (max-width: 1180px) {
+  .shell {
+    grid-template-columns: 232px minmax(0, 1fr);
+  }
+  .editor {
+    grid-template-columns: minmax(0, 1fr) 264px;
+  }
+  .canvas {
+    padding: 16px;
+  }
+  .pal {
+    gap: 6px;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+  /* The X/Y/W/H cells of a mock's widget: room for three digits next to the spinner. */
+  .scene-num .input {
+    padding-left: 18px;
+    padding-right: 2px;
+  }
 }

@@ -8,6 +8,7 @@ import { MOD } from "./platform";
 import { Home } from "./Home";
 import { HistoryView } from "./HistoryView";
 import { SourceDialog } from "./SourceDialog";
+import { Modal } from "./Modal";
 import * as I from "./icons";
 import { store, useStore, type Device } from "./store";
 import { connectLive } from "./live";
@@ -60,12 +61,14 @@ function Editor({ hidden }: { hidden: boolean }) {
   const [sending, setSending] = useState<ChangeList | null>(null);
   const [editing, setEditing] = useState<ChangeList | null>(null);
   const timelineOpen = useTimelineOpen();
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   useEffect(() => {
     if (hidden) return;
     const onKey = (e: KeyboardEvent) => {
       // Not while a past version, comparison or variants dialog is on screen.
-      if (!loop.blocksEditorKeys) handleKey(e, () => setTalkOpen(true));
+      if (!loop.blocksEditorKeys) handleKey(e, () => setTalkOpen(true), modeRef.current);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -95,7 +98,14 @@ function Editor({ hidden }: { hidden: boolean }) {
         ) : (
           <div className="seg" role="group" aria-label="Device width">
             {DEVICES.map((d) => (
-              <button key={d.id} className={state.device === d.id ? "active" : ""} onClick={() => store.set({ device: d.id })} title={d.label}>
+              <button
+                key={d.id}
+                className={state.device === d.id ? "active" : ""}
+                onClick={() => store.set({ device: d.id })}
+                title={d.label}
+                aria-label={d.label}
+                aria-pressed={state.device === d.id}
+              >
                 {d.icon}
               </button>
             ))}
@@ -216,40 +226,40 @@ function SendDialog({ list, onClose }: { list: ChangeList; onClose: () => void }
   };
 
   return (
-    <div className="scrim" onMouseDown={onClose}>
-      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <header>
-          <h2>Send instructions to AI</h2>
-          <p>
-            Your agent receives these {list.changes.length} changes and applies them to the real code. Watch it happen live.
-            {!state.agentWaiting && " No agent is listening right now. It'll get them as soon as it runs `glimpse wait`."}
-          </p>
-        </header>
-        <div className="body">
-          <ol className="changes">
-            {list.changes.map((c, i) => (
-              <li key={i}>
-                <span className="op">{c.op}</span> {describeChange(c)}
-              </li>
-            ))}
-          </ol>
-          <textarea
-            className="input"
-            placeholder="Anything else the AI should know? (optional)"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-          />
-          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
-        </div>
-        <footer>
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn primary" onClick={send} disabled={busy}>
-            <I.Send size={14} /> {busy ? "Sending…" : "Send to AI"}
-          </button>
-        </footer>
+    <Modal onClose={onClose} busy={busy}>
+      <header>
+        <h2>Send instructions to AI</h2>
+        <p>
+          Your agent receives these {list.changes.length} changes and applies them to the real code. Watch it happen live.
+          {!state.agentWaiting && " No agent is listening right now. It'll get them as soon as it runs `glimpse wait`."}
+        </p>
+      </header>
+      <div className="body">
+        <ol className="changes">
+          {list.changes.map((c, i) => (
+            <li key={i}>
+              <span className="op">{c.op}</span> {describeChange(c)}
+            </li>
+          ))}
+        </ol>
+        <textarea
+          className="input"
+          autoFocus
+          aria-label="Note for the AI"
+          placeholder="Anything else the AI should know? (optional)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+        />
+        {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       </div>
-    </div>
+      <footer>
+        <button className="btn" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn primary" onClick={send} disabled={busy}>
+          <I.Send size={14} /> {busy ? "Sending…" : "Send to AI"}
+        </button>
+      </footer>
+    </Modal>
   );
 }

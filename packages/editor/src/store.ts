@@ -125,6 +125,8 @@ class Store {
   private morphedWhileWriting = false;
   /** Edit source wrote the files and the page becomes the new base once their morph has come through. */
   private commitTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The step a control that fires while dragged (a color picker) made last, which its next value replaces. */
+  private merging: { key: string; entry: unknown } | null = null;
 
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
@@ -391,6 +393,38 @@ class Store {
     if (!this.log || ops.length === 0) return;
     this.log.apply(...ops);
     this.set({});
+  }
+
+  /**
+   * A style edit from a control that fires continuously while dragged (a color picker): values with the same `key`
+   * in a row replace each other's step, so the whole drag is one undo step. `endMerge` ends the run (picker closed).
+   */
+  editMerged(key: string, op: Extract<Op, { op: "setStyle" }>): void {
+    const log = this.log;
+    if (!log) return;
+    const last = log.entries.at(-1);
+    const prev = last?.ops.length === 1 ? last.ops[0] : undefined;
+    if (this.merging?.key === key && last === this.merging.entry && prev?.op === "setStyle") {
+      try {
+        log.undo();
+      } catch {
+        this.merging = null;
+        return this.edit(op);
+      }
+      op = { ...op, from: prev.from };
+      if (op.from === op.to) {
+        // Dragged back to where it started: no step at all.
+        this.merging = null;
+        return this.set({});
+      }
+    }
+    log.apply(op);
+    this.merging = { key, entry: log.entries.at(-1) };
+    this.set({});
+  }
+
+  endMerge(): void {
+    this.merging = null;
   }
 
   undo(): void {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { describeNode, type Align } from "@glimpse/core";
 import { alignSelection, canArrange, distributeSelection, groupProblem, groupSelection } from "./arrange";
 import * as I from "./icons";
+import { Modal } from "./Modal";
 import { MOD } from "./platform";
 import { store, useStore } from "./store";
 import "./editing.css";
@@ -112,39 +113,29 @@ function DiscardDialog({ steps, onClose }: { steps: number; onClose: () => void 
   const confirm = useRef<HTMLButtonElement>(null);
   useEffect(() => confirm.current?.focus(), []);
   return (
-    <div
-      className="scrim"
-      onMouseDown={onClose}
-      onKeyDown={(e) => {
-        // Keep editor shortcuts (Delete, arrows, …) away from the page behind the dialog.
-        e.stopPropagation();
-        if (e.key === "Escape") onClose();
-      }}
-    >
-      <div className="dialog narrow" role="alertdialog" aria-labelledby="discard-title" onMouseDown={(e) => e.stopPropagation()}>
-        <header>
-          <h2 id="discard-title">Discard your edits?</h2>
-          <p>
-            {steps > 0 ? `All ${steps} unsent edit${steps === 1 ? "" : "s"} will be dropped` : "Your undone edits will be dropped"} and the page reloads
-            from its files. This can't be undone.
-          </p>
-        </header>
-        <footer>
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            ref={confirm}
-            className="btn danger"
-            onClick={() => {
-              store.discard();
-              onClose();
-            }}
-          >
-            <I.Trash size={14} /> Discard edits
-          </button>
-        </footer>
-      </div>
-    </div>
+    <Modal className="narrow" role="alertdialog" onClose={onClose}>
+      <header>
+        <h2>Discard your edits?</h2>
+        <p>
+          {steps > 0 ? `All ${steps} unsent edit${steps === 1 ? "" : "s"} will be dropped` : "Your undone edits will be dropped"} and the page reloads
+          from its files. This can't be undone.
+        </p>
+      </header>
+      <footer>
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          ref={confirm}
+          className="btn danger"
+          onClick={() => {
+            store.discard();
+            onClose();
+          }}
+        >
+          <I.Trash size={14} /> Discard edits
+        </button>
+      </footer>
+    </Modal>
   );
 }

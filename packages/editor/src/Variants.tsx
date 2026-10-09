@@ -3,7 +3,8 @@ import { describeNode, formatSource } from "@glimpse/core";
 import type { Mode } from "./Canvas";
 import * as L from "./loop-icons";
 import { enc, loop, readOnly, useLoop, variantPage } from "./loop";
-import { MOD } from "./platform";
+import { Modal } from "./Modal";
+import { isEnter, MOD } from "./platform";
 import { DEVICE_WIDTH, store, useStore } from "./store";
 import "./loop.css";
 
@@ -21,11 +22,6 @@ export function VariantsDialog({ nodeId, onClose }: { nodeId: string; onClose: (
   const [error, setError] = useState<string | null>(null);
   const node = store.scene?.nodes[nodeId];
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
   // The element can vanish under the dialog (the AI changed the page).
   useEffect(() => {
     if (!node) onClose();
@@ -48,53 +44,51 @@ export function VariantsDialog({ nodeId, onClose }: { nodeId: string; onClose: (
   };
 
   return (
-    <div className="scrim" onMouseDown={onClose}>
-      <div className="dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <header>
-          <h2>Variants of {label}</h2>
-          <p>
-            Your agent designs a few alternatives and you compare them side by side. Pick one and Glimpse puts it into the code.
-            {!state.agentWaiting && " No agent is listening right now. It'll get the request as soon as it runs `glimpse wait`."}
-          </p>
-        </header>
-        <div className="body">
-          <div className="field">
-            <label>How many</label>
-            <div className="seg vr-count" role="radiogroup" aria-label="How many variants">
-              {COUNTS.map((n) => (
-                <button key={n} role="radio" aria-checked={n === count} className={n === count ? "active" : ""} onClick={() => setCount(n)}>
-                  {n}
-                </button>
-              ))}
-            </div>
+    <Modal onClose={onClose} busy={busy}>
+      <header>
+        <h2>Variants of {label}</h2>
+        <p>
+          Your agent designs a few alternatives and you compare them side by side. Pick one and Glimpse puts it into the code.
+          {!state.agentWaiting && " No agent is listening right now. It'll get the request as soon as it runs `glimpse wait`."}
+        </p>
+      </header>
+      <div className="body">
+        <div className="field">
+          <label>How many</label>
+          <div className="seg vr-count" role="radiogroup" aria-label="How many variants">
+            {COUNTS.map((n) => (
+              <button key={n} role="radio" aria-checked={n === count} className={n === count ? "active" : ""} onClick={() => setCount(n)}>
+                {n}
+              </button>
+            ))}
           </div>
-          <textarea
-            className="input"
-            autoFocus
-            placeholder="What should the variants explore? (optional) e.g. bolder, more playful, with an icon"
-            value={hint}
-            onChange={(e) => setHint(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
-            }}
-          />
-          {src && (
-            <p className="hint">
-              Element in <code>{src}</code>
-            </p>
-          )}
-          {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
         </div>
-        <footer>
-          <button className="btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className="btn primary" onClick={() => void submit()} disabled={busy} title={`${MOD}Enter`}>
-            <L.Grid size={14} /> {busy ? "Asking…" : `Ask for ${count} variants`}
-          </button>
-        </footer>
+        <textarea
+          className="input"
+          autoFocus
+          placeholder="What should the variants explore? (optional) e.g. bolder, more playful, with an icon"
+          value={hint}
+          onChange={(e) => setHint(e.target.value)}
+          onKeyDown={(e) => {
+            if (isEnter(e) && (e.metaKey || e.ctrlKey)) void submit();
+          }}
+        />
+        {src && (
+          <p className="hint">
+            Element in <code>{src}</code>
+          </p>
+        )}
+        {error && <p style={{ color: "var(--danger)" }}>{error}</p>}
       </div>
-    </div>
+      <footer>
+        <button className="btn" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+        <button className="btn primary" onClick={() => void submit()} disabled={busy} title={`${MOD}Enter`}>
+          <L.Grid size={14} /> {busy ? "Asking…" : `Ask for ${count} variants`}
+        </button>
+      </footer>
+    </Modal>
   );
 }
 

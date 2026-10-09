@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as I from "./icons";
 import { store, useStore } from "./store";
 import { PreviewError } from "./PreviewError";
+import { isEnter } from "./platform";
 
 type Target = "html" | "react" | "tui" | "native";
 
@@ -37,8 +38,16 @@ export function Home() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const menuWrap = useRef<HTMLDivElement>(null);
 
   useEffect(() => input.current?.focus(), []);
+  // The target menu closes on a click outside it.
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => !menuWrap.current?.contains(e.target as Node) && setMenu(false);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [menu]);
   useEffect(() => {
     if (state.project?.target) setTarget(state.project.target as Target);
   }, [state.project?.target]);
@@ -93,7 +102,7 @@ export function Home() {
             placeholder="Describe the UI you want. Your AI agent builds it, and you watch it appear live…"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (isEnter(e) && !e.shiftKey) {
                 e.preventDefault();
                 void send();
               }
@@ -105,19 +114,51 @@ export function Home() {
               {state.agentWaiting ? "Agent ready" : "No agent listening"}
             </span>
             <div className="spacer" />
-            <div className="menu-wrap">
-              <button className="ghost" onClick={() => setMenu((m) => !m)}>
+            <div
+              className="menu-wrap"
+              ref={menuWrap}
+              onKeyDown={(e) => {
+                if (!menu) return;
+                const items = [...(menuWrap.current?.querySelectorAll<HTMLElement>(".menu button") ?? [])];
+                const at = items.indexOf(document.activeElement as HTMLElement);
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setMenu(false);
+                  menuWrap.current?.querySelector<HTMLElement>(".ghost")?.focus();
+                } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const step = e.key === "ArrowDown" ? 1 : -1;
+                  items[(at + step + items.length) % items.length]?.focus();
+                }
+              }}
+            >
+              <button
+                className="ghost"
+                aria-haspopup="menu"
+                aria-expanded={menu}
+                aria-label={`What to build: ${current.label}`}
+                onClick={() => setMenu((m) => !m)}
+                onKeyDown={(e) => {
+                  if (e.key !== "ArrowDown" || menu) return;
+                  e.preventDefault();
+                  setMenu(true);
+                }}
+              >
                 {current.icon} {current.label} <I.Chevron size={14} />
               </button>
               {menu && (
-                <div className="menu" onMouseLeave={() => setMenu(false)}>
+                <div className="menu" role="menu" onMouseLeave={() => setMenu(false)}>
                   {TARGETS.map((t) => (
                     <button
                       key={t.id}
+                      role="menuitemradio"
+                      aria-checked={t.id === target}
+                      autoFocus={t.id === target}
                       className={t.id === target ? "active" : ""}
                       onClick={() => {
                         setTarget(t.id);
                         setMenu(false);
+                        input.current?.focus();
                       }}
                     >
                       {t.icon} {t.label}

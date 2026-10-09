@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { NodeType, Op, SceneNode } from "@glimpse/core";
 import { canUngroup, ungroupSelection } from "./arrange";
 import { SelectionInspector } from "./EditTools";
@@ -6,7 +6,7 @@ import { store, useStore } from "./store";
 import { editText } from "./Canvas";
 import { loop, useLoopLive } from "./loop";
 import { NO_SOURCE } from "./Variants";
-import { MOD } from "./platform";
+import { isEnter, MOD } from "./platform";
 import { SceneInspector } from "./SceneInspector";
 
 /** Layers: the element tree of the page. */
@@ -23,16 +23,28 @@ export function Layers() {
     }
   };
   walk(scene.rootId, 0);
+  if (rows.length === 0) return <div className="side-empty">This page has no elements yet.</div>;
   return (
-    <>
-      {rows.length === 0 && <div className="side-empty">This page has no elements yet.</div>}
+    <div role="listbox" aria-label="Layers" aria-multiselectable="true">
       {rows.map(({ node, depth }) => (
         <div
           key={node.id}
           className={`layer${state.multi.includes(node.id) ? " selected" : ""}`}
           style={{ paddingLeft: 10 + depth * 12, opacity: node.hidden ? 0.45 : 1 }}
           title={node.source && `${node.source.file}:${node.source.line}`}
+          role="option"
+          aria-selected={state.multi.includes(node.id)}
+          aria-level={depth + 1}
+          tabIndex={0}
           onClick={(e) => (e.shiftKey ? store.toggleSelect(node.id) : store.select(node.id))}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter" && e.key !== " ") return;
+            e.preventDefault();
+            if (e.shiftKey) store.toggleSelect(node.id);
+            else store.select(node.id);
+          }}
+          onFocus={() => store.set({ hovered: node.id })}
+          onBlur={() => store.set({ hovered: null })}
           onMouseEnter={() => store.set({ hovered: node.id })}
           onMouseLeave={() => store.set({ hovered: null })}
         >
@@ -40,7 +52,7 @@ export function Layers() {
           <span className="txt">{node.props.text ?? (node.props.id ? `#${node.props.id}` : "")}</span>
         </div>
       ))}
-    </>
+    </div>
   );
 }
 
@@ -94,10 +106,13 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
     const el = store.bridge?.el(node.id);
     return el ? el.ownerDocument.defaultView!.getComputedStyle(el) : null;
   })();
-  const setStyle = (key: string, value: string) => {
+  const setStyle = (key: string, value: string, merge = false) => {
     const from = node.style[key] ?? null;
     const to = value.trim() === "" ? null : value.trim();
-    if (from !== to) store.edit({ op: "setStyle", node: node.id, key, from, to });
+    if (from === to) return;
+    const op = { op: "setStyle" as const, node: node.id, key, from, to };
+    if (merge) store.editMerged(`${node.id}:${key}`, op);
+    else store.edit(op);
   };
   const comments = (store.log?.ops ?? []).filter((o): o is Extract<Op, { op: "comment" }> => o.op === "comment");
 
@@ -128,7 +143,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
                 const to = e.target.value;
                 if (to !== (node.props.text ?? "")) store.edit({ op: "setText", node: node.id, from: node.props.text ?? "", to });
               }}
-              onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+              onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
             />
           </div>
         )}
@@ -172,7 +187,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
               <label>{f.label}</label>
               <div className="color">
                 {f.color && (
-                  <input type="color" value={toHex(current || shown)} onChange={(e) => setStyle(f.key, e.target.value)} />
+                  <ColorInput value={toHex(current || shown)} label={f.label} onPick={(hex) => setStyle(f.key, hex, true)} />
                 )}
                 <input
                   key={`${node.id}:${f.key}:${current}`}
@@ -180,7 +195,7 @@ export function Inspector({ openTalk }: { openTalk: () => void }) {
                   defaultValue={current}
                   placeholder={shown || f.placeholder}
                   onBlur={(e) => setStyle(f.key, e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
                 />
               </div>
             </div>
@@ -299,6 +314,32 @@ export function Activity() {
 function inlineCode(text: string): string {
   const esc = text.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
   return esc.replace(/`([^`]+)`/g, "<code>$1</code>");
+}
+
+/**
+ * A color swatch. Its picker reports every value while it is dragged; `onPick` should merge them into one undo step
+ * (store.editMerged), which ends when the picker closes.
+ */
+export function ColorInput({ value, label, title, onPick }: { value: string; label: string; title?: string; onPick: (hex: string) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const el = input.current;
+    if (!el) return;
+    const end = () => store.endMerge();
+    el.addEventListener("change", end);
+    return () => el.removeEventListener("change", end);
+  }, []);
+  return (
+    <input
+      ref={input}
+      type="color"
+      value={value}
+      title={title}
+      aria-label={`Pick ${label.toLowerCase()}`}
+      onFocus={() => store.endMerge()}
+      onChange={(e) => onPick(e.target.value)}
+    />
+  );
 }
 
 /** Convert a computed CSS color (rgb/rgba/hex) to #rrggbb for <input type=color>. */
