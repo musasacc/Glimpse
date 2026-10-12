@@ -189,6 +189,8 @@ const MIME: Record<string, string> = {
 
 /** An external agent counts as attached this long after its last wait (it may be working on what it got). */
 const EXTERNAL_PRESENCE_MS = 3 * 60_000;
+/** Agents poll in chunks: how long after a wait ends it still counts as listening (between two polls). */
+const WAIT_DEBOUNCE_MS = 1500;
 /** Saves in the project are recorded as (part of) an AI round once they have been quiet this long, */
 const AI_ROUND_QUIET_MS = 1500;
 /** or once they have kept coming this long (say, a log file the app writes every second). */
@@ -1559,6 +1561,25 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
     presenceTimer = undefined;
     if (closing || externalAttached()) return;
     runner.infoChanged();
+    runWaitingIfFree();
+  }
+
+  /**
+   * Hand what waits to the built-in agent once no external agent is listening or attached. The "stopped waiting"
+   * debounce and the presence window end on separate timers, so whichever ends first checks again when the other does.
+   */
+  let freeTimer: ReturnType<typeof setTimeout> | undefined;
+  function runWaitingIfFree(): void {
+    clearTimeout(freeTimer);
+    freeTimer = undefined;
+    if (closing) return;
+    if (waiters.size > 0) return; // a new wait: whatever happens next starts from its end
+    if (externalWaiting() || externalAttached()) {
+      const presenceLeft = lastExternalAt > 0 ? presenceMs - (Date.now() - lastExternalAt) : 0;
+      freeTimer = setTimeout(runWaitingIfFree, Math.max(presenceLeft, lastWaiting ? WAIT_DEBOUNCE_MS : 0, 0) + 50);
+      freeTimer.unref();
+      return;
+    }
     void runner.enqueue(pendingHandoffs()).catch(() => undefined);
   }
 
@@ -1695,9 +1716,9 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         broadcast({ type: "agent", waiting });
         runner.infoChanged();
         // The external agent went away: what it left waiting runs with the built-in agent, if one is available.
-        if (!waiting && !closing) void runner.enqueue(pendingHandoffs()).catch(() => undefined);
+        if (!waiting) runWaitingIfFree();
       }
-    }, waiters.size > 0 ? 0 : 1500).unref();
+    }, waiters.size > 0 ? 0 : WAIT_DEBOUNCE_MS).unref();
   }
 
   function status(message: string): void {
@@ -1924,6 +1945,7 @@ export async function startServer(opts: ServerOptions): Promise<GlimpseServer> {
         w.resolve(null);
       }
       clearTimeout(presenceTimer);
+      clearTimeout(freeTimer);
       // The built-in agent and the app first, so they can't outlive Glimpse.
       await runner.close();
       unbridge();

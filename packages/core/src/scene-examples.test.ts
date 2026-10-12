@@ -104,7 +104,8 @@ describe("example projects", () => {
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
-  });
+    // Starting Python is slow on Windows runners.
+  }, 30_000);
 });
 
 describe("built-in examples for agents", () => {
